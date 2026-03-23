@@ -122,7 +122,7 @@ The important constraint is that `Queue` and `control status` are not separate t
 
 This is especially relevant for the future TUI dependency: the UI should consume the same structured queue/status truth, not re-derive planning state from ad hoc terminal-specific logic.
 
-The right-side operator panel is the built-in dashboard surface in the shipped shell. It is the place where the repo's runtime truth is rendered today, rather than a separate dashboard app or a placeholder for later UI work. Trace and replay state appear there as recorded evidence, not as transient debug output.
+The right-side operator panel is the built-in dashboard surface in the shipped shell. It renders the repo's runtime truth today, rather than a separate dashboard app or a placeholder for later UI work. Trace and replay state appear there as recorded evidence, not as transient debug output.
 In narrow terminals, the shipped shell degrades to a text-summary fallback that shows the same operator snapshot in condensed form instead of attempting to preserve the split-panel layout.
 
 ## Closure And Marker Baseline
@@ -221,11 +221,26 @@ Two areas are still intentionally incomplete:
 - `wave adhoc`
 - `wave dep`
 
-And the operator shell should still be treated as planning-only where it depends on bootstrap state:
+## Self-Host Runbook
 
-- it may render the current queue/status truth
-- it does not replace the underlying control-plane model
-- it should not be documented as if the live runtime has already gained every future dashboard affordance
+This repo now dogfoods the Rust operator on itself through the surfaces that already exist. The intended local loop is:
+
+1. Confirm the repo state and roots with `wave project show --json`.
+2. Validate the authoring and control-plane contract with `wave doctor --json`, `wave lint --json`, and `wave control status --json`.
+3. Compile the active wave with `wave draft` so the runtime prompt bundle under `.wave/state/build/specs/` matches the checked-in spec.
+4. Inspect readiness and queued work with `wave control show --wave <id> --json` and `wave control task list --wave <id> --json`.
+5. Run `wave launch --wave <id> --dry-run --json` before any live local mutation.
+6. If the dry run is clean, run `wave launch --wave <id> --json`.
+7. Watch the attempt through `wave trace latest --json` and `wave trace replay --json`.
+8. Open `wave` in an interactive terminal to inspect `Run`, `Agents`, `Queue`, and `Control` in the built-in Ratatui shell.
+
+This is a real self-host loop, but it is local and repo-scoped. It uses the launcher, queue, TUI, and trace surfaces already shipped in this slice; it does not claim live-host deployment or remote fleet control.
+
+Remaining gaps stay explicit:
+
+- `wave adhoc` and `wave dep` are still stubs.
+- The operator shell is the built-in TUI, not a separate dashboard product.
+- Queue and replay visibility are evidence surfaces, not a guarantee that every future orchestration feature has shipped.
 
 ## Live State Roots
 
@@ -252,6 +267,9 @@ The Codex-backed launcher slice depends on a few concrete assumptions that shoul
 - `last-message.txt` is the per-agent terminal artifact for the final assistant message
 - launcher execution is a runtime substrate only; it is not a claim that autonomous queue behavior or any future TUI scheduling logic has shipped in this wave
 - preflight refusal is part of the shipped launch contract, so missing requirements should surface before any live mutation begins
+- the self-host flow is repo-local dogfood, not live-host mutation or fleet orchestration
+- the shipped self-host loop is `project show`, `doctor`, `lint`, `draft`, `launch`, `control`, `trace`, and the built-in TUI on the same repo-scoped state roots
+- queue and trace projections are evidence surfaces first; they should stay aligned with the launcher, but they are not a promise that every future orchestration feature has shipped
 
 Keep these assumptions aligned with the launcher code. If one changes, update the config and the reference docs in the same wave.
 
@@ -285,6 +303,20 @@ Only these actions are shipped today:
 - `q` to quit
 
 If a broader dashboard interaction is proposed later, it should be documented as planned until the implementation lands.
+
+## Self-Host Evidence
+
+The intended self-host loop for this repository is the same one the code already exposes:
+
+1. `wave project show --json` confirms the workspace-local roots and parsed config.
+2. `wave doctor --json`, `wave lint --json`, and `wave control status --json` check the authoring and queue surfaces.
+3. `wave draft` compiles the active wave into runtime prompts under `.wave/state/build/specs/`.
+4. `wave launch --wave <id> --dry-run --json` writes the preflight report before mutation.
+5. `wave launch --wave <id> --json` runs the local operator slice when the dry run is clean.
+6. `wave control show --wave <id> --json`, `wave control task list --wave <id> --json`, `wave trace latest --json`, and `wave trace replay --json` expose the queue and trace evidence for that run.
+7. `wave` on an interactive terminal shows the same state in the built-in TUI.
+
+This is dogfood evidence, not a claim that live-host deployment, remote fleet control, or a separate dashboard product has landed.
 
 ## Narrow-Terminal Fallback
 

@@ -2,6 +2,8 @@ node_modules/
 target/
 .env.local
 .wave/build/
+.wave/integration/
+.wave/reviews/
 .wave/state/
 .wave/traces/
 .wave/codex/

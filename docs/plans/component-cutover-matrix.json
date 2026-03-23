@@ -384,7 +384,7 @@
         "docs/implementation/rust-codex-refactor.md",
         "waves/09-dogfood.md"
       ],
-      "currentLevel": "contract-frozen",
+      "currentLevel": "repo-landed",
       "promotions": [
         {
           "wave": 9,
@@ -403,7 +403,7 @@
         "docs/implementation/rust-codex-refactor.md",
         "waves/09-dogfood.md"
       ],
-      "currentLevel": "contract-frozen",
+      "currentLevel": "repo-landed",
       "promotions": [
         {
           "wave": 9,

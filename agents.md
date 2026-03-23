@@ -18,6 +18,26 @@ This repository is the in-progress Rust rewrite of Wave, rebuilt around Codex OS
 - The seeded `docs/` tree is reference material from upstream Wave, not the canonical runtime implementation for this repo.
 - `wave adhoc` and `wave dep` exist as command entry points, but they currently short-circuit with not-implemented messages.
 
+## Self-Host Flow
+
+When this repository is used to dogfood the Rust system on itself, follow the shipped surfaces in this order:
+
+1. Confirm the repo roots and runtime state with `wave project show --json`.
+2. Check authoring and control-plane health with `wave doctor --json`, `wave lint --json`, and `wave control status --json`.
+3. Compile the active wave with `wave draft` so the runtime prompt bundle under `.wave/state/build/specs/` matches the checked-in spec.
+4. Run `wave launch --wave <id> --dry-run --json` before any live local mutation.
+5. If the dry run is clean, run `wave launch --wave <id> --json` and watch the run through `wave control show --wave <id> --json`, `wave control task list --wave <id> --json`, `wave trace latest --json`, and `wave trace replay --json`.
+6. Use the built-in TUI on an interactive terminal to inspect `Run`, `Agents`, `Queue`, and `Control` from the same control-plane snapshot.
+
+The self-host loop is local-first and repo-scoped. It uses the launcher, queue, TUI, and trace surfaces that already exist in this tree, and it should not be described as a live-host mutation workflow.
+Treat `.wave/codex/`, `.wave/state/`, and `.wave/traces/` as the only runtime roots involved in the dogfood loop.
+
+Keep the guidance honest about gaps:
+
+- `wave adhoc` and `wave dep` are present as entry points, but they are still stubs.
+- The built-in TUI is the shipped operator shell, not a separate dashboard product.
+- Trace replay and queue snapshots are evidence surfaces; they do not imply remote fleet control or host mutation beyond this worktree.
+
 ## Source Of Truth
 
 - Read `README.md` first for repo purpose and current status.
@@ -119,6 +139,14 @@ Before coding inside your owned files:
 4. If you need to confirm the active project config, run `cargo run -p wave-cli -- project show --json`.
 5. If the wave contract changed, run `cargo run -p wave-cli -- draft` and `cargo run -p wave-cli -- lint --json` before treating the wave as ready.
 6. Only then implement inside your owned paths and leave proof that matches the exit contract.
+
+For self-host dogfooding, keep the operational loop concrete:
+
+- `wave launch` is the launcher entrypoint
+- `wave control status|show|task|rerun|proof` is the queue and proof surface
+- `wave trace latest|replay` is the recorded evidence surface
+- `wave` on an interactive terminal is the TUI view of the same state
+- `.wave/codex/`, `.wave/state/`, and `.wave/traces/` are the repo-local roots that make the flow self-hostable
 
 ## Closure Roles
 

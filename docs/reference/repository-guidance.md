@@ -16,6 +16,8 @@ Use this page as the default in-repo guidance for wave agents.
 - Run the relevant validation commands for touched workspaces.
 - Record blockers, assumptions, clarifications, and handoffs with `wave coord post`; treat the markdown message board as the human-readable projection of that durable state.
 - Treat external docs as non-canonical unless the task is specifically about third-party APIs or tooling behavior.
+- When a self-host run has already proved a repo-local behavior, document the exact commands and surfaces that passed; do not restate it as a generic aspiration.
+- Turn remaining dogfood work into named follow-up surfaces, such as a CLI command, a trace artifact, a board projection, a closure gate, or a lifecycle workflow that still needs wiring.
 
 ## Dark-Factory Rules
 
@@ -38,3 +40,10 @@ At launch time:
 ## Operator Rule
 
 If the repo is using the dark-factory profile, operators should author for the failure mode they want the runtime to enforce. Missing launch data is a spec problem, not a runtime exception to work around.
+
+For this repo's dogfood phase, that means the open items should stay concrete:
+
+- `wave adhoc` should be tracked as a lifecycle surface, not a vague future enhancement.
+- `wave dep` should be tracked as a cross-lane dependency surface, not a generic coordination note.
+- the built-in TUI should remain the documented operator shell until a separate terminal surface is actually proven.
+- local dogfood proof should keep the repo docs authoritative, while Context7 stays limited to external library truth.

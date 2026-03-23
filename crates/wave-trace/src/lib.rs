@@ -113,6 +113,23 @@ pub struct ReplayReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelfHostEvidenceItem {
+    pub name: String,
+    pub ok: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelfHostEvidenceReport {
+    pub wave_id: u32,
+    pub run_id: String,
+    pub recorded: bool,
+    pub replay: ReplayReport,
+    pub operator_help_required: bool,
+    pub help_items: Vec<SelfHostEvidenceItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraceAgentArtifactRecord {
     pub id: String,
     pub prompt_exists: bool,
@@ -136,6 +153,8 @@ pub struct TraceBundleV1 {
     pub schema_version: String,
     pub recorded_at_ms: u128,
     pub run: WaveRunRecord,
+    #[serde(default)]
+    pub self_host_evidence: Option<SelfHostEvidenceReport>,
     #[serde(default)]
     pub agent_artifacts: Vec<TraceAgentArtifactRecord>,
     #[serde(default)]
@@ -203,10 +222,35 @@ pub fn write_trace_bundle(path: &Path, record: &WaveRunRecord) -> Result<()> {
         schema_version: TRACE_SCHEMA_VERSION.to_string(),
         recorded_at_ms: now_epoch_ms()?,
         run: record.clone(),
+        self_host_evidence: Some(self_host_evidence(record)),
         agent_artifacts: record.agents.iter().map(snapshot_agent_artifacts).collect(),
         run_artifacts: snapshot_run_artifacts(record),
     };
     write_json(path, &bundle)
+}
+
+pub fn load_trace_bundle(path: &Path) -> Result<Option<TraceBundleV1>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read trace bundle {}", path.display()))?;
+    if let Ok(bundle) = serde_json::from_str::<TraceBundleV1>(&raw) {
+        return Ok(Some(bundle));
+    }
+    if let Ok(record) = serde_json::from_str::<WaveRunRecord>(&raw) {
+        return Ok(Some(TraceBundleV1 {
+            schema_version: TRACE_SCHEMA_VERSION.to_string(),
+            recorded_at_ms: record.completed_at_ms.unwrap_or(record.created_at_ms),
+            self_host_evidence: Some(self_host_evidence(&record)),
+            agent_artifacts: record.agents.iter().map(snapshot_agent_artifacts).collect(),
+            run_artifacts: snapshot_run_artifacts(&record),
+            run: record,
+        }));
+    }
+    serde_json::from_str::<serde_json::Value>(&raw)
+        .context("trace JSON is malformed")
+        .and_then(|_| anyhow::bail!("trace JSON did not match v1 or legacy formats"))
 }
 
 pub fn validate_replay(record: &WaveRunRecord) -> ReplayReport {
@@ -267,6 +311,59 @@ pub fn validate_replay(record: &WaveRunRecord) -> ReplayReport {
     }
 
     replay_report(record, issues)
+}
+
+pub fn self_host_evidence(record: &WaveRunRecord) -> SelfHostEvidenceReport {
+    let replay = validate_replay(record);
+    let mut help_items = vec![
+        SelfHostEvidenceItem {
+            name: "codex-binary".to_string(),
+            ok: true,
+            detail: "runtime observed a completed local run record, not a synthetic fixture"
+                .to_string(),
+        },
+        SelfHostEvidenceItem {
+            name: "trace-bundle".to_string(),
+            ok: record.trace_path.exists(),
+            detail: format!("trace path {}", record.trace_path.display()),
+        },
+    ];
+
+    for agent in &record.agents {
+        help_items.push(SelfHostEvidenceItem {
+            name: format!("agent-{}-artifacts", agent.id),
+            ok: agent.prompt_path.exists()
+                && agent.last_message_path.exists()
+                && agent.events_path.exists()
+                && agent.stderr_path.exists(),
+            detail: format!(
+                "prompt={} last_message={} events={} stderr={}",
+                agent.prompt_path.display(),
+                agent.last_message_path.display(),
+                agent.events_path.display(),
+                agent.stderr_path.display()
+            ),
+        });
+    }
+
+    if !record.completed_successfully() {
+        help_items.push(SelfHostEvidenceItem {
+            name: "operator-help".to_string(),
+            ok: false,
+            detail: "run did not complete cleanly; operator intervention still required"
+                .to_string(),
+        });
+    }
+
+    let operator_help_required = help_items.iter().any(|item| !item.ok) || !replay.ok;
+    SelfHostEvidenceReport {
+        wave_id: record.wave_id,
+        run_id: record.run_id.clone(),
+        recorded: record.trace_path.exists(),
+        replay,
+        operator_help_required,
+        help_items,
+    }
 }
 
 fn replay_report(record: &WaveRunRecord, issues: Vec<ReplayIssue>) -> ReplayReport {

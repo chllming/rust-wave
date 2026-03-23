@@ -107,6 +107,8 @@ Required context before coding:
 
 Specific expectations:
 - treat dogfood claims without trace-backed evidence or operator-visible control-plane state as integration failures
+- do not block on A8 appearing as `running` in the active run record while you are executing; judge closure from landed artifacts and prior-stage markers instead
+- do not require the final trace bundle for the current run while you are executing; that bundle is emitted after launch closure
 - decide ready-for-doc-closure only when the system can honestly operate on its own backlog
 - emit the final [wave-integration] state=<ready-for-doc-closure|needs-more-work> claims=<n> conflicts=<n> blockers=<n> detail=<text> marker as a plain last line
 

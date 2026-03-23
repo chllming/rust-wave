@@ -30,6 +30,7 @@ use wave_trace::WaveRunRecord;
 use wave_trace::WaveRunStatus;
 use wave_trace::load_latest_run_records_by_wave;
 use wave_trace::load_run_record;
+use wave_trace::load_trace_bundle;
 use wave_trace::now_epoch_ms;
 use wave_trace::write_run_record;
 use wave_trace::write_trace_bundle;
@@ -55,6 +56,17 @@ pub struct TraceInspectionReport {
     pub trace_path: PathBuf,
     pub recorded: bool,
     pub replay: wave_trace::ReplayReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DogfoodEvidenceReport {
+    pub wave_id: u32,
+    pub run_id: String,
+    pub trace_path: PathBuf,
+    pub recorded: bool,
+    pub replay: wave_trace::ReplayReport,
+    pub operator_help_required: bool,
+    pub help_items: Vec<wave_trace::SelfHostEvidenceItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -235,6 +247,23 @@ pub fn trace_inspection_report(record: &WaveRunRecord) -> TraceInspectionReport 
         trace_path: record.trace_path.clone(),
         recorded,
         replay,
+    }
+}
+
+pub fn dogfood_evidence_report(record: &WaveRunRecord) -> DogfoodEvidenceReport {
+    let evidence = load_trace_bundle(&record.trace_path)
+        .ok()
+        .flatten()
+        .and_then(|bundle| bundle.self_host_evidence)
+        .unwrap_or_else(|| wave_trace::self_host_evidence(record));
+    DogfoodEvidenceReport {
+        wave_id: evidence.wave_id,
+        run_id: evidence.run_id,
+        trace_path: record.trace_path.clone(),
+        recorded: evidence.recorded,
+        replay: evidence.replay,
+        operator_help_required: evidence.operator_help_required,
+        help_items: evidence.help_items,
     }
 }
 
@@ -545,10 +574,11 @@ pub fn autonomous_launch(
                 dry_run: options.dry_run,
             },
         )?;
+        let failed = report.status == WaveRunStatus::Failed;
         launched.push(report);
 
         status = refresh_planning_status(root, config, waves)?;
-        if options.dry_run {
+        if options.dry_run || failed {
             break;
         }
     }

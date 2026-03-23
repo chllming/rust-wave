@@ -36,10 +36,10 @@ This matrix is the canonical place to record the authored-wave rewrite component
 | `dependency-aware-scheduler` | `repo-landed` | Queue promotion and blockage are derived from dependencies, run state, and rerun intents, so autonomy never bypasses typed gating. |
 | `trace-bundle-v1` | `repo-landed` | Live and dry runs write trace bundles under `.wave/traces/runs/`. |
 | `replay-validation` | `repo-landed` | `wave trace replay` validates stored run outcomes against the recorded artifacts. |
-| `self-host-dogfood-runbook` | `contract-frozen` | Dogfood operating guidance is deferred until the final wave. |
-| `dark-factory-dogfood-evidence` | `contract-frozen` | Repo self-host proof is deferred until dogfooding lands. |
+| `self-host-dogfood-runbook` | `repo-landed` | The repo-local self-host loop is now documented as a concrete operator runbook that stays repo-scoped and does not imply live-host mutation. |
+| `dark-factory-dogfood-evidence` | `repo-landed` | The repo-local dogfood evidence slice now records the proven self-host loop and its durable local evidence surfaces. |
 
-Only the final dogfood-evidence components remain intentionally `contract-frozen`: the repo already has the executable runtime/operator surface, but it still owes self-host proof.
+The dogfood-evidence components are now `repo-landed`: the repo has the executable runtime/operator surface plus the self-host evidence to describe it honestly.
 
 ## Promotions By Wave
 

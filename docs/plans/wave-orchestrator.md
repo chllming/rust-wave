@@ -30,6 +30,21 @@ This runbook is the operational view of the architecture:
 - supports a file-backed human feedback queue
 - performs a closure sweep so optional `cont-EVAL`, optional security review, integration, documentation, and cont-QA gates reflect final landed state
 
+The self-host dogfood run proved the repo-local operator loop end to end:
+
+- `cargo run -p wave-cli -- project show --json`
+- `cargo run -p wave-cli -- doctor --json`
+- `cargo run -p wave-cli -- lint --json`
+- `cargo run -p wave-cli -- control status --json`
+- `cargo run -p wave-cli -- draft`
+- `cargo run -p wave-cli -- launch --wave <id> --dry-run --json`
+- `cargo run -p wave-cli -- launch --wave <id> --json`
+- `cargo run -p wave-cli -- control show --wave <id> --json`
+- `cargo run -p wave-cli -- control task list --wave <id> --json`
+- `cargo run -p wave-cli -- trace latest --json`
+- `cargo run -p wave-cli -- trace replay --json`
+- `cargo run -p wave-cli --`
+
 ## Main Commands
 
 - `pnpm exec wave project setup`
@@ -335,3 +350,17 @@ Live closure is fail-closed:
 - Security review requires a report artifact plus a structured `[wave-security]` marker. `state=blocked` stops the wave before integration, while `state=concerns` is preserved in summaries and traces without automatically failing closure.
 - `cont-QA` PASS requires both the final verdict and the final `[wave-gate]` marker.
 - Legacy evaluator-era or underspecified closure artifacts are still readable in replay and trace analysis, but they no longer satisfy live completion.
+
+## Dogfood Gap Ledger
+
+The self-host run proved the repo-local operator loop, but it also leaves a small set of follow-up surfaces that should be treated as concrete work items rather than background caveats:
+
+- `wave adhoc` needs the remaining repo-local lifecycle wiring: plan, run, show, promote, and closure artifacts that reuse the same trace and proof conventions as a normal wave.
+- `wave dep` needs the remaining dependency workflow wiring: ticket creation, board projection, blocking semantics, and finalization checks that surface unresolved cross-lane work before completion.
+- The terminal surface remains the built-in TUI shell. A separate dashboard or alternate operator entrypoint is still unproven.
+
+The positioning statement for this repo should stay narrow until those surfaces land:
+
+- the Rust operator can run this repository from the local worktree
+- the live proof does not imply live-host deployment or remote fleet control
+- Context7 remains reserved for external library truth, not repository policy or architecture decisions

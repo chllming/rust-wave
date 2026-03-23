@@ -31,6 +31,8 @@ The useful path is journey-first:
   Read [concepts/what-is-a-wave.md](./concepts/what-is-a-wave.md). It covers the blackboard execution model, proof-bounded closure, runtime posture, and durable state model in one place.
 - Want the runtime abstraction story:
   Read [concepts/runtime-agnostic-orchestration.md](./concepts/runtime-agnostic-orchestration.md) to see how planning, skills, evals, proof, and traces stay stable across Claude, Codex, OpenCode, and local execution.
+- Want the repo-specific Rust 0.2 target:
+  Read [implementation/rust-wave-0.2-architecture.md](./implementation/rust-wave-0.2-architecture.md) for the post-bootstrap authority model, crate split, and migration waves.
 - Want the context story:
   Read [concepts/context7-vs-skills.md](./concepts/context7-vs-skills.md) for the compiled-context model: shared summary, inboxes, project defaults, skills, Context7, and runtime overlays.
 - Drafting or revising waves:

@@ -42,6 +42,7 @@
 
 - Cross-repo bootstrap automation, richer adoption flows, `wave adhoc`, `wave dep`, and live-host deployment workflows remain future work.
 - The repo-local runtime waves are already executable in this worktree, so shared-plan docs should describe launcher, TUI, autonomous queueing, dependency-aware gating, replay, and queue-status projections as live local capabilities.
+- Trace bundles plus replay validation mean later closure and dogfood waves can cite durable local evidence for recorded runs without waiting on live-host mutation proof.
 - The right-side operator panel is part of that live local capability set and should be described as the direct queue/control dashboard, not a separate dashboard product.
 - Later waves should assume the shell can expose operator actions and not just operator visibility when they define queue, rerun, or planning interactions.
 - Wave 5 specifically means the shell already supports direct queue selection and rerun-intent control, so later docs should not describe those affordances as prospective.
@@ -49,4 +50,5 @@
 - Queue and dogfood waves should treat the shell as the primary operator surface for selection and rerun actions, while CLI surfaces stay authoritative for JSON projections and automation.
 - Queue admission for autonomous runs is dependency-gated and claimability-aware, so later waves should author against typed queue readiness rather than manual queue promotion.
 - Launcher and agent-lifecycle docs should treat `.wave/codex/` plus per-run bundle artifacts as the authoritative runtime-state contract for later waves.
+- Wave 9 now lands the self-host dogfood runbook and evidence as part of the repo baseline, so future migration notes should treat that evidence as shipped local state rather than a planned proof slice.
 - When later waves change the contract, update this guide together with the parser, lint rules, queue/doctor surfaces, and component matrix.

@@ -4,6 +4,8 @@ See also [concepts/context7-vs-skills.md](../concepts/context7-vs-skills.md) for
 
 Context7 is for external library truth. Repository docs and source are for repository truth.
 
+After the self-host dogfood run, keep the boundary strict: the proven repo-local operator loop belongs in repository docs, while Context7 remains a narrow input channel for third-party API and library details only.
+
 ## Rules
 
 - Prefer a narrow bundle per agent or wave.
@@ -130,3 +132,4 @@ Those inbox artifacts are repository-state summaries. Context7 stays reserved fo
 - Do not use Context7 for repository architecture, plan decisions, ownership rules, or internal contracts.
 - Prefer one active backend family in a bundle instead of mixing competing frameworks.
 - Keep queries specific enough that the prefetched block stays small and useful.
+- If a repo-local dogfood run already proved a behavior, document the exact commands and surfaces in repo docs instead of expanding the Context7 scope to cover it.

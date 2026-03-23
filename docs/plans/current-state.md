@@ -8,7 +8,7 @@
 - The repo-local operator/runtime surface now extends through the Codex-backed launcher and agent lifecycle manager, TUI, autonomous scheduling, dependency-aware queue gating, and replay-aware traces.
 - The live TUI operator surface includes the right-side panel as the direct queue/control dashboard, not just a passive status view.
 - Operators can directly inspect run, agent, queue, and control truth from the shell without switching to a separate CLI status path first, and they can act on queue selection and rerun intents in-place.
-- Remaining planned-only work is dogfood proof plus the still-stubbed `wave adhoc` and `wave dep` commands.
+- Remaining planned-only work is the still-stubbed `wave adhoc` and `wave dep` commands; trace and replay semantics are already landed and dogfood evidence is now repo-landed.
 
 ## Shipped CLI Surface
 
@@ -30,7 +30,7 @@
 - The shell is an operator panel with actionable queue/control affordances, not merely a terminal summary of state.
 - The launcher writes compiled prompts under `.wave/build/specs/`, run state under `.wave/state/runs/`, rerun intents under `.wave/state/control/reruns/`, trace bundles under `.wave/traces/runs/`, and project-scoped Codex state under `.wave/codex/`.
 - The launcher contract is project-scoped: it keeps Codex auth, sqlite state, and session logs under `.wave/codex/` and records each agent's final assistant message in the per-run bundle.
-- Autonomous queueing, dependency-aware scheduling, and replay validation are live repo-local features on top of the same recorded run state.
+- Autonomous queueing, dependency-aware scheduling, and replay validation are live repo-local features on top of the same recorded run state, so later waves can prove recorded outcomes without needing live-host mutation proof.
 
 ## Authored-Wave Contract Now Live
 
@@ -54,6 +54,7 @@
 - `wave doctor` verifies config loading, wave loading, skill-catalog health under `skills/`, upstream metadata pins, and the typed planning-status projection used by status reporting.
 - `wave control status` exposes queue readiness, per-wave agent counts, closure totals, blocker categories, and skill-catalog health from the same typed wave model that feeds `wave doctor`.
 - The committed authored-wave backlog currently lints cleanly and has complete closure coverage across the wave set.
+- cont-QA: closed; wave 9 landed the repo-local self-host dogfood loop and its durable evidence, so the remaining gaps are now limited to the still-stubbed `wave adhoc` and `wave dep` commands.
 - cont-QA: closed; wave 5 landed direct shell control without changing closure sequencing or planning-status semantics.
 - cont-QA: closed; dark-factory is now an enforced execution profile at launch, so later queue and dogfood waves must be authored with complete preflightable contract data before they are considered ready.
 - cont-QA: closed; wave 7 added autonomous queue selection and dependency-aware gating, so later waves should assume queue claimability is computed from typed control-plane state rather than operator guesswork.
@@ -83,7 +84,9 @@
 - Later waves may rely on `wave doctor` and `wave control status` sharing one typed planning projection for queue readiness, blocker-wave reporting, per-wave agent counts, closure coverage, queue visibility, and skill-catalog health.
 - Later waves may rely on the Codex launcher, the right-side TUI panel, direct queue selection, rerun intents, autonomous queueing, dependency-aware gating, and replay validation being live in the repo-local runtime.
 - Later waves may rely on autonomous queue claimability being computed from typed dependencies, run state, and rerun intents rather than manual operator arbitration.
+- Later waves may rely on trace bundles, replay validation, and the wave 9 dogfood evidence as durable local evidence for recorded outcomes.
 - Later queue and dogfood waves should assume the shell already exposes direct queue selection and rerun-intent control, so they do not need a separate operator surface to reason about those actions.
 - Later queue and dogfood waves should also assume dark-factory launch refusal is fail-closed: if the authored contract is incomplete, the wave is malformed and should not be framed as launch-time fixup work.
-- Later waves must not assume dogfood evidence, `wave adhoc`, `wave dep`, or live-host deployment proof until those slices are explicitly landed.
+- Later waves must not assume `wave adhoc`, `wave dep`, or live-host deployment proof until those slices are explicitly landed.
 - cont-QA: closed; wave 7 added autonomous queue selection and dependency-aware gating, so later waves should treat queue claimability as a typed runtime decision in repo-local execution.
+- cont-QA: closed; wave 8 added trace bundles and replay validation, so later closure waves can use durable local artifacts to prove recorded behavior before dogfood evidence exists.

@@ -26,14 +26,15 @@ use wave_dark_factory::lint_project;
 use wave_dark_factory::validate_context7_bundle_catalog;
 use wave_dark_factory::validate_skill_catalog;
 use wave_runtime::AutonomousOptions;
+use wave_runtime::DogfoodEvidenceReport;
 use wave_runtime::LaunchOptions;
 use wave_runtime::LaunchPreflightError;
 use wave_runtime::LaunchPreflightReport;
 use wave_runtime::RerunIntentRecord;
-use wave_runtime::TraceInspectionReport;
 use wave_runtime::autonomous_launch;
 use wave_runtime::clear_rerun;
 use wave_runtime::codex_binary_available;
+use wave_runtime::dogfood_evidence_report;
 use wave_runtime::draft_wave;
 use wave_runtime::launch_wave;
 use wave_runtime::load_latest_runs;
@@ -44,6 +45,7 @@ use wave_spec::WaveDocument;
 use wave_spec::load_wave_documents;
 use wave_trace::ReplayReport;
 use wave_trace::WaveRunRecord;
+use wave_trace::load_trace_bundle;
 
 #[derive(Debug, Parser)]
 #[command(name = "wave", about = "Rust/Codex Wave operator CLI")]
@@ -1107,15 +1109,36 @@ fn render_trace_latest(
             println!("no trace found for wave {}", wave_id);
             return Ok(());
         };
-        let report = trace_inspection_report(record);
+        let report = dogfood_evidence_report(record);
+        let evidence_source = load_trace_bundle(&report.trace_path)
+            .ok()
+            .flatten()
+            .map(|bundle| {
+                if bundle.self_host_evidence.is_some() {
+                    "stored trace evidence"
+                } else {
+                    "stored trace bundle"
+                }
+            })
+            .unwrap_or("live run record");
         if json {
             return print_json(&report);
         }
         println!("wave {} latest trace", wave_id);
         println!("run id: {}", report.run_id);
         println!("trace path: {}", report.trace_path.display());
+        println!("evidence source: {}", evidence_source);
         println!("recorded: {}", report.recorded);
         println!("replay ok: {}", report.replay.ok);
+        println!("operator help required: {}", report.operator_help_required);
+        for item in report.help_items {
+            println!(
+                "- {}: {} ({})",
+                item.name,
+                if item.ok { "ok" } else { "help-needed" },
+                item.detail
+            );
+        }
         println!("status: {}", record.status);
         println!("agent count: {}", record.agents.len());
         return Ok(());
@@ -1133,13 +1156,14 @@ fn render_trace_latest(
     let mut records = latest_runs.values().collect::<Vec<_>>();
     records.sort_by_key(|record| record.wave_id);
     for record in records {
-        let report = trace_inspection_report(record);
+        let report = dogfood_evidence_report(record);
         println!(
-            "- wave {} | run id={} | recorded={} | replay={} | trace={}",
+            "- wave {} | run id={} | recorded={} | replay={} | help_required={} | trace={}",
             report.wave_id,
             report.run_id,
             report.recorded,
             report.replay.ok,
+            report.operator_help_required,
             report.trace_path.display()
         );
     }
@@ -1199,10 +1223,10 @@ fn render_trace_replay(
 
 fn latest_trace_reports_from_runs(
     latest_runs: &HashMap<u32, WaveRunRecord>,
-) -> HashMap<u32, TraceInspectionReport> {
+) -> HashMap<u32, DogfoodEvidenceReport> {
     latest_runs
         .values()
-        .map(trace_inspection_report)
+        .map(dogfood_evidence_report)
         .map(|report| (report.wave_id, report))
         .collect()
 }

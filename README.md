@@ -78,6 +78,61 @@ cargo run -p wave-cli -- control rerun request --wave 4 --reason "operator reque
 cargo run -p wave-cli -- trace replay --json
 ```
 
+## Self-Host Runbook
+
+This repo is meant to dogfood the Rust operator on itself. The practical local loop is:
+
+1. Verify the repo-scoped surfaces first:
+
+```bash
+cargo run -p wave-cli -- project show --json
+cargo run -p wave-cli -- doctor --json
+cargo run -p wave-cli -- lint --json
+cargo run -p wave-cli -- control status --json
+```
+
+2. Review the active wave and its compiled prompts:
+
+```bash
+cargo run -p wave-cli -- draft
+```
+
+3. Inspect the planned run before any mutation:
+
+```bash
+cargo run -p wave-cli -- launch --wave <id> --dry-run --json
+```
+
+4. Start the live local operator slice only when the dry run is clean:
+
+```bash
+cargo run -p wave-cli -- launch --wave <id> --json
+```
+
+5. Watch the same run through the queue and trace surfaces:
+
+```bash
+cargo run -p wave-cli -- control show --wave <id> --json
+cargo run -p wave-cli -- control task list --wave <id> --json
+cargo run -p wave-cli -- trace latest --json
+cargo run -p wave-cli -- trace replay --json
+```
+
+6. Open the TUI on an interactive terminal to inspect `Run`, `Agents`, `Queue`, and `Control` from one snapshot:
+
+```bash
+cargo run -p wave-cli --
+```
+
+The runbook is intentionally repo-local. It relies on `.wave/codex/`, `.wave/state/`, and `.wave/traces/`, and it does not mutate a live host outside this worktree.
+
+Current gaps remain explicit:
+
+- `wave adhoc` and `wave dep` still short-circuit with not-implemented messages.
+- The TUI is the built-in operator shell, not a separate dashboard app.
+- Self-host dogfooding is local-first; it does not imply live-host deployment or remote fleet control.
+- Queue and trace evidence are real, but they are still evidence surfaces rather than a guarantee that every future orchestration feature has shipped.
+
 ## Context7
 
 - Precise per-wave Context7 defaults now live in `waves/*.md`.
