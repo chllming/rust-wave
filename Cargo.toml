@@ -1,0 +1,35 @@
+[workspace]
+members = [
+    "crates/wave-app-server",
+    "crates/wave-cli",
+    "crates/wave-config",
+    "crates/wave-control-plane",
+    "crates/wave-dark-factory",
+    "crates/wave-runtime",
+    "crates/wave-spec",
+    "crates/wave-trace",
+    "crates/wave-tui",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+toml = "0.8"
+
+wave-app-server = { path = "crates/wave-app-server" }
+wave-config = { path = "crates/wave-config" }
+wave-control-plane = { path = "crates/wave-control-plane" }
+wave-dark-factory = { path = "crates/wave-dark-factory" }
+wave-runtime = { path = "crates/wave-runtime" }
+wave-spec = { path = "crates/wave-spec" }
+wave-trace = { path = "crates/wave-trace" }
+wave-tui = { path = "crates/wave-tui" }

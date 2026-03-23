@@ -1,0 +1,5 @@
+url = "https://github.com/openai/codex"
+workspace_root = "codex-rs"
+commit = "5e3793def286099deaf5a6ae625e1f31ad584790"
+reviewed_at = "2026-03-23"
+notes = "Pinned review baseline for the Wave Rust refactor. Actual vendoring and patching lands in the runtime/TUI waves."

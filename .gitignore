@@ -1,0 +1,8 @@
+node_modules/
+target/
+.env.local
+.wave/build/
+.wave/state/
+.wave/traces/
+.wave/codex/
+.tmp/

@@ -1,0 +1,10 @@
+[package]
+name = "wave-dark-factory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+wave-config.workspace = true
+wave-spec.workspace = true

@@ -1,0 +1,5 @@
+url = "https://github.com/chllming/agent-wave-orchestrator"
+branch = "docs/wave-positioning-refresh"
+commit = "8b421c79d58713b8be3f137e16d8777ebd445851"
+reviewed_at = "2026-03-23"
+notes = "Pinned control-plane and resident-orchestrator reference for the Rust rewrite."

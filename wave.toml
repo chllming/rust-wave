@@ -1,0 +1,19 @@
+version = 1
+project_name = "Codex Wave Mode"
+default_lane = "main"
+default_mode = "dark-factory"
+waves_dir = "waves"
+project_codex_home = ".wave/codex"
+state_dir = ".wave/state"
+trace_dir = ".wave/traces"
+codex_vendor_dir = "third_party/codex-rs"
+reference_wave_repo_dir = "third_party/agent-wave-orchestrator"
+
+[dark_factory]
+require_validation = true
+require_rollback = true
+require_proof = true
+require_closure = true
+
+[lanes.main]
+description = "Primary lane for the Rust/Codex refactor."
