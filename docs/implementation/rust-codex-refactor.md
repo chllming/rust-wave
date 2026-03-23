@@ -34,7 +34,7 @@ This slice now spans the earlier bootstrap waves and parts of the runtime/operat
 2. make the new config and wave formats concrete
 3. add lint and planning-status primitives
 4. add the Codex-backed launcher, operator snapshot, and right-side TUI shell
-5. add rerun intents, replay validation, and control-plane actions over recorded run state
+5. add rerun intents, trace bundles, replay validation, and control-plane actions over recorded run state
 
 ## Authored-Wave Contract
 
@@ -99,6 +99,8 @@ That same model feeds the operator surfaces today:
 - `wave-tui`
   renders the right-side operator panel for `Run`, `Agents`, `Queue`, and `Control`
 
+Trace data is part of the same operator truth. `wave trace latest` surfaces the durable record for each completed wave, including the trace path and replay verdict, and `wave trace replay` validates that the stored trace bundle or legacy run record still matches the live run state and artifact inventory.
+
 The repo guidance docs should therefore describe the same concrete contract that these crates enforce, not a looser future-state summary.
 
 ## Planning Status Model
@@ -120,7 +122,7 @@ The important constraint is that `Queue` and `control status` are not separate t
 
 This is especially relevant for the future TUI dependency: the UI should consume the same structured queue/status truth, not re-derive planning state from ad hoc terminal-specific logic.
 
-The right-side operator panel is the built-in dashboard surface in the shipped shell. It is the place where the repo's runtime truth is rendered today, rather than a separate dashboard app or a placeholder for later UI work.
+The right-side operator panel is the built-in dashboard surface in the shipped shell. It is the place where the repo's runtime truth is rendered today, rather than a separate dashboard app or a placeholder for later UI work. Trace and replay state appear there as recorded evidence, not as transient debug output.
 In narrow terminals, the shipped shell degrades to a text-summary fallback that shows the same operator snapshot in condensed form instead of attempting to preserve the split-panel layout.
 
 ## Closure And Marker Baseline
@@ -212,7 +214,7 @@ If a future wave changes the contract, update the parser, lint rules, queue/stat
 - `wave autonomous [--dry-run]`
   Runs the current ready queue through the same launcher contract.
 - `wave trace latest|replay`
-  Shows recorded run state and validates replay semantics against stored artifacts.
+  Shows recorded run state and validates replay semantics against stored artifacts in `.wave/traces/runs/`.
 
 Two areas are still intentionally incomplete:
 
@@ -236,7 +238,7 @@ The current Rust runtime writes durable local state here:
 - `.wave/state/control/reruns/`
   Operator-written rerun intents.
 - `.wave/traces/runs/`
-  Stored trace bundles and replay inputs for completed runs.
+  Stored trace bundles and replay inputs for completed runs. These bundles capture the recorded run, agent artifact presence, and replay inputs that `wave trace replay` checks without mutating runtime state.
 - `.wave/codex/`
   Project-scoped Codex auth, config, sqlite state, and session logs. The launcher must not write into the user's global Codex home.
 

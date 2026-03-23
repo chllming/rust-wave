@@ -82,6 +82,16 @@ The shell is backed by the same repo-local state as the CLI:
 
 That means the TUI, `wave control ...`, and `wave trace ...` are all reading the same recorded operator state instead of maintaining a separate dashboard substrate.
 
+The trace surface is evidence, not debug logging. `wave trace latest` reports the recorded run, replay result, and trace path for each wave, while `wave trace replay` rechecks the stored record or v1 trace bundle against the current run state and emits replay issues when something diverges.
+
+The stored trace bundle records:
+
+- the run record for the completed wave
+- per-agent artifact presence for `prompt.md`, `last-message.txt`, `events.jsonl`, and `stderr.txt`
+- run-level artifact presence for the bundle directory and the project-scoped Codex home
+
+Replay validation is read-only. It does not rebuild the run; it verifies that the durable artifacts still match the recorded outcome.
+
 The planning-status surface is therefore control-plane first. Any future TUI dependency should read from the same status model rather than recomputing readiness, blockers, or queue order locally in the UI layer.
 
 ## Current Non-Goals
@@ -102,6 +112,8 @@ If those come back later, they should be treated as new runtime work rather than
 cargo run -p wave-cli --
 cargo run -p wave-cli -- control status --json
 cargo run -p wave-cli -- control show --wave 0 --json
+cargo run -p wave-cli -- trace latest
+cargo run -p wave-cli -- trace replay --wave 0
 ```
 
 For planning-only bootstrap work, validate the queue/status path first. If those commands disagree, the UI docs should be treated as stale until the control-plane model is fixed.
