@@ -1,0 +1,110 @@
+{
+  "wave_id": 2,
+  "slug": "config-spec-lint",
+  "agent_id": "A8",
+  "role": "integration-steward",
+  "generated_at": "2026-03-23T09:56:54Z",
+  "run_state": {
+    "run_id": "wave-02-1774258651940",
+    "status": "running",
+    "wave_status": "active-run:running"
+  },
+  "state": "ready-for-doc-closure",
+  "counts": {
+    "claims": 0,
+    "conflicts": 0,
+    "blockers": 0
+  },
+  "evidence": {
+    "implementation_agents": [
+      {
+        "id": "A1",
+        "status": "succeeded",
+        "observed_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "summary": "Typed project config loader landed."
+      },
+      {
+        "id": "A2",
+        "status": "succeeded",
+        "observed_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "summary": "Authored-wave parser landed."
+      },
+      {
+        "id": "A3",
+        "status": "succeeded",
+        "observed_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "summary": "Dark-factory lint and Context7 catalog checks landed."
+      }
+    ],
+    "verification": [
+      {
+        "command": "cargo run -q -p wave-cli -- lint --json",
+        "ok": true,
+        "detail": "Returned [] with 0 findings across 10 waves."
+      },
+      {
+        "command": "cargo run -q -p wave-cli -- doctor --json",
+        "ok": true,
+        "detail": "Config, authored-waves, lint, closure-coverage, context7-catalog, and skill-catalog passed."
+      }
+    ],
+    "queue_visibility": {
+      "summary": {
+        "total_waves": 10,
+        "ready_waves": 0,
+        "blocked_waves": 7,
+        "active_waves": 1,
+        "completed_waves": 2,
+        "total_agents": 60,
+        "implementation_agents": 30,
+        "closure_agents": 30,
+        "waves_with_complete_closure": 10,
+      "waves_missing_closure": 0,
+      "total_missing_closure_agents": 0,
+      "lint_error_waves": 0,
+      "skill_catalog_issue_count": 0
+    },
+      "wave_2": {
+        "blocked_by": [
+          "wave:2:running"
+        ],
+        "ready": false,
+        "closure_complete": true,
+        "completed": false,
+        "last_run_status": "running",
+        "rerun_requested": false
+      },
+      "active_run": {
+        "run_id": "wave-02-1774258651940",
+        "current_agent_id": "A8",
+        "current_agent_title": "Integration Steward",
+        "completed_agents": 3,
+        "total_agents": 6
+      }
+    }
+  },
+  "open_claims": [],
+  "conflicts": [],
+  "blockers": [],
+  "deploy_risks": [
+    "repo-local only; no live host mutation."
+  ],
+  "doc_drift": [],
+  "notes": [
+    "A8 resolved the parser/lint mismatch for wave-02-1774258651940.",
+    "typed config loading, authored-wave parsing, and dark-factory lint are aligned."
+  ],
+  "marker": "[wave-integration] state=ready-for-doc-closure claims=0 conflicts=0 blockers=0 detail=config, parser, and lint are aligned"
+}

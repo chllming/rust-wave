@@ -1,84 +1,107 @@
 # Terminal Surfaces And Dashboards
 
-If you want the end-to-end drafting and live-run workflow, start with [author-and-run-waves.md](./author-and-run-waves.md). This page stays focused on terminal-surface details.
+The active Rust rewrite uses the built-in Ratatui shell as its operator surface.
 
-Wave has separate concepts for execution substrate and operator surface.
+## Current Operator Surface
 
-The important detail is:
+- `wave` on an interactive terminal opens the built-in Ratatui shell.
+- The shell's right-side operator panel is the built-in dashboard surface for the repo.
+- `wave` on a non-interactive terminal falls back to a text summary that carries the same control-plane truth in a narrower form.
 
-- live runs use `tmux` sessions
-- terminal surfaces control how operators attach to those sessions
+This is the live operator surface in this repo. Older terminal-surface patterns are not part of the active contract unless this doc says otherwise.
 
-## The Three Terminal Surfaces
+## Right-Side Panel
 
-- `vscode`
-  The launcher writes temporary entries to `.vscode/terminals.json` so VS Code can attach to the tmux sessions.
-- `tmux`
-  The launcher uses tmux only and never touches `.vscode/terminals.json`.
-- `none`
-  Dry-run only. No live terminal surface is allowed in this mode.
+The right-side panel is the built-in operator dashboard. It is shipped inside the TUI, not as a separate app or a placeholder surface. The current TUI exposes four tabs:
 
-## What `vscode` Really Means
+- `Run`
+  Active wave, run id, elapsed time, proof counts, and declared proof artifacts.
+- `Agents`
+  Per-agent state, marker completeness, and deliverables.
+- `Queue`
+  Ready waves, blockers, dependency-driven queue truth, and wave readiness.
+- `Control`
+  Rerun intents, replay/proof status, and the available keybindings.
 
-`vscode` is not a second process host. It is a convenience attachment surface.
+The `Queue` view is the operator planning surface. It reflects the same control-plane truth used by `wave control status --json`, including:
 
-The actual live sessions still run in tmux. The VS Code terminal registry just exposes stable attach commands for those tmux sessions.
+- wave readiness
+- blocker state
+- dependency-driven ordering
+- whether a wave is waiting on upstream work or is ready to claim
 
-Use `vscode` when:
+The panel should keep consuming that same queue truth. The UI may change, but it should not invent a second source of status state.
+When multiple waves are active, the `Run`, `Agents`, and `Control` tabs follow the currently selected wave instead of whichever run happens to appear first in the snapshot.
 
-- your main operator flow is inside VS Code
-- you want one-click attach behavior for agent sessions and dashboards
-- touching `.vscode/terminals.json` is acceptable in the repo
+## Keybindings
 
-## What `tmux` Really Means
+These are the live actions currently shipped in the TUI:
 
-`tmux` is the cleanest fully terminal-native operator surface.
+- `Tab` / `Shift+Tab`
+  Cycle the right-side tabs.
+- `j` / `k`
+  Move the selected wave.
+- `r`
+  Request a rerun for the selected wave.
+- `c`
+  Clear the selected wave's rerun intent.
+- `q`
+  Quit the shell.
 
-Use `tmux` when:
+In narrow terminals, the shell keeps the same data model but collapses the surface into the fallback text summary rather than trying to render a broken split layout. That fallback is live behavior, not a planned one.
+The fallback keeps the repo's operator truth visible by rendering condensed `Run`, `Agents`, `Queue`, and `Control` sections from the same snapshot used by the wide panel, but it does not pretend the right-side dashboard fits when there is no space for it.
 
-- you are on a remote shell or devbox
-- you want zero VS Code coupling
-- you want a headless or low-friction terminal operator workflow
-- the repo should never be mutated with temporary VS Code terminal entries
+## Live Actions
 
-## Dashboard Behavior
+The current TUI actions that actually ship are:
 
-By default the launcher can start per-wave dashboard sessions in tmux.
+- tab switching with `Tab` and `Shift+Tab`
+- wave selection movement with `j` and `k`
+- rerun-intent creation with `r`
+- rerun-intent clearing with `c`
+- quitting with `q`
 
-When `--terminal-surface vscode` is active, Wave also maintains a stable current-wave dashboard terminal entry instead of creating a new wave-numbered dashboard attach target for every wave transition.
+Any other dashboard interactions should be treated as planned follow-on work until the implementation lands. In particular, anything beyond tab switching, wave movement, rerun-intent creation, rerun-intent clearing, and quit is not yet part of the shipped TUI contract.
 
-Important flags:
+The right-side panel is therefore a shipped dashboard, but only these actions are live today:
 
-- `--no-dashboard`
-  Disable the per-wave tmux dashboard session.
-- `--cleanup-sessions`
-  Kill lane tmux sessions after each wave. This is the default.
-- `--keep-sessions`
-  Preserve tmux sessions after the wave for inspection.
-- `--keep-terminals`
-  Keep temporary VS Code terminal entries instead of cleaning them up.
+- tab cycling with `Tab` and `Shift+Tab`
+- wave movement with `j` and `k`
+- rerun-intent creation with `r`
+- rerun-intent clearing with `c`
+- quitting with `q`
 
-## Best Practices
+## State Sources
 
-- Use `vscode` for local interactive operator work when the temporary terminal registry is useful.
-- Use `tmux` for remote, CI-like, or editor-independent operation.
-- Use `none` only with `--dry-run`.
-- Pair `--keep-sessions` with incident review or deep debugging, not as a default steady-state mode.
-- Pair `--no-dashboard` with scripted dry-runs or when the board and summaries are sufficient.
+The shell is backed by the same repo-local state as the CLI:
 
-## Suggested Defaults
+- `.wave/state/build/specs/`
+- `.wave/state/runs/`
+- `.wave/state/control/reruns/`
+- `.wave/traces/runs/`
 
-- Local development:
-  `vscode`
-- Remote shell or devbox:
-  `tmux`
-- CI validation:
-  `none` with `--dry-run`
+That means the TUI, `wave control ...`, and `wave trace ...` are all reading the same recorded operator state instead of maintaining a separate dashboard substrate.
 
-## Example Commands
+The planning-status surface is therefore control-plane first. Any future TUI dependency should read from the same status model rather than recomputing readiness, blockers, or queue order locally in the UI layer.
+
+## Current Non-Goals
+
+These older surfaces are not the live operator contract in the Rust rewrite:
+
+- tmux-managed per-wave dashboards
+- `.vscode/terminals.json` integration
+- lane-scoped terminal-surface flags
+
+Planned additions may extend the right-side panel, but they should stay documented as planned until the runtime supports them.
+
+If those come back later, they should be treated as new runtime work rather than assumed from the package-era docs.
+
+## Suggested Validation Path
 
 ```bash
-pnpm exec wave launch --lane main --start-wave 2 --end-wave 2 --terminal-surface vscode
-pnpm exec wave launch --lane main --start-wave 2 --end-wave 2 --terminal-surface tmux --keep-sessions
-pnpm exec wave launch --lane main --start-wave 2 --end-wave 2 --dry-run --no-dashboard --terminal-surface none
+cargo run -p wave-cli --
+cargo run -p wave-cli -- control status --json
+cargo run -p wave-cli -- control show --wave 0 --json
 ```
+
+For planning-only bootstrap work, validate the queue/status path first. If those commands disagree, the UI docs should be treated as stale until the control-plane model is fixed.

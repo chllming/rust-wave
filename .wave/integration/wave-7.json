@@ -1,0 +1,59 @@
+{
+  "wave_id": 7,
+  "slug": "autonomous-queue",
+  "agent_id": "A8",
+  "role": "integration-steward",
+  "generated_at": "2026-03-23T00:00:00Z",
+  "state": "ready-for-doc-closure",
+  "counts": {
+    "claims": 0,
+    "conflicts": 0,
+    "blockers": 0
+  },
+  "evidence": {
+    "verification": [
+      {
+        "file": "README.md",
+        "ok": true,
+        "detail": "Wave autonomous is listed as working and Queue is documented as a live planning/status surface."
+      },
+      {
+        "file": "docs/implementation/rust-codex-refactor.md",
+        "ok": true,
+        "detail": "Queue and control status are projections from one control-plane model, and autonomous queueing is live repo-local."
+      },
+      {
+        "file": "docs/guides/terminal-surfaces.md",
+        "ok": true,
+        "detail": "The TUI queue view must reflect the same queue truth as wave control status --json."
+      },
+      {
+        "file": "docs/plans/current-state.md",
+        "ok": true,
+        "detail": "Autonomous queueing and direct queue selection are documented as live repo-local behavior."
+      },
+      {
+        "file": "docs/plans/component-cutover-matrix.md",
+        "ok": true,
+        "detail": "autonomous-wave-queue and dependency-aware-scheduler are marked repo-landed."
+      },
+      {
+        "file": "waves/07-autonomous-queue.md",
+        "ok": true,
+        "detail": "Wave 7 assigns A8 only the integration files and requires the ready-for-doc-closure marker."
+      }
+    ]
+  },
+  "open_claims": [],
+  "conflicts": [],
+  "blockers": [],
+  "deploy_risks": [
+    "repo-local only; no live host mutation."
+  ],
+  "doc_drift": [],
+  "notes": [
+    "Queue selection, dependency gating, and operator projections are aligned on authoritative control-plane state.",
+    "No integration mismatch remains inside the owned closure slice."
+  ],
+  "marker": "[wave-integration] state=ready-for-doc-closure claims=0 conflicts=0 blockers=0 detail=queue, scheduler, and operator projections agree on one authoritative state"
+}

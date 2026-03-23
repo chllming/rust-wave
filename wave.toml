@@ -1,15 +1,25 @@
+# Workspace-local project configuration for the bootstrap slice.
+# Keep runtime state rooted under `.wave/` so the repo stays self-contained.
+# The launcher reads these paths as typed config; it does not infer or rewrite them.
 version = 1
 project_name = "Codex Wave Mode"
 default_lane = "main"
 default_mode = "dark-factory"
 waves_dir = "waves"
+# Project-scoped Codex home for launcher auth, sqlite state, and session logs.
+# This must stay repo-local so launches do not mutate the operator's global Codex home.
 project_codex_home = ".wave/codex"
+# Run-state, control intents, and traces stay under the same repo-local root.
 state_dir = ".wave/state"
+state_runs_dir = ".wave/state/runs"
+state_control_dir = ".wave/state/control"
 trace_dir = ".wave/traces"
+trace_runs_dir = ".wave/traces/runs"
 codex_vendor_dir = "third_party/codex-rs"
 reference_wave_repo_dir = "third_party/agent-wave-orchestrator"
 
 [dark_factory]
+# Dark-factory mode stays fail-closed on validation, rollback, proof, and closure.
 require_validation = true
 require_rollback = true
 require_proof = true

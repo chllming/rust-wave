@@ -1,0 +1,43 @@
+{
+  "id": "repo-rust-control-plane",
+  "title": "Repo Rust Control Plane",
+  "description": "Repository-specific guidance for Wave state reducers, queue/read-model projections, closure coverage, and event-shaped status surfaces.",
+  "activation": {
+    "when": "Attach when work changes planning status, queueing, traceable state, or operator-facing control-plane projections.",
+    "roles": [
+      "implementation",
+      "integration",
+      "cont-qa"
+    ],
+    "runtimes": [
+      "codex"
+    ],
+    "deployKinds": []
+  },
+  "termination": "Stop when authoritative control-plane state is explicit, serializable, and reflected consistently across CLI and TUI surfaces.",
+  "permissions": {
+    "network": [],
+    "shell": [
+      "cargo",
+      "rustfmt"
+    ],
+    "mcpServers": []
+  },
+  "trust": {
+    "tier": "repo-owned"
+  },
+  "evalCases": [
+    {
+      "id": "implementation-codex-control-plane",
+      "role": "implementation",
+      "runtime": "codex",
+      "expectActive": true
+    },
+    {
+      "id": "documentation-codex-control-plane",
+      "role": "documentation",
+      "runtime": "codex",
+      "expectActive": false
+    }
+  ]
+}

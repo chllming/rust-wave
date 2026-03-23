@@ -6,3 +6,10 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+serde.workspace = true
+wave-config.workspace = true
+wave-control-plane.workspace = true
+wave-dark-factory.workspace = true
+wave-runtime.workspace = true
+wave-spec.workspace = true
+wave-trace.workspace = true

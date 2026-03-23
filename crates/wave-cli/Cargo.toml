@@ -3,6 +3,8 @@ name = "wave-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
+default-run = "wave"
 
 [[bin]]
 name = "wave"
@@ -13,7 +15,11 @@ anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+wave-app-server.workspace = true
 wave-config.workspace = true
 wave-control-plane.workspace = true
 wave-dark-factory.workspace = true
+wave-runtime.workspace = true
 wave-spec.workspace = true
+wave-trace.workspace = true
+wave-tui.workspace = true

@@ -6,3 +6,10 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+wave-app-server.workspace = true
+wave-config.workspace = true
+wave-control-plane.workspace = true
+wave-runtime.workspace = true
+wave-trace.workspace = true

@@ -1,0 +1,43 @@
+{
+  "id": "repo-codex-orchestrator",
+  "title": "Repo Codex Orchestrator",
+  "description": "Repository-specific guidance for treating Codex OSS as Wave's operator shell, launcher runtime, and control-plane client.",
+  "activation": {
+    "when": "Attach when work changes the Codex-backed launcher, project-scoped Codex home, app-server integration, or orchestration command flow.",
+    "roles": [
+      "implementation",
+      "integration",
+      "cont-qa",
+      "documentation"
+    ],
+    "runtimes": [
+      "codex"
+    ],
+    "deployKinds": []
+  },
+  "termination": "Stop when the Codex-specific orchestration behavior, state roots, and control-plane actions are explicit and testable.",
+  "permissions": {
+    "network": [],
+    "shell": [
+      "cargo"
+    ],
+    "mcpServers": []
+  },
+  "trust": {
+    "tier": "repo-owned"
+  },
+  "evalCases": [
+    {
+      "id": "implementation-codex-orchestrator",
+      "role": "implementation",
+      "runtime": "codex",
+      "expectActive": true
+    },
+    {
+      "id": "implementation-claude-orchestrator",
+      "role": "implementation",
+      "runtime": "claude",
+      "expectActive": false
+    }
+  ]
+}

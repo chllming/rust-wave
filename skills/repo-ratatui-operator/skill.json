@@ -1,0 +1,42 @@
+{
+  "id": "repo-ratatui-operator",
+  "title": "Repo Ratatui Operator",
+  "description": "Repository-specific guidance for the Wave operator TUI, right-side status panel, and terminal-first dashboard ergonomics.",
+  "activation": {
+    "when": "Attach when implementation work changes the Wave TUI, side-panel layout, terminal widgets, or operator interaction model.",
+    "roles": [
+      "implementation",
+      "integration",
+      "cont-qa"
+    ],
+    "runtimes": [
+      "codex"
+    ],
+    "deployKinds": []
+  },
+  "termination": "Stop when the TUI slice has stable layout ownership, explicit narrow-terminal behavior, and authoritative data bindings.",
+  "permissions": {
+    "network": [],
+    "shell": [
+      "cargo"
+    ],
+    "mcpServers": []
+  },
+  "trust": {
+    "tier": "repo-owned"
+  },
+  "evalCases": [
+    {
+      "id": "implementation-codex-ratatui",
+      "role": "implementation",
+      "runtime": "codex",
+      "expectActive": true
+    },
+    {
+      "id": "research-codex-ratatui",
+      "role": "research",
+      "runtime": "codex",
+      "expectActive": false
+    }
+  ]
+}

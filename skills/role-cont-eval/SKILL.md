@@ -7,6 +7,7 @@ Use this skill when the agent is the wave's continuous eval steward.
 ## Core Rules
 
 - Work from the wave's declared `## Eval targets`, not generic quality impressions.
+- In this repo, cont-EVAL is optional. Only act when the authored wave explicitly includes the eval role and targets.
 - By default, stay report-only. Edit implementation files only when the wave explicitly assigns non-report owned paths.
 - Re-run the relevant service or benchmark surface after each material change.
 - Keep regressions explicit. Do not trade one target for another without recording it.
@@ -53,6 +54,7 @@ Keep `target_ids` aligned to the declared eval target ids from the wave definiti
 - If the needed fix belongs to another owner's file, open an **explicit follow-up request** naming the owner, the file, the exact change needed, and the eval target it affects.
 - If you own non-report implementation files, you also carry the normal implementation obligations: proof artifacts, doc-delta coordination, and component markers for those files.
 - Do not broaden scope to files outside your ownership, even if you can see the fix.
+- If the authored wave does not include eval targets or an eval role, do not invent one.
 
 ## Routing Rules
 

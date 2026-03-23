@@ -1,0 +1,214 @@
+{
+  "schemaVersion": 1,
+  "packageName": "@chllming/wave-orchestration",
+  "releases": [
+    {
+      "version": "0.6.3",
+      "date": "2026-03-22",
+      "summary": "Runtime npmjs update notices plus a one-command self-update flow for downstream repos.",
+      "features": [
+        "Top-level runtime entrypoints now perform a best-effort npmjs version check, cache the result under `.wave/package-update-check.json`, and emit a non-blocking stderr notice when a newer `@chllming/wave-orchestration` release is available.",
+        "New `wave self-update` detects the workspace package manager, updates the package dependency to the latest published release, prints the changelog delta since the recorded install, and then runs `wave upgrade`.",
+        "Autonomous and ad-hoc flows now suppress nested update notices so operators see at most one banner per top-level run, while structured stdout such as `wave adhoc run --json` remains parseable."
+      ],
+      "manualSteps": [
+        "No migration is required. If you prefer not to check npmjs at runtime on a workstation, set `WAVE_SKIP_UPDATE_CHECK=1` in that shell environment.",
+        "After upgrading, try `pnpm exec wave self-update` once in an adopted repo to confirm the workspace package manager and install-state workflow behave the way you expect."
+      ],
+      "breaking": false
+    },
+    {
+      "version": "0.6.2",
+      "date": "2026-03-22",
+      "summary": "Runtime preview visibility, dashboard/operator UX fixes, dry-run cleanup, and safer shared-component retries.",
+      "features": [
+        "Claude runtime config now exposes first-class `claude.effort`, and runtime previews now include structured `limits` metadata for known attempt and turn ceilings.",
+        "Codex previews and docs now make turn-limit visibility explicit: Wave records when it emitted no Codex turn-limit flag and warns that any effective ceiling may come from the selected Codex profile or upstream runtime.",
+        "The dashboard surface now distinguishes done, active, pending, and failed counts, keeps a stable `Current Wave Dashboard` terminal target, and adds simple TTY color cues for faster scanning.",
+        "Dry-run executor preview directories are pruned when wave agent sets shrink, so stale overlay folders no longer linger under `.tmp/.../dry-run/executors/`.",
+        "Shared promoted-component retries now preserve already-landed owner slices and relaunch only the sibling owners still required for closure proof."
+      ],
+      "manualSteps": [
+        "After upgrading, rerun `pnpm exec wave doctor` and `pnpm exec wave launch --lane main --dry-run --no-dashboard` to inspect the new preview `limits` metadata and confirm your repo runtime config still resolves as expected.",
+        "If you relied on a local Claude wrapper only to inject `--effort`, move that setting into `wave.config.json` or the agent `### Executor` block and retire the wrapper when convenient.",
+        "If you document Codex turn ceilings in repo-local guidance, update that guidance to reflect that Wave now reports Codex ceiling visibility as opaque unless the limit is surfaced by the selected Codex profile or runtime."
+      ],
+      "breaking": false
+    },
+    {
+      "version": "0.6.1",
+      "date": "2026-03-22",
+      "summary": "Patch release that aligns the published package with merged main and refreshed 0.6.1 release docs.",
+      "features": [
+        "The package version and release metadata now advertise `0.6.1` consistently across `package.json`, the shipped README, the changelog, and the release manifest.",
+        "Current-surface docs such as runtime configuration, sample waves, eval guidance, migration notes, and npm publishing instructions now point at the `0.6.1` release instead of the earlier `0.6.0` tag.",
+        "This patch release carries forward the `0.6.0` runtime behavior, including the workspace-scoped tmux resource isolation fix that unblocked publish-time CI."
+      ],
+      "manualSteps": [
+        "After upgrading, rerun `pnpm exec wave doctor` and `pnpm exec wave launch --lane main --dry-run --no-dashboard` if you want to verify your repo against the same `0.6.1` package surface documented in this release.",
+        "If you pinned package docs or release references to `0.6.0`, update them to `0.6.1` so your operator guidance matches the published package tag."
+      ],
+      "breaking": false
+    },
+    {
+      "version": "0.6.0",
+      "date": "2026-03-22",
+      "summary": "Closure-role split, benchmark-governed cont-EVAL, security review, ad-hoc runs, and expanded skills and docs.",
+      "features": [
+        "The closure model now treats `cont-EVAL` (`E0`) as an optional first-class eval stage before integration and keeps `cont-QA` (`A0`) as the final release verdict owner, with dedicated validation and report requirements for each role.",
+        "Wave authoring now includes a benchmark catalog under `docs/evals/benchmark-catalog.json`, wave-level `## Eval targets`, and planner, launcher, and validation support for delegated versus pinned eval contracts.",
+        "Optional report-only security review now has its own role prompt, validation path, `[wave-security]` marker, security summaries, and closure-stage sequencing.",
+        "Operators can now run transient ad-hoc work through `wave adhoc plan|run|show|promote`, with generated specs, launcher-compatible markdown, isolated runtime state, and promotion back into numbered roadmap artifacts.",
+        "The starter docs and skills surface now ship richer role, runtime, deploy-kind, provider, and proof-first guidance across the package-owned `docs/` and `skills/` trees."
+      ],
+      "manualSteps": [
+        "After upgrading, update any repo-owned `evaluator` role references to the new `cont-QA` plus optional `cont-EVAL` split before running live waves.",
+        "If a wave uses `cont-EVAL`, declare `## Eval targets` at the wave level and keep benchmark ids inside `docs/evals/benchmark-catalog.json`.",
+        "Run `pnpm exec wave doctor` and `pnpm exec wave launch --lane main --dry-run --no-dashboard` after upgrading so the stricter closure, skill, and security validation paths can fail fast before live execution."
+      ],
+      "breaking": false
+    },
+    {
+      "version": "0.5.4",
+      "date": "2026-03-22",
+      "summary": "Planner foundation, cross-runtime skills, and clearer docs and reconcile output.",
+      "features": [
+        "The planner foundation now ships with `.wave/project-profile.json`, `wave project setup|show`, and `wave draft`, which writes both structured JSON specs and launcher-compatible wave markdown.",
+        "Canonical repo-owned skill bundles now live under `skills/`, with attachment by base, role, runtime, deploy kind, and explicit per-agent `### Skills`, then projection into Codex, Claude Code, OpenCode, and local executor overlays.",
+        "The docs surface now includes a docs index plus focused concept, guide, and reference pages for waves, planner workflow, operating modes, Context7 vs skills, terminal surfaces, and runtime-agnostic orchestration.",
+        "Reconcile output now explains why incomplete waves cannot be reconstructed, making `wave launch --reconcile-status` failures easier to interpret."
+      ],
+      "manualSteps": [
+        "After upgrading, run `pnpm exec wave project setup` once so the repo has an explicit project profile with default lane, oversight mode, terminal surface, and deploy-environment memory.",
+        "Review `wave.config.json` `skills` mappings and the seeded `skills/` bundles before relying on runtime-specific or deploy-specific skill attachment.",
+        "Dry-run at least one generated or existing wave with `pnpm exec wave launch --lane main --dry-run --no-dashboard` to inspect the new skill overlay artifacts and launch previews."
+      ],
+      "breaking": false
+    },
+    {
+      "version": "0.5.3",
+      "date": "2026-03-22",
+      "summary": "Closure-sweep launch ordering fix for implementation-first wave execution.",
+      "features": [
+        "The launcher now starts only implementation agents in the initial wave pass when implementation work remains, deferring integration, documentation, and cont-qa roles until closure sweep order.",
+        "Wave waiting, dashboard progress refresh, and human-feedback monitoring now scope to the runs launched in the current pass so deferred closure agents no longer create false pending or missing-status failures.",
+        "Regression coverage now exercises both mixed implementation/closure waves and closure-only retry waves directly."
+      ],
+      "manualSteps": [
+        "After upgrading, rerun `pnpm exec wave launch --lane main --dry-run --no-dashboard` on active lanes to confirm only implementation agents appear in the initial pass.",
+        "If a lane is mid-run, relaunch from the upgraded package so closure agents pick up the corrected launch ordering and wait behavior."
+      ],
+      "breaking": false
+    },
+    {
+      "version": "0.5.2",
+      "date": "2026-03-22",
+      "summary": "Closure-marker and deliverable-ownership hardening for wave exit validation.",
+      "features": [
+        "Structured wave markers now only count when emitted as real standalone signals, not when they appear inside fenced examples or prose snippets.",
+        "`### Deliverables` now requires repo-relative file outputs that stay within the agent's declared file ownership before implementation closure can pass.",
+        "Regression coverage now exercises the fenced-marker false-positive path and deliverable ownership violations directly."
+      ],
+      "manualSteps": [
+        "If a wave uses `### Deliverables`, rerun `pnpm exec wave launch --lane main --dry-run --no-dashboard` after upgrading and keep every deliverable inside that agent's `File ownership` block.",
+        "Do not rely on example `[wave-*]` snippets in agent output; only emitted standalone markers now count toward closure."
+      ],
+      "breaking": false
+    },
+    {
+      "version": "0.5.1",
+      "date": "2026-03-22",
+      "summary": "Phase 4 fix release plus npmjs trusted-publishing bootstrap support.",
+      "features": [
+        "Final lane completion now stays blocked on unresolved human feedback and escalation tickets from completed waves, matching the intended Phase 4 barrier behavior.",
+        "Hermetic trace fixtures now rewrite seeded per-agent executor blocks so local replay coverage cannot accidentally launch live Codex, Claude Code, or OpenCode sessions.",
+        "A dedicated npmjs publish workflow now exists alongside the GitHub Packages workflow, with `package.json` publish metadata updated so each workflow can target its own registry cleanly.",
+        "Install and maintainer docs now distinguish the current GitHub Packages path from the future zero-token npmjs path and document trusted-publishing bootstrap."
+      ],
+      "manualSteps": [
+        "Push `main` and tag `v0.5.1` before publishing, so the npm tarball matches the tagged source exactly.",
+        "For the first npmjs release, authenticate locally and run `npm publish --access public --registry=https://registry.npmjs.org` from the `0.5.1` checkout.",
+        "After the first npmjs release exists, configure npm trusted publishing for `chllming / wave-orchestration / publish-npm.yml` so later tagged releases no longer need manual npm auth."
+      ],
+      "breaking": false
+    },
+    {
+      "version": "0.5.0",
+      "date": "2026-03-22",
+      "summary": "Phase 4 helper assignment routing, cross-lane dependency workflows, and publish-ready package metadata.",
+      "features": [
+        "Capability-targeted requests now become explicit helper assignments with deterministic assignee selection, assignment snapshots, ledger/task coverage, inbox visibility, and closure barriers.",
+        "Typed cross-lane dependency workflows now have `wave dep` operator commands, per-wave inbound/outbound dependency projections, dependency-aware gating, and replay-visible dependency state.",
+        "Phase 3 replay acceptance was tightened around the runtime-orchestration layer with stored outcome snapshots, launcher-generated local trace fixtures, and stronger replay comparison coverage.",
+        "The package now carries explicit `repository`, `homepage`, and `bugs` metadata for cleaner GitHub Packages linking."
+      ],
+      "manualSteps": [
+        "After upgrading, dry-run the target lane with `pnpm exec wave launch --lane main --dry-run --no-dashboard` to inspect helper-assignment and dependency projections before running real executors.",
+        "Use `pnpm exec wave dep show --lane <lane> --wave <n> --json` to inspect inbound and outbound dependency state when a lane appears blocked.",
+        "If you want helper-task routing beyond ownership defaults, add or refine `### Capabilities` blocks in your wave files and `capabilityRouting.preferredAgents` in `wave.config.json`."
+      ],
+      "breaking": false
+    },
+    {
+      "version": "0.4.0",
+      "date": "2026-03-21",
+      "summary": "Runtime surface upgrade plus hermetic traces for Codex, Claude Code, and OpenCode.",
+      "features": [
+        "Expanded Codex `exec` support for model, profile, inline config, search, images, extra directories, JSON mode, and ephemeral sessions, alongside Claude settings overlay merging and OpenCode merged config overlays plus multi-file attachments.",
+        "Dry-run materialization of prompts, merged runtime overlays, and executor launch previews for all supported real runtimes.",
+        "Dedicated runtime configuration reference docs under `docs/reference/runtime-config/`, installed by `wave init` for config/default/profile/lane/agent authoring.",
+        "Hermetic `traceVersion: 2` trace bundles with copied launched-agent artifacts, cumulative quality metrics, hash validation, and an internal read-only replay validator.",
+        "Retry and coordination hardening for policy-safe fallback blocking, clarification-follow-up matching, and artifact-linked inbox visibility."
+      ],
+      "manualSteps": [
+        "Review any per-agent `### Executor` blocks that want the new runtime fields before cutting real waves on the upgraded package.",
+        "Run `pnpm exec wave launch --lane main --dry-run --no-dashboard` after upgrading to confirm prompts and executor overlays materialize as expected.",
+        "Use the docs under `docs/reference/runtime-config/` as the canonical reference when migrating runtime defaults, profiles, or per-agent executor blocks.",
+        "Treat internal trace replay as a publish gate for `0.4.0`, but keep it internal-only until a later operator-facing replay surface is designed."
+      ],
+      "breaking": false
+    },
+    {
+      "version": "0.1.0",
+      "date": "2026-03-21",
+      "summary": "Generic wave orchestrator runtime with Context7 and multi-executor support.",
+      "features": [
+        "Generic wave parsing, validation, dashboards, closure sweep, and human feedback queue.",
+        "Context7 bundle resolution, prefetch, and prompt injection.",
+        "Headless executors for Codex, Claude Code, OpenCode, and the local smoke executor."
+      ],
+      "manualSteps": [],
+      "breaking": false
+    },
+    {
+      "version": "0.2.0",
+      "date": "2026-03-21",
+      "summary": "Package-first install and non-destructive upgrade workflow.",
+      "features": [
+        "Workspace-root aware runtime so the orchestrator can run from an installed package against any target repo.",
+        "New `wave init`, `wave upgrade`, `wave changelog`, and `wave doctor` commands.",
+        "Install-state tracking and upgrade-history reports under `.wave/` without overwriting repo-owned plans, waves, or config."
+      ],
+      "manualSteps": [
+        "For fresh repos, install the package and run `pnpm exec wave init`.",
+        "For repos that already have Wave config or plans, run `pnpm exec wave init --adopt-existing` once so upgrades stay non-destructive."
+      ],
+      "breaking": false
+    },
+    {
+      "version": "0.3.0",
+      "date": "2026-03-21",
+      "summary": "Phase 1 and 2 roadmap runtime: typed coordination, integration gating, and runtime planning.",
+      "features": [
+        "Canonical coordination log materialization, generated board projection, compiled shared summary, per-agent inboxes, and a durable wave ledger.",
+        "Planning-time executor profiles, lane runtime policy, hard runtime-mix enforcement, and retry fallback reassignment recorded into ledger, integration, and traces.",
+        "Orchestrator-first clarification triage, explicit integration summaries, and staged closure that runs integration before documentation and cont-qa closure."
+      ],
+      "manualSteps": [
+        "Run `pnpm exec wave init --adopt-existing` in older repos if they do not yet have the newer role prompts and docs surfaces.",
+        "Review `wave.config.json` lane runtime policy before relying on automatic fallback behavior or strict runtime-mix limits."
+      ],
+      "breaking": false
+    }
+  ]
+}

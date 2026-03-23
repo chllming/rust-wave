@@ -4,6 +4,7 @@
 
 ## Core Rules
 
+- Re-read your authored-wave agent section before major work. `### Deliverables`, `### File ownership`, `### Skills`, and `### Final markers` are binding.
 - Re-read the compiled shared summary, inbox, and board projection before major decisions and before final output.
 - Treat file ownership, exit contracts, and structured markers as hard requirements.
 - Post coordination records for meaningful progress, blockers, decisions, and handoffs.
@@ -11,6 +12,13 @@
 - Do not infer closure from intent alone. Closure requires proof artifacts and consistent shared state.
 - Silence is not evidence. If a deliverable is not mentioned in landed artifacts, it is not done.
 - When two sources conflict, prefer the one backed by landed code or durable proof over the one backed by prose.
+
+## Authored-Wave Expectations
+
+- Active waves in this repo require closure agents `A0`, `A8`, and `A9`.
+- Implementation agents are expected to finish with `[wave-proof]`, `[wave-doc-delta]`, and `[wave-component]` unless the wave says otherwise.
+- Closure roles own only their closure artifacts and shared-plan surfaces. They do not silently absorb implementation work.
+- Context7 defaults and skill ids in the authored wave are part of the operating contract, not optional hints.
 
 ## Coordination Protocol
 
@@ -88,6 +96,7 @@ Emit markers exactly as shown. Parsers depend on the format.
 - Every marker must appear on a single line.
 - The `detail` field is free text but should be concise (under 120 characters).
 - Only the role that owns the marker type should emit it. Do not emit markers for other roles.
+- For `[wave-doc-closure]`, use `closed` when documentation updates are complete, `no-change` when nothing changed, and `delta` only when closure remains incomplete and the wave should fail.
 
 Marker ownership:
 

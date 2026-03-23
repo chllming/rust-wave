@@ -1,0 +1,40 @@
+{
+  "id": "repo-wave-closure-markers",
+  "title": "Repo Wave Closure Markers",
+  "description": "Repository-specific guidance for final marker discipline, authored-wave closure agents, and plain-line proof contracts.",
+  "activation": {
+    "when": "Attach when the task must emit Wave proof, integration, documentation, or gate markers exactly as the authored wave requires.",
+    "roles": [
+      "implementation",
+      "integration",
+      "documentation",
+      "cont-qa",
+      "cont-eval"
+    ],
+    "runtimes": [],
+    "deployKinds": []
+  },
+  "termination": "Stop when the required final markers are present, correctly owned, and consistent with the landed outcome.",
+  "permissions": {
+    "network": [],
+    "shell": [],
+    "mcpServers": []
+  },
+  "trust": {
+    "tier": "repo-owned"
+  },
+  "evalCases": [
+    {
+      "id": "cont-qa-markers",
+      "role": "cont-qa",
+      "runtime": "codex",
+      "expectActive": true
+    },
+    {
+      "id": "implementation-markers",
+      "role": "implementation",
+      "runtime": "codex",
+      "expectActive": true
+    }
+  ]
+}

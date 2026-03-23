@@ -1,0 +1,124 @@
+{
+  "wave_id": 0,
+  "slug": "architecture-baseline",
+  "agent_id": "A8",
+  "role": "integration-steward",
+  "generated_at": "2026-03-23T09:21:58Z",
+  "run_state": {
+    "run_id": "wave-00-1774256739953",
+    "status": "running",
+    "wave_status": "active-run:running"
+  },
+  "state": "ready-for-doc-closure",
+  "counts": {
+    "claims": 0,
+    "conflicts": 0,
+    "blockers": 0
+  },
+  "evidence": {
+    "implementation_agents": [
+      {
+        "id": "A1",
+        "status": "succeeded",
+        "observed_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "summary": "Authored-wave schema and fail-closed lint coverage now include closure-agent skill enforcement, marker discipline, ownership checks, and prompt-section validation."
+      },
+      {
+        "id": "A2",
+        "status": "succeeded",
+        "observed_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "summary": "Typed planning-status and doctor/control projections still expose queue totals, blocker summaries, closure coverage, and skill-catalog health from one status model."
+      },
+      {
+        "id": "A3",
+        "status": "succeeded",
+        "observed_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "summary": "Repo guidance docs now describe the same authored-wave structure, closure-agent skill contract, and queue/status behavior enforced by the Rust CLI surfaces."
+      }
+    ],
+    "verification": [
+      {
+        "command": "cargo test -q -p wave-spec -p wave-dark-factory -p wave-control-plane -p wave-cli",
+        "ok": true,
+        "detail": "22 tests passed across the target crates."
+      },
+      {
+        "command": "cargo run -q -p wave-cli -- lint --json",
+        "ok": true,
+        "detail": "Returned []."
+      },
+      {
+        "command": "cargo run -q -p wave-cli -- doctor --json",
+        "ok": true,
+        "detail": "Reported ok=true, 10 waves / 60 agents, 0 lint findings, 10 waves with complete closure, 0 skill-catalog issues, and planning queue totals ready=0 blocked=9 active=1 completed=0."
+      },
+      {
+        "command": "cargo run -q -p wave-cli -- control status --json",
+        "ok": true,
+        "detail": "Matched the doctor status model, including queue totals, closure coverage, and skill-catalog health."
+      },
+      {
+        "command": "cargo run -q -p wave-cli -- control show --wave 0 --json",
+        "ok": true,
+        "detail": "Active rerun wave-00-1774256739953 is on A8 with proof completed_agents=3 total_agents=6 and replay ok with no issues."
+      }
+    ],
+    "queue_visibility": {
+      "summary": {
+        "total_waves": 10,
+        "ready_waves": 0,
+        "blocked_waves": 9,
+        "active_waves": 1,
+        "completed_waves": 0,
+        "total_agents": 60,
+        "implementation_agents": 30,
+        "closure_agents": 30,
+        "waves_with_complete_closure": 10,
+        "waves_missing_closure": 0,
+        "total_missing_closure_agents": 0,
+        "lint_error_waves": 0,
+        "skill_catalog_issue_count": 0
+      },
+      "wave_0": {
+        "blocked_by": [
+          "active-run:running"
+        ],
+        "ready": false,
+        "closure_complete": true,
+        "completed": false,
+        "last_run_status": "running",
+        "rerun_requested": true
+      },
+      "active_run": {
+        "run_id": "wave-00-1774256739953",
+        "current_agent_id": "A8",
+        "current_agent_title": "Integration Steward",
+        "completed_agents": 3,
+        "total_agents": 6
+      }
+    }
+  },
+  "open_claims": [],
+  "conflicts": [],
+  "blockers": [],
+  "deploy_risks": [],
+  "doc_drift": [],
+  "notes": [
+    "Recorded run wave-00-1774253463512 failed at A0 because [wave-gate] was missing; run wave-00-1774255193343 then completed successfully.",
+    "The closure-agent skill mismatch noted in .wave/reviews/wave-0-cont-qa.md is superseded by the current lint path and regression coverage for A0, A8, and A9.",
+    "Current rerun wave-00-1774256739953 exists to re-evaluate closure semantics and is now at the A8 integration step."
+  ],
+  "marker": "[wave-integration] state=ready-for-doc-closure claims=0 conflicts=0 blockers=0 detail=authored-wave schema skills and queue status align"
+}

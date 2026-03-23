@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
@@ -14,7 +14,9 @@ const REQUIRED_PROMPT_SECTIONS: [&str; 4] = [
     "Specific expectations",
     "File ownership (only touch these paths)",
 ];
+const CONTEXT7_NONE_BUNDLE: &str = "none";
 const FILE_OWNERSHIP_PROMPT_SECTION: &str = "File ownership (only touch these paths)";
+const SPECIFIC_EXPECTATIONS_PROMPT_SECTION: &str = "Specific expectations";
 
 const REQUIRED_CLOSURE_AGENT_IDS: [&str; 3] = ["A0", "A8", "A9"];
 
@@ -39,6 +41,12 @@ pub struct SkillCatalogIssue {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Context7CatalogIssue {
+    pub path: String,
+    pub message: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct SkillManifest {
     id: Option<String>,
@@ -53,8 +61,31 @@ struct SkillActivation {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Context7BundleCatalog {
-    bundles: HashMap<String, serde_json::Value>,
+    #[serde(default)]
+    version: Option<u32>,
+    #[serde(default)]
+    default_bundle: Option<String>,
+    #[serde(default)]
+    lane_defaults: BTreeMap<String, String>,
+    bundles: BTreeMap<String, Context7BundleSpec>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Context7BundleSpec {
+    description: String,
+    libraries: Vec<Context7LibrarySpec>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Context7LibrarySpec {
+    #[serde(default)]
+    library_id: Option<String>,
+    library_name: String,
+    query_hint: String,
 }
 
 pub fn lint_project(root: &Path, waves: &[WaveDocument]) -> Vec<LintFinding> {
@@ -89,6 +120,33 @@ pub fn lint_project(root: &Path, waves: &[WaveDocument]) -> Vec<LintFinding> {
             });
         }
 
+        if wave.metadata.slug.trim().is_empty() {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "wave-slug-required",
+                message: "wave front matter must declare a non-empty slug".to_string(),
+            });
+        }
+
+        if wave.metadata.title.trim().is_empty() {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "wave-title-required",
+                message: "wave front matter must declare a non-empty title".to_string(),
+            });
+        }
+
+        if !has_non_empty_items(&wave.metadata.owners) {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "wave-owners-required",
+                message: "wave front matter must declare at least one non-empty owner".to_string(),
+            });
+        }
+
         if wave
             .commit_message
             .as_deref()
@@ -120,6 +178,40 @@ pub fn lint_project(root: &Path, waves: &[WaveDocument]) -> Vec<LintFinding> {
                 rule: "deploy-environments-required",
                 message: "wave must declare at least one deploy environment".to_string(),
             });
+        } else {
+            let mut seen_environment_names = BTreeSet::new();
+            for environment in &wave.deploy_environments {
+                if environment.name.trim().is_empty() {
+                    findings.push(LintFinding {
+                        wave_id: wave.metadata.id,
+                        severity: FindingSeverity::Error,
+                        rule: "deploy-environment-name-required",
+                        message: "deploy environment name must not be empty".to_string(),
+                    });
+                } else if !seen_environment_names.insert(environment.name.trim().to_string()) {
+                    findings.push(LintFinding {
+                        wave_id: wave.metadata.id,
+                        severity: FindingSeverity::Error,
+                        rule: "deploy-environment-name-duplicate",
+                        message: format!(
+                            "wave declares deploy environment {} more than once",
+                            environment.name.trim()
+                        ),
+                    });
+                }
+
+                if environment.detail.trim().is_empty() {
+                    findings.push(LintFinding {
+                        wave_id: wave.metadata.id,
+                        severity: FindingSeverity::Error,
+                        rule: "deploy-environment-detail-required",
+                        message: format!(
+                            "deploy environment {} must declare a non-empty detail",
+                            environment.name.trim()
+                        ),
+                    });
+                }
+            }
         }
 
         let context7 = wave.context7_defaults.as_ref();
@@ -151,6 +243,22 @@ pub fn lint_project(root: &Path, waves: &[WaveDocument]) -> Vec<LintFinding> {
                 });
             }
 
+            if context7.bundle.trim() == CONTEXT7_NONE_BUNDLE {
+                findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "context7-default-bundle-weak",
+                    message: "wave Context7 defaults must not use the none bundle".to_string(),
+                });
+            }
+
+            lint_context7_query_strength(
+                wave.metadata.id,
+                "wave",
+                &context7.bundle,
+                context7.query.as_deref(),
+                &mut findings,
+            );
             lint_context7_bundle_id(
                 wave.metadata.id,
                 "wave",
@@ -178,6 +286,13 @@ pub fn lint_project(root: &Path, waves: &[WaveDocument]) -> Vec<LintFinding> {
                 rule: "dark-factory-validation",
                 message: "dark-factory wave is missing validation commands".to_string(),
             });
+        } else {
+            lint_machine_readable_command_list(
+                wave.metadata.id,
+                "validation",
+                &wave.metadata.validation,
+                &mut findings,
+            );
         }
 
         if wave.metadata.rollback.is_empty() {
@@ -187,6 +302,13 @@ pub fn lint_project(root: &Path, waves: &[WaveDocument]) -> Vec<LintFinding> {
                 rule: "dark-factory-rollback",
                 message: "dark-factory wave is missing rollback guidance".to_string(),
             });
+        } else {
+            lint_machine_readable_command_list(
+                wave.metadata.id,
+                "rollback",
+                &wave.metadata.rollback,
+                &mut findings,
+            );
         }
 
         if wave.metadata.proof.is_empty() {
@@ -195,6 +317,22 @@ pub fn lint_project(root: &Path, waves: &[WaveDocument]) -> Vec<LintFinding> {
                 severity: FindingSeverity::Error,
                 rule: "dark-factory-proof",
                 message: "dark-factory wave is missing proof artifacts".to_string(),
+            });
+        } else {
+            lint_machine_readable_command_list(
+                wave.metadata.id,
+                "proof",
+                &wave.metadata.proof,
+                &mut findings,
+            );
+        }
+
+        if wave.implementation_agents().next().is_none() {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "implementation-agent-required",
+                message: "wave must declare at least one implementation agent".to_string(),
             });
         }
 
@@ -263,6 +401,19 @@ pub fn validate_skill_catalog(root: &Path) -> Vec<SkillCatalogIssue> {
     load_skill_catalog(root).0
 }
 
+pub fn validate_context7_bundle_catalog(root: &Path) -> Vec<Context7CatalogIssue> {
+    match load_context7_bundle_catalog(root) {
+        Ok((issues, _)) => issues,
+        Err(message) => vec![Context7CatalogIssue {
+            path: root
+                .join("docs/context7/bundles.json")
+                .display()
+                .to_string(),
+            message,
+        }],
+    }
+}
+
 pub fn has_errors(findings: &[LintFinding]) -> bool {
     findings
         .iter()
@@ -325,7 +476,20 @@ fn lint_agent(
             message: format!("agent {} must declare file ownership", agent.id),
         });
     } else {
+        let mut seen_owned_paths = BTreeSet::new();
         for path in &agent.file_ownership {
+            let normalized = normalize_owned_path(path);
+            if !seen_owned_paths.insert(normalized.clone()) {
+                findings.push(LintFinding {
+                    wave_id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-file-ownership-duplicate",
+                    message: format!(
+                        "agent {} declares owned path {} more than once",
+                        agent.id, normalized
+                    ),
+                });
+            }
             owned_paths.push((agent.id.clone(), path.clone()));
         }
     }
@@ -387,7 +551,20 @@ fn lint_agent(
         }
     }
 
+    let mut seen_skill_ids = HashSet::new();
     for skill_id in &agent.skills {
+        if !seen_skill_ids.insert(skill_id.as_str()) {
+            findings.push(LintFinding {
+                wave_id,
+                severity: FindingSeverity::Error,
+                rule: "agent-skill-duplicate",
+                message: format!(
+                    "agent {} references skill {} more than once",
+                    agent.id, skill_id
+                ),
+            });
+        }
+
         if !known_skill_ids.contains(skill_id) {
             findings.push(LintFinding {
                 wave_id,
@@ -398,16 +575,29 @@ fn lint_agent(
         }
     }
 
-    if agent.is_closure_agent() {
-        return;
-    }
-
     if agent.skills.is_empty() {
         findings.push(LintFinding {
             wave_id,
             severity: FindingSeverity::Error,
             rule: "agent-skills-required",
-            message: format!("implementation agent {} must declare skills", agent.id),
+            message: format!("agent {} must declare skills", agent.id),
+        });
+    }
+
+    if agent.is_closure_agent() {
+        lint_closure_agent_contract(wave_id, agent, findings);
+        return;
+    }
+
+    if !agent.role_prompts.is_empty() {
+        findings.push(LintFinding {
+            wave_id,
+            severity: FindingSeverity::Error,
+            rule: "implementation-role-prompts-unexpected",
+            message: format!(
+                "implementation agent {} must not declare closure role prompts",
+                agent.id
+            ),
         });
     }
 
@@ -454,6 +644,34 @@ fn lint_agent(
                 agent.id
             ),
         });
+    } else {
+        let mut seen_deliverables = BTreeSet::new();
+        for deliverable in &agent.deliverables {
+            let normalized = normalize_owned_path(deliverable);
+            if !seen_deliverables.insert(normalized.clone()) {
+                findings.push(LintFinding {
+                    wave_id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-deliverable-duplicate",
+                    message: format!(
+                        "implementation agent {} declares deliverable {} more than once",
+                        agent.id, normalized
+                    ),
+                });
+            }
+
+            if !agent.owns_path(deliverable) {
+                findings.push(LintFinding {
+                    wave_id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-deliverable-owned-path-required",
+                    message: format!(
+                        "implementation agent {} declares deliverable {} outside its owned paths",
+                        agent.id, normalized
+                    ),
+                });
+            }
+        }
     }
 }
 
@@ -463,14 +681,6 @@ fn lint_role_prompts(
     agent: &WaveAgent,
     findings: &mut Vec<LintFinding>,
 ) {
-    let required_prompt = match agent.id.as_str() {
-        "A0" => Some("docs/agents/wave-cont-qa-role.md"),
-        "A8" => Some("docs/agents/wave-integration-role.md"),
-        "A9" => Some("docs/agents/wave-documentation-role.md"),
-        "E0" => Some("docs/agents/wave-cont-eval-role.md"),
-        _ => None,
-    };
-
     if agent.is_closure_agent() && agent.role_prompts.is_empty() {
         findings.push(LintFinding {
             wave_id,
@@ -480,7 +690,20 @@ fn lint_role_prompts(
         });
     }
 
-    if let Some(required_prompt) = required_prompt {
+    let expected_role_prompts = agent.expected_role_prompts();
+    if agent.is_closure_agent() && agent.role_prompts.len() != expected_role_prompts.len() {
+        findings.push(LintFinding {
+            wave_id,
+            severity: FindingSeverity::Error,
+            rule: "closure-role-prompts-exact",
+            message: format!(
+                "closure agent {} must declare exactly the expected role prompts",
+                agent.id
+            ),
+        });
+    }
+
+    for required_prompt in expected_role_prompts {
         if !agent
             .role_prompts
             .iter()
@@ -498,6 +721,25 @@ fn lint_role_prompts(
         }
     }
 
+    if agent.is_closure_agent() {
+        for role_prompt in &agent.role_prompts {
+            if !expected_role_prompts
+                .iter()
+                .any(|expected| expected == role_prompt)
+            {
+                findings.push(LintFinding {
+                    wave_id,
+                    severity: FindingSeverity::Error,
+                    rule: "closure-role-prompt-unexpected",
+                    message: format!(
+                        "closure agent {} must not declare unexpected role prompt {}",
+                        agent.id, role_prompt
+                    ),
+                });
+            }
+        }
+    }
+
     for role_prompt in &agent.role_prompts {
         let resolved = root.join(role_prompt);
         if !resolved.exists() {
@@ -512,6 +754,56 @@ fn lint_role_prompts(
                 ),
             });
         }
+    }
+}
+
+fn lint_closure_agent_contract(wave_id: u32, agent: &WaveAgent, findings: &mut Vec<LintFinding>) {
+    if !agent.components.is_empty() {
+        findings.push(LintFinding {
+            wave_id,
+            severity: FindingSeverity::Error,
+            rule: "closure-agent-components-unexpected",
+            message: format!(
+                "closure agent {} must not declare implementation components",
+                agent.id
+            ),
+        });
+    }
+
+    if !agent.capabilities.is_empty() {
+        findings.push(LintFinding {
+            wave_id,
+            severity: FindingSeverity::Error,
+            rule: "closure-agent-capabilities-unexpected",
+            message: format!(
+                "closure agent {} must not declare implementation capabilities",
+                agent.id
+            ),
+        });
+    }
+
+    if agent.exit_contract.is_some() {
+        findings.push(LintFinding {
+            wave_id,
+            severity: FindingSeverity::Error,
+            rule: "closure-agent-exit-contract-unexpected",
+            message: format!(
+                "closure agent {} must not declare an implementation exit contract",
+                agent.id
+            ),
+        });
+    }
+
+    if !agent.deliverables.is_empty() {
+        findings.push(LintFinding {
+            wave_id,
+            severity: FindingSeverity::Error,
+            rule: "closure-agent-deliverables-unexpected",
+            message: format!(
+                "closure agent {} must not declare implementation deliverables",
+                agent.id
+            ),
+        });
     }
 }
 
@@ -540,6 +832,18 @@ fn lint_context7(
         });
     }
 
+    if !agent.is_closure_agent() && context7.bundle.trim() == CONTEXT7_NONE_BUNDLE {
+        findings.push(LintFinding {
+            wave_id,
+            severity: FindingSeverity::Error,
+            rule: "agent-context7-bundle-weak",
+            message: format!(
+                "agent {} Context7 bundle must not be the none bundle",
+                agent.id
+            ),
+        });
+    }
+
     if context7.query.as_deref().unwrap_or("").trim().is_empty() {
         findings.push(LintFinding {
             wave_id,
@@ -549,6 +853,13 @@ fn lint_context7(
         });
     }
 
+    lint_context7_query_strength(
+        wave_id,
+        &format!("agent {}", agent.id),
+        &context7.bundle,
+        context7.query.as_deref(),
+        findings,
+    );
     lint_context7_bundle_id(
         wave_id,
         &format!("agent {}", agent.id),
@@ -567,6 +878,55 @@ fn lint_prompt(wave_id: u32, agent: &WaveAgent, findings: &mut Vec<LintFinding>)
             message: format!("agent {} must declare a prompt", agent.id),
         });
         return;
+    }
+
+    let prompt_contract = agent.prompt_contract();
+    let prompt_headings = prompt_contract
+        .sections
+        .iter()
+        .map(|section| section.heading.as_str())
+        .collect::<Vec<_>>();
+    if prompt_headings != REQUIRED_PROMPT_SECTIONS {
+        findings.push(LintFinding {
+            wave_id,
+            severity: FindingSeverity::Error,
+            rule: "agent-prompt-section-order-required",
+            message: format!(
+                "agent {} prompt must declare the required sections in order",
+                agent.id
+            ),
+        });
+    }
+
+    let mut seen_sections = HashSet::new();
+    for section in &prompt_contract.sections {
+        let section_key = section.heading.to_ascii_lowercase();
+        if !seen_sections.insert(section_key) {
+            findings.push(LintFinding {
+                wave_id,
+                severity: FindingSeverity::Error,
+                rule: "agent-prompt-section-duplicate",
+                message: format!(
+                    "agent {} prompt declares section {} more than once",
+                    agent.id, section.heading
+                ),
+            });
+        }
+
+        if !REQUIRED_PROMPT_SECTIONS
+            .iter()
+            .any(|required| section.heading.eq_ignore_ascii_case(required))
+        {
+            findings.push(LintFinding {
+                wave_id,
+                severity: FindingSeverity::Error,
+                rule: "agent-prompt-section-unexpected",
+                message: format!(
+                    "agent {} prompt declares unexpected section {}",
+                    agent.id, section.heading
+                ),
+            });
+        }
     }
 
     for section in REQUIRED_PROMPT_SECTIONS {
@@ -589,18 +949,33 @@ fn lint_prompt(wave_id: u32, agent: &WaveAgent, findings: &mut Vec<LintFinding>)
         lint_prompt_owned_paths(wave_id, agent, &prompt_owned_paths, findings);
     }
 
+    let specific_expectations = agent
+        .prompt_section_text(SPECIFIC_EXPECTATIONS_PROMPT_SECTION)
+        .unwrap_or_default();
     for expected_marker in agent.expected_final_markers() {
-        if !agent.prompt.contains(expected_marker) {
+        if !specific_expectations.contains(expected_marker) {
             findings.push(LintFinding {
                 wave_id,
                 severity: FindingSeverity::Error,
                 rule: "agent-prompt-final-marker-required",
                 message: format!(
-                    "agent {} prompt must mention final marker {}",
+                    "agent {} prompt must mention final marker {} inside Specific expectations",
                     agent.id, expected_marker
                 ),
             });
         }
+    }
+
+    if !has_plain_line_marker_instruction(&specific_expectations) {
+        findings.push(LintFinding {
+            wave_id,
+            severity: FindingSeverity::Error,
+            rule: "agent-prompt-final-marker-format-required",
+            message: format!(
+                "agent {} prompt must require final markers on plain lines or a plain last line",
+                agent.id
+            ),
+        });
     }
 }
 
@@ -612,6 +987,21 @@ fn lint_prompt_owned_paths(
 ) {
     let declared_paths = normalized_owned_path_set(&agent.file_ownership);
     let prompt_paths = normalized_owned_path_set(prompt_owned_paths);
+    let mut seen_prompt_paths = BTreeSet::new();
+    for prompt_path in prompt_owned_paths {
+        let normalized = normalize_owned_path(prompt_path);
+        if !seen_prompt_paths.insert(normalized.clone()) {
+            findings.push(LintFinding {
+                wave_id,
+                severity: FindingSeverity::Error,
+                rule: "agent-prompt-owned-path-duplicate",
+                message: format!(
+                    "agent {} prompt declares owned path {} more than once",
+                    agent.id, normalized
+                ),
+            });
+        }
+    }
 
     for missing_path in declared_paths.difference(&prompt_paths) {
         findings.push(LintFinding {
@@ -636,6 +1026,50 @@ fn lint_prompt_owned_paths(
             ),
         });
     }
+}
+
+fn has_plain_line_marker_instruction(section: &str) -> bool {
+    let section = section.to_ascii_lowercase();
+    section.contains("plain")
+        && (section.contains("last line") || section.contains("lines by themselves"))
+}
+
+fn lint_machine_readable_command_list(
+    wave_id: u32,
+    list_name: &str,
+    commands: &[String],
+    findings: &mut Vec<LintFinding>,
+) {
+    let mut seen_commands = BTreeSet::new();
+    for (index, command) in commands.iter().enumerate() {
+        let normalized = command.trim();
+        if normalized.is_empty() {
+            findings.push(LintFinding {
+                wave_id,
+                severity: FindingSeverity::Error,
+                rule: "dark-factory-command-empty",
+                message: format!("{list_name} entry {} must not be empty", index + 1),
+            });
+            continue;
+        }
+
+        if !seen_commands.insert(normalized.to_string()) {
+            findings.push(LintFinding {
+                wave_id,
+                severity: FindingSeverity::Error,
+                rule: "dark-factory-command-duplicate",
+                message: format!(
+                    "{list_name} entry {} is duplicated: {}",
+                    index + 1,
+                    normalized
+                ),
+            });
+        }
+    }
+}
+
+fn has_non_empty_items(items: &[String]) -> bool {
+    items.iter().any(|item| !item.trim().is_empty())
 }
 
 fn normalized_owned_path_set(paths: &[String]) -> BTreeSet<String> {
@@ -791,16 +1225,169 @@ fn discover_skill_ids(root: &Path) -> HashSet<String> {
 }
 
 fn discover_context7_bundle_ids(root: &Path) -> HashSet<String> {
-    load_context7_bundle_catalog(root).unwrap_or_default()
+    load_context7_bundle_catalog(root)
+        .map(|(_, ids)| ids)
+        .unwrap_or_default()
 }
 
-fn load_context7_bundle_catalog(root: &Path) -> Result<HashSet<String>, String> {
+fn load_context7_bundle_catalog(
+    root: &Path,
+) -> Result<(Vec<Context7CatalogIssue>, HashSet<String>), String> {
     let path = root.join("docs/context7/bundles.json");
     let raw = fs::read_to_string(&path)
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
     let catalog = serde_json::from_str::<Context7BundleCatalog>(&raw)
         .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
-    Ok(catalog.bundles.into_keys().collect())
+    let mut issues = Vec::new();
+    let mut ids = HashSet::new();
+
+    if catalog.bundles.is_empty() {
+        issues.push(Context7CatalogIssue {
+            path: path.display().to_string(),
+            message: "no Context7 bundles were discovered".to_string(),
+        });
+    }
+
+    if catalog.version != Some(1) {
+        issues.push(Context7CatalogIssue {
+            path: path.display().to_string(),
+            message: format!(
+                "Context7 bundle catalog must declare version 1, found {:?}",
+                catalog.version
+            ),
+        });
+    }
+
+    if let Some(default_bundle) = catalog.default_bundle.as_deref() {
+        let default_bundle = default_bundle.trim();
+        if default_bundle.is_empty() {
+            issues.push(Context7CatalogIssue {
+                path: path.display().to_string(),
+                message: "default Context7 bundle must not be empty".to_string(),
+            });
+        } else if default_bundle == CONTEXT7_NONE_BUNDLE {
+            issues.push(Context7CatalogIssue {
+                path: path.display().to_string(),
+                message: "default Context7 bundle must not be the none bundle".to_string(),
+            });
+        } else if !catalog.bundles.contains_key(default_bundle) {
+            issues.push(Context7CatalogIssue {
+                path: path.display().to_string(),
+                message: format!("default Context7 bundle {} is not declared", default_bundle),
+            });
+        }
+    }
+
+    for (lane, bundle) in &catalog.lane_defaults {
+        let bundle = bundle.trim();
+        if bundle.is_empty() {
+            issues.push(Context7CatalogIssue {
+                path: path.display().to_string(),
+                message: format!("lane default {} must not be empty", lane),
+            });
+            continue;
+        }
+
+        if bundle == CONTEXT7_NONE_BUNDLE {
+            issues.push(Context7CatalogIssue {
+                path: path.display().to_string(),
+                message: format!("lane default {} must not use the none bundle", lane),
+            });
+            continue;
+        }
+
+        if !catalog.bundles.contains_key(bundle) {
+            issues.push(Context7CatalogIssue {
+                path: path.display().to_string(),
+                message: format!(
+                    "lane default {} references unknown Context7 bundle {}",
+                    lane, bundle
+                ),
+            });
+        }
+    }
+
+    for (bundle_id, bundle_spec) in catalog.bundles {
+        let bundle_name = bundle_id.trim();
+        let bundle_path = format!("{}#{}", path.display(), bundle_name);
+        if bundle_name.is_empty() {
+            issues.push(Context7CatalogIssue {
+                path: bundle_path,
+                message: "Context7 bundle id must not be empty".to_string(),
+            });
+            continue;
+        }
+
+        if manifest_field(Some(bundle_spec.description.as_str())).is_none() {
+            issues.push(Context7CatalogIssue {
+                path: bundle_path.clone(),
+                message: format!("Context7 bundle {} must declare a description", bundle_name),
+            });
+        }
+
+        if bundle_name != "none" && bundle_spec.libraries.is_empty() {
+            issues.push(Context7CatalogIssue {
+                path: bundle_path.clone(),
+                message: format!(
+                    "Context7 bundle {} must declare at least one library",
+                    bundle_name
+                ),
+            });
+        }
+
+        for library in bundle_spec.libraries {
+            let library_path = format!(
+                "{}#{}:{}",
+                path.display(),
+                bundle_name,
+                library.library_name
+            );
+
+            if manifest_field(Some(library.library_name.as_str())).is_none() {
+                issues.push(Context7CatalogIssue {
+                    path: library_path.clone(),
+                    message: format!(
+                        "Context7 library in bundle {} must declare libraryName",
+                        bundle_name
+                    ),
+                });
+            }
+
+            if manifest_field(Some(library.query_hint.as_str())).is_none() {
+                issues.push(Context7CatalogIssue {
+                    path: library_path.clone(),
+                    message: format!(
+                        "Context7 library in bundle {} must declare queryHint",
+                        bundle_name
+                    ),
+                });
+            } else if is_weak_context7_query(&library.query_hint) {
+                issues.push(Context7CatalogIssue {
+                    path: library_path.clone(),
+                    message: format!(
+                        "Context7 library query hint in bundle {} is too broad: {}",
+                        bundle_name, library.query_hint
+                    ),
+                });
+            }
+
+            if let Some(library_id) = library.library_id.as_deref() {
+                if manifest_field(Some(library_id)).is_none() {
+                    issues.push(Context7CatalogIssue {
+                        path: library_path,
+                        message: format!(
+                            "Context7 library in bundle {} must not declare an empty libraryId",
+                            bundle_name
+                        ),
+                    });
+                }
+            }
+        }
+
+        ids.insert(bundle_name.to_string());
+    }
+
+    Ok((issues, ids))
 }
 
 fn lint_context7_bundle_id(
@@ -821,6 +1408,62 @@ fn lint_context7_bundle_id(
         rule: "context7-bundle-known",
         message: format!("{scope} references unknown Context7 bundle {bundle}"),
     });
+}
+
+fn lint_context7_query_strength(
+    wave_id: u32,
+    scope: &str,
+    bundle: &str,
+    query: Option<&str>,
+    findings: &mut Vec<LintFinding>,
+) {
+    let bundle = bundle.trim();
+    let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) else {
+        return;
+    };
+
+    if bundle == "none" {
+        return;
+    }
+
+    if is_weak_context7_query(query) {
+        findings.push(LintFinding {
+            wave_id,
+            severity: FindingSeverity::Error,
+            rule: "context7-query-too-weak",
+            message: format!("{scope} Context7 query is too broad: {query}"),
+        });
+    }
+}
+
+fn is_weak_context7_query(query: &str) -> bool {
+    let normalized = query.trim().to_ascii_lowercase();
+    if normalized.len() < 32 {
+        return true;
+    }
+
+    let weak_phrases = [
+        "context7 query",
+        "implementation context",
+        "reducer context",
+        "prompt contract context",
+        "ownership enforcement context",
+        "closure skills context",
+        "closure-only authored-wave contract",
+        "repository docs remain canonical",
+        "docs remain canonical",
+        "shared-plan documentation only",
+        "marker instructions must mention plain-line output",
+    ];
+
+    if weak_phrases
+        .iter()
+        .any(|phrase| normalized == *phrase || normalized.contains(phrase))
+    {
+        return true;
+    }
+
+    normalized.split_whitespace().count() < 6
 }
 
 fn ownership_conflict(left: &str, right: &str) -> bool {
@@ -923,7 +1566,9 @@ mod tests {
             }],
             context7_defaults: Some(Context7Defaults {
                 bundle: "rust-cli-core".to_string(),
-                query: Some("Context7 query".to_string()),
+                query: Some(
+                    "Serde derive, TOML parsing, and rich markdown section parsing for typed config and authored-wave enforcement".to_string(),
+                ),
             }),
             agents: vec![WaveAgent {
                 id: "A1".to_string(),
@@ -932,7 +1577,9 @@ mod tests {
                 executor: BTreeMap::from([("profile".to_string(), "implement-codex".to_string())]),
                 context7: Some(Context7Defaults {
                     bundle: "rust-cli-core".to_string(),
-                    query: Some("Implementation context".to_string()),
+                    query: Some(
+                        "Typed config loading, authored-wave parsing, and dark-factory lint enforcement for this implementation slice".to_string(),
+                    ),
                 }),
                 skills: vec!["wave-core".to_string(), "missing-skill".to_string()],
                 components: vec!["example".to_string()],
@@ -968,6 +1615,113 @@ mod tests {
     }
 
     #[test]
+    fn flags_closure_agents_without_skills() {
+        let mut a0 = closure_agent(
+            "A0",
+            "docs/agents/wave-cont-qa-role.md",
+            "[wave-gate]",
+            ".wave/reviews/wave-1.md",
+        );
+        a0.skills.clear();
+        let mut a8 = closure_agent(
+            "A8",
+            "docs/agents/wave-integration-role.md",
+            "[wave-integration]",
+            ".wave/integration/wave-1.md",
+        );
+        a8.skills.clear();
+        let mut a9 = closure_agent(
+            "A9",
+            "docs/agents/wave-documentation-role.md",
+            "[wave-doc-closure]",
+            ".wave/docs/wave-1.md",
+        );
+        a9.skills.clear();
+
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/01.md"),
+            metadata: WaveMetadata {
+                id: 1,
+                slug: "wave".to_string(),
+                title: "Wave".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["A0".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: vec!["proof.json".to_string()],
+            },
+            heading_title: Some("Wave 1 - Closure Skills".to_string()),
+            commit_message: Some("Feat: closure skills".to_string()),
+            component_promotions: vec![wave_spec::ComponentPromotion {
+                component: "example".to_string(),
+                target: "repo-landed".to_string(),
+            }],
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "custom default".to_string(),
+            }],
+            context7_defaults: Some(Context7Defaults {
+                bundle: "rust-cli-core".to_string(),
+                query: Some(
+                    "Closure-agent skill coverage and prompt-role validation for authored-wave closure agents".to_string(),
+                ),
+            }),
+            agents: vec![
+                a0,
+                a8,
+                a9,
+                WaveAgent {
+                    id: "A1".to_string(),
+                    title: "Implementation".to_string(),
+                    role_prompts: Vec::new(),
+                    executor: BTreeMap::from([(
+                        "profile".to_string(),
+                        "implement-codex".to_string(),
+                    )]),
+                    context7: Some(Context7Defaults {
+                        bundle: "rust-cli-core".to_string(),
+                        query: Some(
+                            "Typed config loading, authored-wave parsing, and dark-factory lint enforcement for this implementation slice".to_string(),
+                        ),
+                    }),
+                    skills: vec!["wave-core".to_string()],
+                    components: vec!["example".to_string()],
+                    capabilities: vec!["capability".to_string()],
+                    exit_contract: Some(ExitContract {
+                        completion: CompletionLevel::Integrated,
+                        durability: DurabilityLevel::Durable,
+                        proof: ProofLevel::Integration,
+                        doc_impact: DocImpact::Owned,
+                    }),
+                    deliverables: vec!["README.md".to_string()],
+                    file_ownership: vec!["README.md".to_string()],
+                    final_markers: vec![
+                        "[wave-proof]".to_string(),
+                        "[wave-doc-delta]".to_string(),
+                        "[wave-component]".to_string(),
+                    ],
+                    prompt: implementation_prompt("README.md"),
+                },
+            ],
+        };
+
+        let findings = lint_project(&workspace_root(), &[wave]);
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "agent-skills-required"
+                && finding.message == "agent A0 must declare skills"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "agent-skills-required"
+                && finding.message == "agent A8 must declare skills"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "agent-skills-required"
+                && finding.message == "agent A9 must declare skills"
+        }));
+    }
+
+    #[test]
     fn flags_overlapping_file_ownership() {
         let wave = WaveDocument {
             path: PathBuf::from("waves/02.md"),
@@ -994,7 +1748,9 @@ mod tests {
             }],
             context7_defaults: Some(Context7Defaults {
                 bundle: "rust-control-plane".to_string(),
-                query: Some("Reducer context".to_string()),
+                query: Some(
+                    "Queue reducer state, planning projection, and control-plane contract validation".to_string(),
+                ),
             }),
             agents: vec![
                 closure_agent(
@@ -1025,7 +1781,9 @@ mod tests {
                     )]),
                     context7: Some(Context7Defaults {
                         bundle: "rust-control-plane".to_string(),
-                        query: Some("Implementation context".to_string()),
+                        query: Some(
+                            "Typed config loading, authored-wave parsing, and dark-factory lint enforcement for this implementation slice".to_string(),
+                        ),
                     }),
                     skills: vec!["wave-core".to_string()],
                     components: vec!["example".to_string()],
@@ -1055,7 +1813,9 @@ mod tests {
                     )]),
                     context7: Some(Context7Defaults {
                         bundle: "rust-control-plane".to_string(),
-                        query: Some("Implementation context".to_string()),
+                        query: Some(
+                            "Typed config loading, authored-wave parsing, and dark-factory lint enforcement for this implementation slice".to_string(),
+                        ),
                     }),
                     skills: vec!["wave-core".to_string()],
                     components: vec!["example".to_string()],
@@ -1087,9 +1847,295 @@ mod tests {
     }
 
     #[test]
+    fn flags_waves_without_implementation_agents() {
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/02.md"),
+            metadata: WaveMetadata {
+                id: 2,
+                slug: "wave".to_string(),
+                title: "Wave".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["A0".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: vec!["proof.json".to_string()],
+            },
+            heading_title: Some("Wave 2 - Closure Only".to_string()),
+            commit_message: Some("Feat: closure only".to_string()),
+            component_promotions: vec![wave_spec::ComponentPromotion {
+                component: "example".to_string(),
+                target: "repo-landed".to_string(),
+            }],
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "custom default".to_string(),
+            }],
+            context7_defaults: Some(Context7Defaults {
+                bundle: "rust-config-spec".to_string(),
+                query: Some(
+                    "Closure-agent coverage and prompt structure validation for authored-wave closure-only waves".to_string(),
+                ),
+            }),
+            agents: vec![
+                closure_agent(
+                    "A0",
+                    "docs/agents/wave-cont-qa-role.md",
+                    "[wave-gate]",
+                    ".wave/reviews/wave-2.md",
+                ),
+                closure_agent(
+                    "A8",
+                    "docs/agents/wave-integration-role.md",
+                    "[wave-integration]",
+                    ".wave/integration/wave-2.md",
+                ),
+                closure_agent(
+                    "A9",
+                    "docs/agents/wave-documentation-role.md",
+                    "[wave-doc-closure]",
+                    ".wave/docs/wave-2.md",
+                ),
+            ],
+        };
+
+        let findings = lint_project(&workspace_root(), &[wave]);
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == "implementation-agent-required")
+        );
+    }
+
+    #[test]
     fn validates_skill_catalog() {
         let issues = validate_skill_catalog(&workspace_root());
         assert!(issues.is_empty(), "skill catalog issues: {issues:#?}");
+    }
+
+    #[test]
+    fn validates_context7_bundle_catalog() {
+        let issues = validate_context7_bundle_catalog(&workspace_root());
+        assert!(issues.is_empty(), "context7 catalog issues: {issues:#?}");
+    }
+
+    #[test]
+    fn flags_weak_context7_catalog_defaults() {
+        let root = temp_workspace_root();
+        let docs_dir = root.join("docs/context7");
+        fs::create_dir_all(&docs_dir).expect("create docs dir");
+        write_file(
+            &docs_dir.join("bundles.json"),
+            r#"{
+  "version": 1,
+  "defaultBundle": "none",
+  "laneDefaults": {
+    "main": "none"
+  },
+  "bundles": {
+    "none": {
+      "description": "Disable Context7 prefetch for closure-only and docs-only review steps.",
+      "libraries": []
+    }
+  }
+}"#,
+        );
+
+        let issues = validate_context7_bundle_catalog(&root);
+        assert!(issues.iter().any(|issue| {
+            issue.message == "default Context7 bundle must not be the none bundle"
+        }));
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.message == "lane default main must not use the none bundle")
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn flags_weak_context7_defaults() {
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/06.md"),
+            metadata: WaveMetadata {
+                id: 6,
+                slug: "wave".to_string(),
+                title: "Wave".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["A1".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: vec!["proof.json".to_string()],
+            },
+            heading_title: Some("Wave 6 - Weak Context7".to_string()),
+            commit_message: Some("Feat: weak context7".to_string()),
+            component_promotions: vec![wave_spec::ComponentPromotion {
+                component: "example".to_string(),
+                target: "repo-landed".to_string(),
+            }],
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "custom default".to_string(),
+            }],
+            context7_defaults: Some(Context7Defaults {
+                bundle: "rust-config-spec".to_string(),
+                query: Some("Implementation context".to_string()),
+            }),
+            agents: vec![
+                closure_agent(
+                    "A0",
+                    "docs/agents/wave-cont-qa-role.md",
+                    "[wave-gate]",
+                    ".wave/reviews/wave-6.md",
+                ),
+                closure_agent(
+                    "A8",
+                    "docs/agents/wave-integration-role.md",
+                    "[wave-integration]",
+                    ".wave/integration/wave-6.md",
+                ),
+                closure_agent(
+                    "A9",
+                    "docs/agents/wave-documentation-role.md",
+                    "[wave-doc-closure]",
+                    ".wave/docs/wave-6.md",
+                ),
+                WaveAgent {
+                    id: "A1".to_string(),
+                    title: "Implementation".to_string(),
+                    role_prompts: Vec::new(),
+                    executor: BTreeMap::from([(
+                        "profile".to_string(),
+                        "implement-codex".to_string(),
+                    )]),
+                    context7: Some(Context7Defaults {
+                        bundle: "rust-config-spec".to_string(),
+                        query: Some("Implementation context".to_string()),
+                    }),
+                    skills: vec!["wave-core".to_string()],
+                    components: vec!["example".to_string()],
+                    capabilities: vec!["capability".to_string()],
+                    exit_contract: Some(ExitContract {
+                        completion: CompletionLevel::Integrated,
+                        durability: DurabilityLevel::Durable,
+                        proof: ProofLevel::Integration,
+                        doc_impact: DocImpact::Owned,
+                    }),
+                    deliverables: vec!["crates/wave-dark-factory/src/lib.rs".to_string()],
+                    file_ownership: vec!["crates/wave-dark-factory/src/lib.rs".to_string()],
+                    final_markers: vec![
+                        "[wave-proof]".to_string(),
+                        "[wave-doc-delta]".to_string(),
+                        "[wave-component]".to_string(),
+                    ],
+                    prompt: implementation_prompt("crates/wave-dark-factory/src/lib.rs"),
+                },
+            ],
+        };
+
+        let findings = lint_project(&workspace_root(), &[wave]);
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "context7-query-too-weak"
+                && finding.message == "wave Context7 query is too broad: Implementation context"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "context7-query-too-weak"
+                && finding.message == "agent A1 Context7 query is too broad: Implementation context"
+        }));
+    }
+
+    #[test]
+    fn flags_none_context7_defaults_for_non_closure_agents() {
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/06.md"),
+            metadata: WaveMetadata {
+                id: 6,
+                slug: "wave".to_string(),
+                title: "Wave".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["A1".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: vec!["proof.json".to_string()],
+            },
+            heading_title: Some("Wave 6 - None Context7".to_string()),
+            commit_message: Some("Feat: none context7".to_string()),
+            component_promotions: vec![wave_spec::ComponentPromotion {
+                component: "example".to_string(),
+                target: "repo-landed".to_string(),
+            }],
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "custom default".to_string(),
+            }],
+            context7_defaults: Some(Context7Defaults {
+                bundle: CONTEXT7_NONE_BUNDLE.to_string(),
+                query: Some("Typed config loading for authored-wave parsing".to_string()),
+            }),
+            agents: vec![
+                closure_agent(
+                    "A0",
+                    "docs/agents/wave-cont-qa-role.md",
+                    "[wave-gate]",
+                    ".wave/reviews/wave-6.md",
+                ),
+                closure_agent(
+                    "A8",
+                    "docs/agents/wave-integration-role.md",
+                    "[wave-integration]",
+                    ".wave/integration/wave-6.md",
+                ),
+                closure_agent(
+                    "A9",
+                    "docs/agents/wave-documentation-role.md",
+                    "[wave-doc-closure]",
+                    ".wave/docs/wave-6.md",
+                ),
+                WaveAgent {
+                    id: "A1".to_string(),
+                    title: "Implementation".to_string(),
+                    role_prompts: Vec::new(),
+                    executor: BTreeMap::from([(
+                        "profile".to_string(),
+                        "implement-codex".to_string(),
+                    )]),
+                    context7: Some(Context7Defaults {
+                        bundle: CONTEXT7_NONE_BUNDLE.to_string(),
+                        query: Some("Typed config loading for authored-wave parsing".to_string()),
+                    }),
+                    skills: vec!["wave-core".to_string()],
+                    components: vec!["example".to_string()],
+                    capabilities: vec!["capability".to_string()],
+                    exit_contract: Some(ExitContract {
+                        completion: CompletionLevel::Integrated,
+                        durability: DurabilityLevel::Durable,
+                        proof: ProofLevel::Integration,
+                        doc_impact: DocImpact::Owned,
+                    }),
+                    deliverables: vec!["crates/wave-dark-factory/src/lib.rs".to_string()],
+                    file_ownership: vec!["crates/wave-dark-factory/src/lib.rs".to_string()],
+                    final_markers: vec![
+                        "[wave-proof]".to_string(),
+                        "[wave-doc-delta]".to_string(),
+                        "[wave-component]".to_string(),
+                    ],
+                    prompt: implementation_prompt("crates/wave-dark-factory/src/lib.rs"),
+                },
+            ],
+        };
+
+        let findings = lint_project(&workspace_root(), &[wave]);
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "context7-default-bundle-weak"
+                && finding.message == "wave Context7 defaults must not use the none bundle"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "agent-context7-bundle-weak"
+                && finding.message == "agent A1 Context7 bundle must not be the none bundle"
+        }));
     }
 
     #[test]
@@ -1119,7 +2165,9 @@ mod tests {
             }],
             context7_defaults: Some(Context7Defaults {
                 bundle: "rust-config-spec".to_string(),
-                query: Some("Prompt contract context".to_string()),
+                query: Some(
+                    "Prompt contract parsing, file ownership, and final-marker enforcement for authored-wave prompts".to_string(),
+                ),
             }),
             agents: vec![
                 closure_agent(
@@ -1150,7 +2198,9 @@ mod tests {
                     )]),
                     context7: Some(Context7Defaults {
                         bundle: "rust-config-spec".to_string(),
-                        query: Some("Implementation context".to_string()),
+                        query: Some(
+                            "Typed config loading, authored-wave parsing, and dark-factory lint enforcement for this implementation slice".to_string(),
+                        ),
                     }),
                     skills: vec!["wave-core".to_string()],
                     components: vec!["example".to_string()],
@@ -1184,6 +2234,9 @@ mod tests {
                         "",
                         "File ownership (only touch these paths):",
                         "- crates/wave-dark-factory/src/lib.rs",
+                        "",
+                        "Unexpected:",
+                        "- hidden contract",
                     ]
                     .join("\n"),
                 },
@@ -1209,8 +2262,317 @@ mod tests {
         assert!(
             findings
                 .iter()
+                .any(|finding| { finding.rule == "agent-prompt-final-marker-format-required" })
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == "agent-prompt-section-unexpected")
+        );
+        assert!(
+            findings
+                .iter()
                 .any(|finding| finding.rule == "agent-final-marker-unexpected")
         );
+    }
+
+    #[test]
+    fn flags_empty_machine_readable_contract_entries() {
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/07.md"),
+            metadata: WaveMetadata {
+                id: 7,
+                slug: "wave".to_string(),
+                title: "Wave".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["A1".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string(), "  ".to_string()],
+                rollback: vec!["git revert".to_string(), "git revert".to_string()],
+                proof: vec!["proof.json".to_string(), "".to_string()],
+            },
+            heading_title: Some("Wave 7 - Contract Entries".to_string()),
+            commit_message: Some("Feat: contract entries".to_string()),
+            component_promotions: vec![wave_spec::ComponentPromotion {
+                component: "example".to_string(),
+                target: "repo-landed".to_string(),
+            }],
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "custom default".to_string(),
+            }],
+            context7_defaults: Some(Context7Defaults {
+                bundle: "rust-config-spec".to_string(),
+                query: Some(
+                    "Machine-readable dark-factory contract entry validation for environment, rollback, and proof fields".to_string(),
+                ),
+            }),
+            agents: vec![
+                closure_agent(
+                    "A0",
+                    "docs/agents/wave-cont-qa-role.md",
+                    "[wave-gate]",
+                    ".wave/reviews/wave-7.md",
+                ),
+                closure_agent(
+                    "A8",
+                    "docs/agents/wave-integration-role.md",
+                    "[wave-integration]",
+                    ".wave/integration/wave-7.md",
+                ),
+                closure_agent(
+                    "A9",
+                    "docs/agents/wave-documentation-role.md",
+                    "[wave-doc-closure]",
+                    ".wave/docs/wave-7.md",
+                ),
+                WaveAgent {
+                    id: "A1".to_string(),
+                    title: "Implementation".to_string(),
+                    role_prompts: Vec::new(),
+                    executor: BTreeMap::from([(
+                        "profile".to_string(),
+                        "implement-codex".to_string(),
+                    )]),
+                    context7: Some(Context7Defaults {
+                        bundle: "rust-config-spec".to_string(),
+                        query: Some(
+                            "Typed config loading, authored-wave parsing, and dark-factory lint enforcement for this implementation slice".to_string(),
+                        ),
+                    }),
+                    skills: vec!["wave-core".to_string()],
+                    components: vec!["example".to_string()],
+                    capabilities: vec!["capability".to_string()],
+                    exit_contract: Some(ExitContract {
+                        completion: CompletionLevel::Integrated,
+                        durability: DurabilityLevel::Durable,
+                        proof: ProofLevel::Integration,
+                        doc_impact: DocImpact::Owned,
+                    }),
+                    deliverables: vec!["crates/wave-dark-factory/src/lib.rs".to_string()],
+                    file_ownership: vec!["crates/wave-dark-factory/src/lib.rs".to_string()],
+                    final_markers: vec![
+                        "[wave-proof]".to_string(),
+                        "[wave-doc-delta]".to_string(),
+                        "[wave-component]".to_string(),
+                    ],
+                    prompt: implementation_prompt("crates/wave-dark-factory/src/lib.rs"),
+                },
+            ],
+        };
+
+        let findings = lint_project(&workspace_root(), &[wave]);
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "dark-factory-command-empty"
+                && finding.message == "validation entry 2 must not be empty"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "dark-factory-command-duplicate"
+                && finding.message == "rollback entry 2 is duplicated: git revert"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "dark-factory-command-empty"
+                && finding.message == "proof entry 2 must not be empty"
+        }));
+    }
+
+    #[test]
+    fn flags_prompt_section_order_mismatches() {
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/03.md"),
+            metadata: WaveMetadata {
+                id: 3,
+                slug: "wave".to_string(),
+                title: "Wave".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["A1".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: vec!["proof.json".to_string()],
+            },
+            heading_title: Some("Wave 3 - Prompt Order".to_string()),
+            commit_message: Some("Feat: prompt order".to_string()),
+            component_promotions: vec![wave_spec::ComponentPromotion {
+                component: "example".to_string(),
+                target: "repo-landed".to_string(),
+            }],
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "custom default".to_string(),
+            }],
+            context7_defaults: Some(Context7Defaults {
+                bundle: "rust-config-spec".to_string(),
+                query: Some(
+                    "Prompt section ordering, markdown parsing, and authored-wave contract enforcement".to_string(),
+                ),
+            }),
+            agents: vec![
+                closure_agent(
+                    "A0",
+                    "docs/agents/wave-cont-qa-role.md",
+                    "[wave-gate]",
+                    ".wave/reviews/wave-3.md",
+                ),
+                closure_agent(
+                    "A8",
+                    "docs/agents/wave-integration-role.md",
+                    "[wave-integration]",
+                    ".wave/integration/wave-3.md",
+                ),
+                closure_agent(
+                    "A9",
+                    "docs/agents/wave-documentation-role.md",
+                    "[wave-doc-closure]",
+                    ".wave/docs/wave-3.md",
+                ),
+                WaveAgent {
+                    id: "A1".to_string(),
+                    title: "Implementation".to_string(),
+                    role_prompts: Vec::new(),
+                    executor: BTreeMap::from([(
+                        "profile".to_string(),
+                        "implement-codex".to_string(),
+                    )]),
+                    context7: Some(Context7Defaults {
+                        bundle: "rust-config-spec".to_string(),
+                        query: Some(
+                            "Prompt section ordering, markdown parsing, and authored-wave contract enforcement".to_string(),
+                        ),
+                    }),
+                    skills: vec!["wave-core".to_string()],
+                    components: vec!["example".to_string()],
+                    capabilities: vec!["capability".to_string()],
+                    exit_contract: Some(ExitContract {
+                        completion: CompletionLevel::Integrated,
+                        durability: DurabilityLevel::Durable,
+                        proof: ProofLevel::Integration,
+                        doc_impact: DocImpact::Owned,
+                    }),
+                    deliverables: vec!["crates/wave-dark-factory/src/lib.rs".to_string()],
+                    file_ownership: vec!["crates/wave-dark-factory/src/lib.rs".to_string()],
+                    final_markers: vec![
+                        "[wave-proof]".to_string(),
+                        "[wave-doc-delta]".to_string(),
+                        "[wave-component]".to_string(),
+                    ],
+                    prompt: [
+                        "Primary goal:",
+                        "- Ship the implementation slice.",
+                        "",
+                        "Specific expectations:",
+                        "- Emit the final [wave-proof], [wave-doc-delta], and [wave-component] markers as plain lines by themselves at the end of the output.",
+                        "",
+                        "Required context before coding:",
+                        "- Read README.md.",
+                        "",
+                        "File ownership (only touch these paths):",
+                        "- crates/wave-dark-factory/src/lib.rs",
+                    ]
+                    .join("\n"),
+                },
+            ],
+        };
+
+        let findings = lint_project(&workspace_root(), &[wave]);
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == "agent-prompt-section-order-required")
+        );
+    }
+
+    #[test]
+    fn flags_deliverables_outside_owned_paths() {
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/04.md"),
+            metadata: WaveMetadata {
+                id: 4,
+                slug: "wave".to_string(),
+                title: "Wave".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["A1".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: vec!["proof.json".to_string()],
+            },
+            heading_title: Some("Wave 4 - Ownership".to_string()),
+            commit_message: Some("Feat: ownership contract".to_string()),
+            component_promotions: vec![wave_spec::ComponentPromotion {
+                component: "example".to_string(),
+                target: "repo-landed".to_string(),
+            }],
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "custom default".to_string(),
+            }],
+            context7_defaults: Some(Context7Defaults {
+                bundle: "rust-config-spec".to_string(),
+                query: Some(
+                    "Deliverable ownership enforcement and path overlap checks for authored-wave slices".to_string(),
+                ),
+            }),
+            agents: vec![
+                closure_agent(
+                    "A0",
+                    "docs/agents/wave-cont-qa-role.md",
+                    "[wave-gate]",
+                    ".wave/reviews/wave-4.md",
+                ),
+                closure_agent(
+                    "A8",
+                    "docs/agents/wave-integration-role.md",
+                    "[wave-integration]",
+                    ".wave/integration/wave-4.md",
+                ),
+                closure_agent(
+                    "A9",
+                    "docs/agents/wave-documentation-role.md",
+                    "[wave-doc-closure]",
+                    ".wave/docs/wave-4.md",
+                ),
+                WaveAgent {
+                    id: "A1".to_string(),
+                    title: "Implementation".to_string(),
+                    role_prompts: Vec::new(),
+                    executor: BTreeMap::from([(
+                        "profile".to_string(),
+                        "implement-codex".to_string(),
+                    )]),
+                    context7: Some(Context7Defaults {
+                        bundle: "rust-config-spec".to_string(),
+                        query: Some(
+                            "Deliverable ownership enforcement and path overlap checks for authored-wave slices".to_string(),
+                        ),
+                    }),
+                    skills: vec!["wave-core".to_string()],
+                    components: vec!["example".to_string()],
+                    capabilities: vec!["capability".to_string()],
+                    exit_contract: Some(ExitContract {
+                        completion: CompletionLevel::Integrated,
+                        durability: DurabilityLevel::Durable,
+                        proof: ProofLevel::Integration,
+                        doc_impact: DocImpact::Owned,
+                    }),
+                    deliverables: vec!["README.md".to_string()],
+                    file_ownership: vec!["crates/wave-dark-factory/src/lib.rs".to_string()],
+                    final_markers: vec![
+                        "[wave-proof]".to_string(),
+                        "[wave-doc-delta]".to_string(),
+                        "[wave-component]".to_string(),
+                    ],
+                    prompt: implementation_prompt("crates/wave-dark-factory/src/lib.rs"),
+                },
+            ],
+        };
+
+        let findings = lint_project(&workspace_root(), &[wave]);
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "agent-deliverable-owned-path-required"
+                && finding.message
+                    == "implementation agent A1 declares deliverable README.md outside its owned paths"
+        }));
     }
 
     #[test]
@@ -1240,7 +2602,9 @@ mod tests {
             }],
             context7_defaults: Some(Context7Defaults {
                 bundle: "missing-wave-bundle".to_string(),
-                query: Some("Prompt contract context".to_string()),
+                query: Some(
+                    "Prompt contract parsing, file ownership, and final-marker enforcement for authored-wave prompts".to_string(),
+                ),
             }),
             agents: vec![
                 closure_agent(
@@ -1271,7 +2635,9 @@ mod tests {
                     )]),
                     context7: Some(Context7Defaults {
                         bundle: "missing-agent-bundle".to_string(),
-                        query: Some("Implementation context".to_string()),
+                        query: Some(
+                            "Typed config loading, authored-wave parsing, and dark-factory lint enforcement for this implementation slice".to_string(),
+                        ),
                     }),
                     skills: vec!["wave-core".to_string()],
                     components: vec!["example".to_string()],
@@ -1303,6 +2669,230 @@ mod tests {
             finding.rule == "context7-bundle-known"
                 && finding.message
                     == "agent A1 references unknown Context7 bundle missing-agent-bundle"
+        }));
+    }
+
+    #[test]
+    fn flags_closure_agents_using_implementation_sections() {
+        let mut a8 = closure_agent(
+            "A8",
+            "docs/agents/wave-integration-role.md",
+            "[wave-integration]",
+            ".wave/integration/wave-5.md",
+        );
+        a8.components = vec!["example".to_string()];
+        a8.capabilities = vec!["capability".to_string()];
+        a8.deliverables = vec!["crates/wave-spec/src/lib.rs".to_string()];
+        a8.exit_contract = Some(ExitContract {
+            completion: CompletionLevel::Integrated,
+            durability: DurabilityLevel::Durable,
+            proof: ProofLevel::Integration,
+            doc_impact: DocImpact::Owned,
+        });
+
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/05.md"),
+            metadata: WaveMetadata {
+                id: 5,
+                slug: "wave".to_string(),
+                title: "Wave".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["A1".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: vec!["proof.json".to_string()],
+            },
+            heading_title: Some("Wave 5 - Closure Contract".to_string()),
+            commit_message: Some("Feat: closure contract".to_string()),
+            component_promotions: vec![wave_spec::ComponentPromotion {
+                component: "example".to_string(),
+                target: "repo-landed".to_string(),
+            }],
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "custom default".to_string(),
+            }],
+            context7_defaults: Some(Context7Defaults {
+                bundle: "rust-config-spec".to_string(),
+                query: Some(
+                    "Closure sections stay distinct from implementation sections".to_string(),
+                ),
+            }),
+            agents: vec![
+                closure_agent(
+                    "A0",
+                    "docs/agents/wave-cont-qa-role.md",
+                    "[wave-gate]",
+                    ".wave/reviews/wave-5.md",
+                ),
+                a8,
+                closure_agent(
+                    "A9",
+                    "docs/agents/wave-documentation-role.md",
+                    "[wave-doc-closure]",
+                    ".wave/docs/wave-5.md",
+                ),
+                WaveAgent {
+                    id: "A1".to_string(),
+                    title: "Implementation".to_string(),
+                    role_prompts: Vec::new(),
+                    executor: BTreeMap::from([(
+                        "profile".to_string(),
+                        "implement-codex".to_string(),
+                    )]),
+                    context7: Some(Context7Defaults {
+                        bundle: "rust-config-spec".to_string(),
+                        query: Some(
+                            "Typed config loading, authored-wave parsing, and dark-factory lint enforcement for this implementation slice".to_string(),
+                        ),
+                    }),
+                    skills: vec!["wave-core".to_string()],
+                    components: vec!["example".to_string()],
+                    capabilities: vec!["capability".to_string()],
+                    exit_contract: Some(ExitContract {
+                        completion: CompletionLevel::Integrated,
+                        durability: DurabilityLevel::Durable,
+                        proof: ProofLevel::Integration,
+                        doc_impact: DocImpact::Owned,
+                    }),
+                    deliverables: vec!["crates/wave-spec/src/lib.rs".to_string()],
+                    file_ownership: vec!["crates/wave-spec/src/lib.rs".to_string()],
+                    final_markers: vec![
+                        "[wave-proof]".to_string(),
+                        "[wave-doc-delta]".to_string(),
+                        "[wave-component]".to_string(),
+                    ],
+                    prompt: implementation_prompt("crates/wave-spec/src/lib.rs"),
+                },
+            ],
+        };
+
+        let findings = lint_project(&workspace_root(), &[wave]);
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "closure-agent-components-unexpected"
+                && finding.message == "closure agent A8 must not declare implementation components"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "closure-agent-capabilities-unexpected"
+                && finding.message
+                    == "closure agent A8 must not declare implementation capabilities"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "closure-agent-deliverables-unexpected"
+                && finding.message
+                    == "closure agent A8 must not declare implementation deliverables"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "closure-agent-exit-contract-unexpected"
+                && finding.message
+                    == "closure agent A8 must not declare an implementation exit contract"
+        }));
+    }
+
+    #[test]
+    fn flags_marker_instructions_without_plain_line_guidance() {
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/06.md"),
+            metadata: WaveMetadata {
+                id: 6,
+                slug: "wave".to_string(),
+                title: "Wave".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["A1".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: vec!["proof.json".to_string()],
+            },
+            heading_title: Some("Wave 6 - Marker Format".to_string()),
+            commit_message: Some("Feat: marker format".to_string()),
+            component_promotions: vec![wave_spec::ComponentPromotion {
+                component: "example".to_string(),
+                target: "repo-landed".to_string(),
+            }],
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "custom default".to_string(),
+            }],
+            context7_defaults: Some(Context7Defaults {
+                bundle: "rust-config-spec".to_string(),
+                query: Some(
+                    "Plain-line final marker instructions for wave-proof, wave-doc-delta, and wave-component output".to_string(),
+                ),
+            }),
+            agents: vec![
+                closure_agent(
+                    "A0",
+                    "docs/agents/wave-cont-qa-role.md",
+                    "[wave-gate]",
+                    ".wave/reviews/wave-6.md",
+                ),
+                closure_agent(
+                    "A8",
+                    "docs/agents/wave-integration-role.md",
+                    "[wave-integration]",
+                    ".wave/integration/wave-6.md",
+                ),
+                closure_agent(
+                    "A9",
+                    "docs/agents/wave-documentation-role.md",
+                    "[wave-doc-closure]",
+                    ".wave/docs/wave-6.md",
+                ),
+                WaveAgent {
+                    id: "A1".to_string(),
+                    title: "Implementation".to_string(),
+                    role_prompts: Vec::new(),
+                    executor: BTreeMap::from([(
+                        "profile".to_string(),
+                        "implement-codex".to_string(),
+                    )]),
+                    context7: Some(Context7Defaults {
+                        bundle: "rust-config-spec".to_string(),
+                        query: Some(
+                            "Typed config loading, authored-wave parsing, and dark-factory lint enforcement for this implementation slice".to_string(),
+                        ),
+                    }),
+                    skills: vec!["wave-core".to_string()],
+                    components: vec!["example".to_string()],
+                    capabilities: vec!["capability".to_string()],
+                    exit_contract: Some(ExitContract {
+                        completion: CompletionLevel::Integrated,
+                        durability: DurabilityLevel::Durable,
+                        proof: ProofLevel::Integration,
+                        doc_impact: DocImpact::Owned,
+                    }),
+                    deliverables: vec!["crates/wave-spec/src/lib.rs".to_string()],
+                    file_ownership: vec!["crates/wave-spec/src/lib.rs".to_string()],
+                    final_markers: vec![
+                        "[wave-proof]".to_string(),
+                        "[wave-doc-delta]".to_string(),
+                        "[wave-component]".to_string(),
+                    ],
+                    prompt: [
+                        "Primary goal:",
+                        "- Ship the implementation slice.",
+                        "",
+                        "Required context before coding:",
+                        "- Read README.md.",
+                        "",
+                        "Specific expectations:",
+                        "- Emit [wave-proof], [wave-doc-delta], and [wave-component].",
+                        "",
+                        "File ownership (only touch these paths):",
+                        "- crates/wave-spec/src/lib.rs",
+                    ]
+                    .join("\n"),
+                },
+            ],
+        };
+
+        let findings = lint_project(&workspace_root(), &[wave]);
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "agent-prompt-final-marker-format-required"
+                && finding.message
+                    == "agent A1 prompt must require final markers on plain lines or a plain last line"
         }));
     }
 
@@ -1367,7 +2957,7 @@ mod tests {
                 bundle: "none".to_string(),
                 query: Some("Repository docs remain canonical".to_string()),
             }),
-            skills: Vec::new(),
+            skills: vec!["wave-core".to_string()],
             components: Vec::new(),
             capabilities: Vec::new(),
             exit_contract: None,

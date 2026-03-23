@@ -2,7 +2,7 @@
 
 Wave now has an explicit planning vocabulary for execution posture.
 
-Today that posture is captured in project profile memory and planner output. The deeper runtime policy attached to those modes is still roadmap work, so this page distinguishes what is already shipped from what is still a convention.
+Today that posture is captured in project profile memory, planner output, wave specs, and launch preflight. `dark-factory` is no longer just a label: the runtime now treats it as a fail-closed execution profile.
 
 ## The Two Postures
 
@@ -22,17 +22,44 @@ Today the runtime ships:
 - generated specs and waves that record the chosen mode
 - deploy-environment memory that helps infra and release planning
 - orchestrator-first clarification handling and human feedback queueing
+- launch preflight reports written into the compiled bundle directory
+- launch refusal before runtime mutation when required contracts are missing
+- operator-visible diagnostics for the refusal path
 
-The runtime does not yet enforce a separate hard policy profile for `dark-factory` beyond what is already encoded in the wave itself.
+The runtime now enforces `dark-factory` at launch time. If a wave is missing required authoring or launch data, launch stops before mutation and surfaces a preflight report instead of downgrading behavior.
 
 ## How To Interpret The Modes Right Now
 
-Treat them as planning posture:
+Treat them as execution posture:
 
 - `oversight`
   Default when a human operator should expect to inspect progress, answer questions, or approve risky transitions.
 - `dark-factory`
-  Use only when the wave already has explicit environment modeling, validation, rollback posture, and clear closure signals.
+  Use when the wave is authored to satisfy the fail-closed contract and should not proceed without complete machine-checkable launch data.
+
+## Dark-Factory At Authoring Time
+
+`dark-factory` waves must already carry the contract that launch will enforce:
+
+- explicit deploy environments
+- concrete validation commands
+- rollback or recovery guidance
+- proof artifacts
+- closure and marker expectations
+- file ownership and prompt structure that the linter can verify
+
+If those fields are weak or missing, the wave is malformed for dark-factory authoring, not something to “fill in later” during launch.
+
+## Dark-Factory At Launch Time
+
+Launch now performs a preflight gate before runtime mutation:
+
+1. the compiled bundle writes a `preflight.json` report
+2. the launcher checks the report before any launch-side mutation
+3. if the report is not satisfied, launch refuses closed and returns diagnostics
+4. if the report is satisfied, execution continues with the compiled prompt bundle
+
+That means dark-factory launch behavior is diagnostic first and mutation second. Operators should expect refusal when the authored contract is underspecified.
 
 ## Human Feedback Is Not The Same Thing
 
@@ -67,6 +94,7 @@ Choose `dark-factory` only when all of these are already true:
 - rollback or recovery posture is documented
 - closure evidence is machine-checkable or strongly operator-visible
 - missing context would be treated as a planning failure, not something to improvise live
+- the wave already satisfies the authoring contract the linter and launcher expect
 
 ## Best Practice
 
@@ -79,13 +107,4 @@ That usually means:
 - strong validation commands
 - reliable docs and trace review habits
 - low ambiguity about who owns live mutation
-
-## Relationship To The Roadmap
-
-The roadmap still includes stronger explicit oversight vs dark-factory workflows. What is shipped today is the planning foundation:
-
-- stored project defaults
-- typed values in planner output
-- better environment modeling
-
-The stricter execution semantics are the next step, not a hidden already-finished feature.
+- preflight failures are treated as contract failures, not launch surprises

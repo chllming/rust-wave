@@ -1,0 +1,78 @@
+# Current State
+
+- The starter workspace in this source repo reflects the `0.6.3` package release surface.
+- The repository contains the published `@chllming/wave-orchestration` package plus the starter scaffold used by `wave init`.
+- The runtime is package-first and non-destructive for adopting repos: `wave init --adopt-existing` records existing repo-owned plans, waves, prompts, and config without overwriting them, and `wave upgrade` writes only `.wave/install-state.json` plus `.wave/upgrade-history/`.
+- Runtime launch entrypoints now perform a best-effort npmjs version check, cache the result under `.wave/package-update-check.json`, and point operators at `pnpm exec wave self-update` when a newer published package exists.
+- This source repo is itself kept as an adopted Wave workspace, so `node scripts/wave.mjs doctor --json` should pass from the repo root.
+- The default lane is `main`.
+- Planner foundation is now shipped:
+  - `.wave/project-profile.json` stores default oversight mode, terminal surface, draft template, lane, and deploy-environment memory
+  - `wave project setup|show` manage that profile
+  - `wave draft` writes planner JSON specs plus launcher-compatible markdown waves
+- Ad-hoc task runs are now first-class:
+  - `wave adhoc plan|run|list|show|promote` manage transient operator-driven work
+  - requests, generated specs, rendered markdown, and final results live under `.wave/adhoc/runs/<run-id>/`
+  - runtime state stays isolated under `.tmp/<lane>-wave-launcher/adhoc/<run-id>/`
+  - ad-hoc runs always keep integration, documentation, and cont-QA closure, while `cont-EVAL` and security review are synthesized only when the request needs them
+  - documentation closure still queues canonical shared-plan docs when a run reports a shared-plan delta, alongside the ad-hoc closure report
+  - `wave adhoc promote` copies the stored ad-hoc spec into numbered roadmap artifacts instead of re-deriving it from the current project profile
+  - repo-local path hints become owned paths; external references such as URLs are ignored
+- The harness supports `codex`, `claude`, `opencode`, and `local` executors.
+- Cross-runtime skills are now first-class:
+  - canonical bundles live under `skills/`
+  - lane config can attach skills by base, role, runtime, and deploy kind
+  - wave agents can add explicit `### Skills`
+  - runtime projections are generated for Codex, Claude, OpenCode, and local execution
+- The runtime now includes:
+  - a canonical coordination JSONL log
+  - a generated markdown board projection
+  - compiled shared summaries and per-agent inboxes
+  - active live-wave orchestration refresh that keeps summaries, inboxes, clarification triage, and dashboard coordination metrics current while agents are still running
+  - a per-wave ledger
+  - docs queues
+  - explicit integration summaries with actionable claim, interface, proof, docs, and deploy-risk evidence
+  - versioned runtime artifact contracts for manifests, dashboards, relaunch plans, helper-assignment snapshots, dependency snapshots, and run-state
+  - append-only `run-state.json` history with per-wave current state, compatibility `completedWaves`, and causal completion or blocker evidence
+  - hermetic `traceVersion: 2` per-attempt trace bundles with copied launched-agent summaries, copied component matrices for promoted waves, a hashed `outcome.json` replay baseline, run metadata, and cumulative quality metrics
+  - an internal, read-only replay validator for trace bundles, with legacy `traceVersion: 1` bundles kept in best-effort warning mode
+  - orchestrator-first clarification triage plus human escalation artifacts
+  - optional `--resident-orchestrator` support for a long-running, non-owning orchestrator session during live waves
+  - persisted relaunch plans under `.tmp/<lane>-wave-launcher/status/` so targeted retry intent can survive a launcher restart
+  - operator-applied retry overrides under `.tmp/<lane>-wave-launcher/control/` for selected reruns, reuse clearing, and explicit resume targets
+  - authoritative proof registries under `.tmp/<lane>-wave-launcher/proof/` so operator-captured live evidence can feed integration, cont-QA, and replay without manual state surgery
+  - a thinner launcher entrypoint that now delegates session launch or wait and closure-sweep orchestration to dedicated modules while preserving the existing CLI surface
+- Runtime executor support now includes:
+  - Codex `exec` profile, inline config, search, image, add-dir, JSON, and ephemeral flags
+  - Claude settings overlay merging for inline settings and hooks
+  - OpenCode merged config overlays plus multi-file attachments
+  - per-agent 429/rate-limit retries for Codex, Claude Code, and OpenCode via `--agent-rate-limit-*`
+  - dry-run prompt and executor-preview materialization under `.tmp/<lane>-wave-launcher/dry-run/`
+  - operator-selectable terminal surfaces: `vscode`, `tmux`, or `none` for dry-run only
+- Full runtime configuration reference pages now ship under `docs/reference/runtime-config/`.
+- Lane runtime policy is active through `wave.config.json`:
+  - role-based default executors
+  - executor profiles
+  - hard runtime mix targets
+  - retry-time fallback order
+  - generic runtime budgets
+  - sticky retry policy for proof-centric owners unless fallback is explicitly enabled
+- Capability routing is now first-class:
+  - open capability-targeted requests become explicit helper assignments
+  - helper assignments are written into coordination state, the ledger, summaries, and traces
+  - helper assignments remain blocking until the linked follow-up resolves
+- Closure now runs in staged order: implementation and proof, then optional `E0` cont-EVAL, then optional security review, then `A8` integration, then `A9` documentation, then `A0` cont-QA.
+- `E0` is hybrid: planner-generated waves keep it report-only, while hand-authored waves may assign explicit tuning files and thereby make `E0` participate in implementation proof gating.
+- Live closure is strict: `cont-EVAL` must prove the declared eval contract with exact target and benchmark ids, and `cont-QA` must provide both final verdict and final gate artifacts. Legacy evaluator-era shapes remain replay-only compatibility inputs.
+- Proof-centric waves can now declare `### Proof artifacts`, and implementation proof validation can require those machine-visible local artifacts in addition to deliverables and structured proof markers.
+- Routed clarifications remain blocking until the linked follow-up request or escalation is fully resolved.
+- Operators can now use `wave control status`, `wave control task`, `wave control rerun`, and `wave control proof` as the preferred supported control surfaces during a live wave instead of editing runtime files by hand. Legacy `wave coord`, `wave retry`, and `wave proof` commands remain as compatibility paths.
+- Required inbound cross-lane dependency tickets under `.tmp/wave-orchestrator/dependencies/` block both autonomous wave launch and lane finalization while they remain unresolved.
+- Cross-lane dependency workflows now include:
+  - `wave dep post|show|resolve|render`
+  - per-wave inbound/outbound dependency snapshots under `.tmp/<lane>-wave-launcher/dependencies/`
+  - dependency-aware gating, inboxes, dashboards, and replay artifacts
+- Dry-run remains pre-attempt only: it seeds derived state under `.tmp/<lane>-wave-launcher/dry-run/` and leaves `traces/` file-empty.
+- Component maturity and starter wave promotions are tracked in `docs/plans/component-cutover-matrix.md` and `docs/plans/component-cutover-matrix.json`.
+- Context7 bundle selection and launcher-side prompt injection are enabled through `docs/context7/bundles.json`.
+- Research source links are committed in `docs/research/agent-context-sources.md`; hydrated caches stay local and ignored.

@@ -1,114 +1,70 @@
 # Runtime Configuration Reference
 
-This directory is the canonical reference for executor configuration in the packaged Wave release.
+This directory now documents the active Rust/Codex runtime surface in this repo, not the older package-era `wave.config.json` layering model.
 
-Use it when you need the full supported surface for:
+## Current Scope
 
-- `wave.config.json`
-- `lanes.<lane>.executors`
-- `executors.profiles.<profile>`
-- per-agent `### Executor` blocks inside a wave file
+The live runtime is intentionally narrow:
 
-## Naming Conventions
+- project config comes from `wave.toml`
+- per-agent runtime settings come from the authored wave `### Executor` block
+- the only live runtime today is Codex
+- `wave adhoc` and `wave dep` are still pending
 
-- `wave.config.json` uses camelCase keys such as `profileName`, `addDirs`, `settingsJson`, and `allowedHttpHookUrls`.
-- Wave markdown `### Executor` blocks use snake_case after the runtime prefix, such as `codex.profile_name`, `codex.add_dirs`, `claude.settings_json`, and `claude.allowed_http_hook_urls`.
+The active runtime paths are repo-local:
 
-## Resolution Order
+- compiled bundles: `.wave/state/build/specs/`
+- run state: `.wave/state/runs/`
+- rerun intents: `.wave/state/control/reruns/`
+- traces: `.wave/traces/runs/`
+- project-scoped Codex home: `.wave/codex/`
 
-Executor id selection resolves in this order:
+## Resolution Rules
 
-1. agent `### Executor` `id`
-2. agent `### Executor` `profile` -> `executors.profiles.<profile>.id`
-3. `lanes.<lane>.runtimePolicy.defaultExecutorByRole`
-4. launcher `--executor`
-5. `executors.default`
+- `wave.toml` chooses the project defaults such as `default_mode`.
+- Each agent's `### Executor` block is authoritative for that agent.
+- The current launcher only consumes the fields it actually implements. Unsupported keys are inert documentation until the runtime grows to honor them.
+- Skills are not auto-attached from config yet. The live contract is explicit per-agent `### Skills` in `waves/*.md`.
 
-Runtime settings resolve in layers:
+## Active Codex Fields
 
-1. `executors.<runtime>` global defaults
-2. `lanes.<lane>.executors.<runtime>` lane overrides
-3. `executors.profiles.<profile>` or `lanes.<lane>.executors.profiles.<profile>`
-4. agent `### Executor`
+The current launcher uses these fields from `### Executor`:
 
-Merge behavior:
+| Wave `### Executor` key | Launch effect |
+| --- | --- |
+| `profile` | Stored as authored metadata today; not used to synthesize a separate runtime layer |
+| `model` | Adds `--model <name>` to `codex exec` |
+| `codex.config` | Adds repeated `-c key=value` overrides |
 
-- scalar values override from later layers
-- list values merge for profile plus agent resolution on top of the lane base
-- lane executor overrides replace the corresponding global runtime fields before profile and agent resolution
-- a lane profile with the same name as a global profile replaces that profile definition for the lane
+Two operator env vars can override authored settings at launch time without rewriting the wave files:
 
-Skill settings resolve after executor selection, because runtime and deploy-kind skill attachment depend on the resolved executor id and the wave's default deploy environment kind. The starter layering order is:
+| Env var | Effect |
+| --- | --- |
+| `WAVE_CODEX_MODEL_OVERRIDE` | Overrides every agent's resolved `model` |
+| `WAVE_CODEX_CONFIG_OVERRIDE` | Overrides every agent's resolved `codex.config` entries |
 
-1. `skills.base`
-2. `lanes.<lane>.skills.base`
-3. `skills.byRole[resolvedRole]`
-4. `lanes.<lane>.skills.byRole[resolvedRole]`
-5. `skills.byRuntime[resolvedExecutorId]`
-6. `lanes.<lane>.skills.byRuntime[resolvedExecutorId]`
-7. `skills.byDeployKind[defaultDeployEnvironmentKind]`
-8. `lanes.<lane>.skills.byDeployKind[defaultDeployEnvironmentKind]`
-9. agent `### Skills`
-
-Then Wave filters configured skills through each bundle's activation metadata. Explicit per-agent `### Skills` still force attachment even when activation metadata would not auto-match.
-
-When retry-time fallback changes the runtime, Wave recomputes the effective skill set and rewrites the executor overlay before relaunch.
-
-## Common Fields
-
-These fields are shared across runtimes:
-
-| Surface | `wave.config.json` / profile key | Wave `### Executor` key | Notes |
-| --- | --- | --- | --- |
-| Executor id | `id` in profile only | `id` | Runtime id: `codex`, `claude`, `opencode`, `local` |
-| Profile selection | n/a | `profile` | Selects `executors.profiles.<name>` |
-| Model | `model` in profile, `executors.claude.model`, `executors.opencode.model` | `model` | Codex uses shared `model` from profile or agent only |
-| Fallbacks | `fallbacks` in profile | `fallbacks` | Runtime ids used for retry-time reassignment |
-| Tags | `tags` in profile | `tags` | Stored in resolved executor state for policy and traces |
-| Budget turns | `budget.turns` in profile | `budget.turns` | Seeds Claude `maxTurns` and OpenCode `steps` when runtime-specific values are absent; it does not set a Codex turn limit |
-| Budget minutes | `budget.minutes` in profile | `budget.minutes` | Caps attempt timeout |
-
-## Runtime Pages
-
-- [codex.md](./codex.md)
-- [claude.md](./claude.md)
-- [opencode.md](./opencode.md)
+This is primarily for operator control of latency and reasoning effort during long queue runs.
 
 ## Generated Artifacts
 
-Wave writes runtime artifacts here:
+For each launched wave, the runtime writes:
 
-- live runs: `.tmp/<lane>-wave-launcher/executors/wave-<n>/<agent-slug>/`
-- dry-run previews: `.tmp/<lane>-wave-launcher/dry-run/executors/wave-<n>/<agent-slug>/`
+- `preflight.json` in the compiled bundle directory
+- one `prompt.md` per agent under `.wave/state/build/specs/<run-id>/agents/<agent-id>/`
+- one `last-message.txt`, `events.jsonl`, and `stderr.txt` per completed agent in the same directory
+- a run-state record in `.wave/state/runs/<run-id>.json`
+- a trace bundle in `.wave/traces/runs/<run-id>.json`
 
-Common files:
-
-- `launch-preview.json`: resolved invocation lines, env vars, retry mode, and structured attempt/turn-limit metadata
-- `skills.resolved.md`: compact metadata-first skill catalog for the selected agent and runtime
-- `skills.expanded.md`: full canonical/debug skill payload with `SKILL.md` bodies and adapters
-- `skills.metadata.json`: resolved skill ids, activation metadata, permissions, hashes, and generated artifact paths
-- `<runtime>-skills.txt`: runtime-projected compact skill text used by the selected executor
-- `claude-system-prompt.txt`: generated Claude harness prompt overlay
-- `claude-settings.json`: generated Claude settings overlay when inline settings data is present
-- `opencode-agent-prompt.txt`: generated OpenCode harness prompt overlay
-- `opencode.json`: generated OpenCode runtime config overlay
-
-Runtime-specific delivery:
-
-- Codex uses the compact catalog in the compiled prompt and attaches bundle directories through `--add-dir`.
-- Claude appends the compact catalog to the generated system-prompt overlay.
-- OpenCode injects the compact catalog into `opencode.json` and attaches `skill.json`, `SKILL.md`, the selected adapter, and recursive `references/**` files through `--file`.
-- Local keeps skills prompt-only.
-
-`launch-preview.json` also records the resolved skill metadata plus a `limits` section. For Claude and OpenCode, that section reports the known turn ceiling and whether it came from the runtime-specific setting or generic `budget.turns`. For Codex, it explicitly records that Wave emitted no turn-limit flag and that any effective ceiling may come from the selected Codex profile or upstream runtime.
+The TUI, `wave control ...`, and `wave trace ...` all project from those same repo-local artifacts.
 
 ## Recommended Validation Path
 
-Use dry-run before relying on a new runtime configuration:
+Use the Rust CLI directly:
 
 ```bash
-pnpm exec wave doctor
-pnpm exec wave launch --lane main --dry-run --no-dashboard
+cargo run -p wave-cli -- doctor --json
+cargo run -p wave-cli -- lint --json
+cargo run -p wave-cli -- launch --wave 0 --dry-run --json
 ```
 
-Then inspect the generated preview and overlay files under `.tmp/<lane>-wave-launcher/dry-run/executors/`.
+Then inspect the compiled bundle and preflight report under `.wave/state/build/specs/`.

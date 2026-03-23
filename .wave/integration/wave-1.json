@@ -1,0 +1,118 @@
+{
+  "wave_id": 1,
+  "slug": "workspace-bootstrap",
+  "agent_id": "A8",
+  "role": "integration-steward",
+  "generated_at": "2026-03-23T09:35:49Z",
+  "run_state": {
+    "run_id": "wave-01-1774258277775",
+    "status": "running",
+    "wave_status": "active-run:running"
+  },
+  "state": "ready-for-doc-closure",
+  "counts": {
+    "claims": 0,
+    "conflicts": 0,
+    "blockers": 0
+  },
+  "evidence": {
+    "implementation_agents": [
+      {
+        "id": "A1",
+        "status": "succeeded",
+        "observed_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "summary": "Workspace manifest and crate ownership now match the bootstrap crate layout in the authored wave."
+      },
+      {
+        "id": "A2",
+        "status": "succeeded",
+        "observed_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "summary": "Runtime landing-zone crates now exist as stub libraries and match the CLI workspace shape."
+      },
+      {
+        "id": "A3",
+        "status": "succeeded",
+        "observed_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "summary": "Project config and onboarding docs now describe the same workspace-local bootstrap roots and command map."
+      }
+    ],
+    "verification": [
+      {
+        "command": "cargo test -q -p wave-cli -p wave-config -p wave-runtime -p wave-tui -p wave-app-server -p wave-trace",
+        "ok": true,
+        "detail": "Passed in this worktree."
+      },
+      {
+        "command": "cargo run -q -p wave-cli -- doctor --json",
+        "ok": true,
+        "detail": "Reported ok=true, 10 waves / 60 agents, 0 lint findings, 10 waves with complete closure, 0 skill-catalog issues, and queue totals ready=0 blocked=8 active=1 completed=1."
+      },
+      {
+        "command": "cargo run -q -p wave-cli -- control status --json",
+        "ok": true,
+        "detail": "Matched the doctor projection exactly."
+      },
+      {
+        "command": "cargo run -q -p wave-cli -- control show --wave 1 --json",
+        "ok": true,
+        "detail": "Active run wave-01-1774258277775 is on A8 with proof completed_agents=3 total_agents=6 and replay ok with no issues."
+      }
+    ],
+    "queue_visibility": {
+      "summary": {
+        "total_waves": 10,
+        "ready_waves": 0,
+        "blocked_waves": 8,
+        "active_waves": 1,
+        "completed_waves": 1,
+        "total_agents": 60,
+        "implementation_agents": 30,
+        "closure_agents": 30,
+        "waves_with_complete_closure": 10,
+        "waves_missing_closure": 0,
+        "total_missing_closure_agents": 0,
+        "lint_error_waves": 0,
+        "skill_catalog_issue_count": 0
+      },
+      "wave_1": {
+        "blocked_by": [
+          "active-run:running"
+        ],
+        "ready": false,
+        "closure_complete": true,
+        "completed": false,
+        "last_run_status": "running",
+        "rerun_requested": false
+      },
+      "active_run": {
+        "run_id": "wave-01-1774258277775",
+        "current_agent_id": "A8",
+        "current_agent_title": "Integration Steward",
+        "completed_agents": 3,
+        "total_agents": 6
+      }
+    }
+  },
+  "open_claims": [],
+  "conflicts": [],
+  "blockers": [],
+  "deploy_risks": [],
+  "doc_drift": [],
+  "notes": [
+    "Wave 1 is still in the active integration step while this record is written.",
+    "The workspace manifest and CLI surface agree with the repo guidance and the authored wave."
+  ],
+  "marker": "[wave-integration] state=ready-for-doc-closure claims=0 conflicts=0 blockers=0 detail=workspace and command surface align"
+}

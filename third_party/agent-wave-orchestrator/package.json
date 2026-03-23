@@ -1,0 +1,55 @@
+{
+  "name": "@chllming/wave-orchestration",
+  "version": "0.6.3",
+  "license": "MIT",
+  "description": "Generic wave-based multi-agent orchestration for repository work.",
+  "packageManager": "pnpm@10.23.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chllming/wave-orchestration.git"
+  },
+  "homepage": "https://github.com/chllming/wave-orchestration#readme",
+  "bugs": {
+    "url": "https://github.com/chllming/wave-orchestration/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "scripts",
+    "skills",
+    "docs",
+    "releases",
+    "wave.config.json",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "bin": {
+    "wave": "scripts/wave.mjs",
+    "wave-launch": "scripts/wave-launcher.mjs",
+    "wave-autonomous": "scripts/wave-autonomous.mjs",
+    "wave-feedback": "scripts/wave-human-feedback.mjs",
+    "wave-dashboard": "scripts/wave-dashboard.mjs",
+    "wave-local-executor": "scripts/wave-local-executor.mjs"
+  },
+  "scripts": {
+    "context7:api-check": "bash scripts/context7-export-env.sh run bash scripts/context7-api-check.sh",
+    "research:import-agent-context": "node scripts/research/import-agent-context-archive.mjs scripts/research/manifests/agent-context-expanded-2026-03-22.mjs",
+    "research:index-agent-context": "node scripts/research/generate-agent-context-indexes.mjs",
+    "research:sync-planner-context7": "node scripts/research/sync-planner-context7-bundle.mjs",
+    "research:refresh-agent-context": "pnpm research:import-agent-context && pnpm research:index-agent-context",
+    "test": "vitest run --config vitest.config.ts",
+    "wave": "node scripts/wave.mjs",
+    "wave:autonomous": "node scripts/wave-autonomous.mjs",
+    "wave:dashboard": "node scripts/wave-dashboard.mjs",
+    "wave:feedback": "node scripts/wave-human-feedback.mjs",
+    "wave:launch": "node scripts/wave-launcher.mjs",
+    "wave:local": "node scripts/wave-local-executor.mjs"
+  },
+  "devDependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "jsdom": "^29.0.1",
+    "pdfjs-dist": "^5.5.207",
+    "vitest": "3.2.4"
+  }
+}

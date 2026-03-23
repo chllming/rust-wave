@@ -1,0 +1,59 @@
+{
+  "wave_id": 6,
+  "slug": "dark-factory-enforcement",
+  "agent_id": "A8",
+  "role": "integration-steward",
+  "generated_at": "2026-03-23T00:00:00Z",
+  "state": "ready-for-doc-closure",
+  "counts": {
+    "claims": 0,
+    "conflicts": 0,
+    "blockers": 0
+  },
+  "evidence": {
+    "verification": [
+      {
+        "file": "README.md",
+        "ok": true,
+        "detail": "Dark-factory is documented as a fail-closed execution profile with launch preflight, refusal, and diagnostics."
+      },
+      {
+        "file": "wave.toml",
+        "ok": true,
+        "detail": "Default mode is dark-factory and the profile requires validation, rollback, proof, and closure."
+      },
+      {
+        "file": "docs/concepts/operating-modes.md",
+        "ok": true,
+        "detail": "Launch writes preflight.json, refuses before runtime mutation, and does not downgrade on missing contracts."
+      },
+      {
+        "file": "docs/reference/repository-guidance.md",
+        "ok": true,
+        "detail": "Dark-factory is enforced, failed preflight is authoritative, and missing launch data is a spec problem."
+      },
+      {
+        "file": "docs/plans/component-cutover-matrix.md",
+        "ok": true,
+        "detail": "dark-factory-preflight and fail-closed-launch-policy are marked repo-landed."
+      },
+      {
+        "file": "waves/06-dark-factory-enforcement.md",
+        "ok": true,
+        "detail": "Wave 6 assigns A8 only the integration files and requires the ready-for-doc-closure marker."
+      }
+    ]
+  },
+  "open_claims": [],
+  "conflicts": [],
+  "blockers": [],
+  "deploy_risks": [
+    "repo-local only; no live host mutation."
+  ],
+  "doc_drift": [],
+  "notes": [
+    "Lint, launch preflight, and operator diagnostics converge on one fail-closed policy.",
+    "No integration mismatch remains inside the owned closure slice."
+  ],
+  "marker": "[wave-integration] state=ready-for-doc-closure claims=0 conflicts=0 blockers=0 detail=lint, preflight, and diagnostics agree on fail-closed dark-factory enforcement"
+}

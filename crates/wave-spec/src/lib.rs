@@ -105,6 +105,38 @@ pub struct WaveAgent {
     pub prompt: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PromptContract {
+    pub sections: Vec<PromptContractSection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PromptContractSection {
+    pub heading: String,
+    pub body: String,
+    pub items: Vec<String>,
+}
+
+impl PromptContract {
+    pub fn section(&self, heading: &str) -> Option<&PromptContractSection> {
+        find_prompt_section(&self.sections, heading)
+    }
+
+    pub fn restated_file_ownership(&self) -> Vec<String> {
+        self.section("File ownership (only touch these paths)")
+            .map(|section| section.items.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn has_required_implementation_sections(&self) -> bool {
+        self.section("Primary goal").is_some()
+            && self.section("Required context before coding").is_some()
+            && self
+                .section("File ownership (only touch these paths)")
+                .is_some()
+    }
+}
+
 impl WaveAgent {
     pub fn is_closure_agent(&self) -> bool {
         matches!(self.id.as_str(), "A0" | "A8" | "A9" | "E0")
@@ -124,12 +156,47 @@ impl WaveAgent {
         }
     }
 
+    pub fn expected_role_prompts(&self) -> &'static [&'static str] {
+        match self.id.as_str() {
+            "A0" => &["docs/agents/wave-cont-qa-role.md"],
+            "A8" => &["docs/agents/wave-integration-role.md"],
+            "A9" => &["docs/agents/wave-documentation-role.md"],
+            "E0" => &["docs/agents/wave-cont-eval-role.md"],
+            _ => &[],
+        }
+    }
+
+    pub fn prompt_contract(&self) -> PromptContract {
+        parse_prompt_contract(&self.prompt)
+    }
+
     pub fn prompt_has_section(&self, heading: &str) -> bool {
-        find_prompt_section(&split_prompt_sections(&self.prompt), heading).is_some()
+        self.prompt_contract().section(heading).is_some()
+    }
+
+    pub fn prompt_section_text(&self, heading: &str) -> Option<String> {
+        self.prompt_contract()
+            .section(heading)
+            .map(|section| section.body.clone())
     }
 
     pub fn prompt_list_section(&self, heading: &str) -> Vec<String> {
         parse_prompt_list_section(&self.prompt, heading)
+    }
+
+    pub fn prompt_restated_file_ownership(&self) -> Vec<String> {
+        self.prompt_contract().restated_file_ownership()
+    }
+
+    pub fn prompt_has_required_implementation_sections(&self) -> bool {
+        self.prompt_contract()
+            .has_required_implementation_sections()
+    }
+
+    pub fn owns_path(&self, path: &str) -> bool {
+        self.file_ownership
+            .iter()
+            .any(|owned_path| path_is_owned_by(path, owned_path))
     }
 }
 
@@ -246,24 +313,18 @@ pub fn parse_wave_document(path: PathBuf, contents: &str) -> Result<WaveDocument
         component_promotions: parse_component_promotions(find_section(
             &sections,
             "Component promotions",
-        )),
+        ))?,
         deploy_environments: parse_deploy_environments(find_section(
             &sections,
             "Deploy environments",
-        )),
-        context7_defaults: parse_context7(find_section(&sections, "Context7 defaults")),
+        ))?,
+        context7_defaults: parse_context7(find_section(&sections, "Context7 defaults"))?,
         agents: parse_agents(&sections)?,
     })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MarkdownSection {
-    heading: String,
-    body: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PromptSection {
     heading: String,
     body: String,
 }
@@ -378,100 +439,149 @@ fn parse_agent(section: &MarkdownSection) -> Result<WaveAgent> {
         .map(|(id, title)| (id.trim().to_string(), title.trim().to_string()))
         .unwrap_or_else(|| (spec.trim().to_string(), String::new()));
     let (_, subsections) = split_sections_at_level(&section.body, 3);
+    let agent_id = id.clone();
+    let executor_agent_id = agent_id.clone();
+    let context7_agent_id = agent_id.clone();
 
     Ok(WaveAgent {
         id,
         title,
-        role_prompts: parse_list_section(find_section(&subsections, "Role prompts")),
-        executor: parse_key_value_lines(find_section(&subsections, "Executor"))
+        role_prompts: parse_bullet_section(find_section(&subsections, "Role prompts"))?,
+        executor: parse_key_value_section(find_section(&subsections, "Executor"))
+            .with_context(|| format!("agent {} has invalid Executor section", executor_agent_id))?
             .into_iter()
             .collect(),
-        context7: parse_context7(find_section(&subsections, "Context7")),
-        skills: parse_list_section(find_section(&subsections, "Skills")),
-        components: parse_list_section(find_section(&subsections, "Components")),
-        capabilities: parse_list_section(find_section(&subsections, "Capabilities")),
-        exit_contract: parse_exit_contract(find_section(&subsections, "Exit contract")),
-        deliverables: parse_list_section(find_section(&subsections, "Deliverables")),
-        file_ownership: parse_list_section(find_section(&subsections, "File ownership")),
-        final_markers: parse_list_section(find_section(&subsections, "Final markers")),
+        context7: parse_context7(find_section(&subsections, "Context7"))
+            .with_context(|| format!("agent {} has invalid Context7 section", context7_agent_id))?,
+        skills: parse_bullet_section(find_section(&subsections, "Skills"))?,
+        components: parse_bullet_section(find_section(&subsections, "Components"))?,
+        capabilities: parse_bullet_section(find_section(&subsections, "Capabilities"))?,
+        exit_contract: parse_exit_contract(find_section(&subsections, "Exit contract"))?,
+        deliverables: parse_bullet_section(find_section(&subsections, "Deliverables"))?,
+        file_ownership: parse_bullet_section(find_section(&subsections, "File ownership"))?,
+        final_markers: parse_bullet_section(find_section(&subsections, "Final markers"))?,
         prompt: parse_prompt(find_section(&subsections, "Prompt")),
     })
 }
 
-fn parse_context7(value: Option<&String>) -> Option<Context7Defaults> {
-    let section = value?;
-    let mut bundle = None;
-    let mut query = None;
+fn parse_context7(value: Option<&String>) -> Result<Option<Context7Defaults>> {
+    let Some(section) = value else {
+        return Ok(None);
+    };
+    let entries = parse_key_value_section(Some(section)).context("invalid Context7 section")?;
+    let map = entries.into_iter().collect::<BTreeMap<_, _>>();
+    let Some(bundle) = map
+        .get("bundle")
+        .cloned()
+        .filter(|bundle| !bundle.is_empty())
+    else {
+        anyhow::bail!("Context7 section is missing a bundle");
+    };
+    let query = map.get("query").cloned().filter(|query| !query.is_empty());
+    Ok(Some(Context7Defaults { bundle, query }))
+}
 
-    for (key, value) in parse_key_value_lines(Some(section)) {
-        match key.as_str() {
-            "bundle" if !value.is_empty() => bundle = Some(value),
-            "query" if !value.is_empty() => query = Some(value),
-            _ => {}
+fn parse_component_promotions(value: Option<&String>) -> Result<Vec<ComponentPromotion>> {
+    parse_key_value_section(value).map(|entries| {
+        entries
+            .into_iter()
+            .map(|(component, target)| ComponentPromotion { component, target })
+            .collect()
+    })
+}
+
+fn parse_deploy_environments(value: Option<&String>) -> Result<Vec<DeployEnvironment>> {
+    parse_key_value_section(value).map(|entries| {
+        entries
+            .into_iter()
+            .map(|(name, detail)| DeployEnvironment { name, detail })
+            .collect()
+    })
+}
+
+fn parse_bullet_section(value: Option<&String>) -> Result<Vec<String>> {
+    let Some(section) = value else {
+        return Ok(Vec::new());
+    };
+
+    let mut items = Vec::new();
+    for line in section.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
         }
+        if !trimmed.starts_with("- ") {
+            anyhow::bail!("expected bullet list item, found `{trimmed}`");
+        }
+        let item = trimmed.trim_start_matches("- ").trim();
+        if item.is_empty() {
+            anyhow::bail!("empty bullet list item");
+        }
+        items.push(item.to_string());
     }
 
-    bundle.map(|bundle| Context7Defaults { bundle, query })
+    Ok(items)
 }
 
-fn parse_component_promotions(value: Option<&String>) -> Vec<ComponentPromotion> {
-    parse_key_value_lines(value)
-        .into_iter()
-        .map(|(component, target)| ComponentPromotion { component, target })
-        .collect()
+fn parse_key_value_section(value: Option<&String>) -> Result<Vec<(String, String)>> {
+    let Some(section) = value else {
+        return Ok(Vec::new());
+    };
+
+    let mut entries = Vec::new();
+    for line in section.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !trimmed.starts_with("- ") {
+            anyhow::bail!("expected key/value bullet, found `{trimmed}`");
+        }
+        let entry = trimmed.trim_start_matches("- ").trim();
+        let Some((key, value)) = entry.split_once(':') else {
+            anyhow::bail!("expected `key: value` bullet, found `{entry}`");
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            anyhow::bail!("empty key in key/value bullet");
+        }
+        entries.push((key.to_string(), unquote(value.trim())));
+    }
+
+    Ok(entries)
 }
 
-fn parse_deploy_environments(value: Option<&String>) -> Vec<DeployEnvironment> {
-    parse_key_value_lines(value)
-        .into_iter()
-        .map(|(name, detail)| DeployEnvironment { name, detail })
-        .collect()
-}
-
-fn parse_list_section(value: Option<&String>) -> Vec<String> {
-    value
-        .map(|section| {
-            section
-                .lines()
-                .map(str::trim)
-                .filter(|line| line.starts_with("- "))
-                .map(|line| line.trim_start_matches("- ").trim().to_string())
-                .filter(|line| !line.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn parse_key_value_lines(value: Option<&String>) -> Vec<(String, String)> {
-    value
-        .map(|section| {
-            section
-                .lines()
-                .map(str::trim)
-                .filter(|line| line.starts_with("- "))
-                .filter_map(|line| {
-                    let entry = line.trim_start_matches("- ").trim();
-                    let (key, value) = entry.split_once(':')?;
-                    Some((key.trim().to_string(), unquote(value.trim())))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn parse_exit_contract(value: Option<&String>) -> Option<ExitContract> {
-    let entries = parse_key_value_lines(value);
+fn parse_exit_contract(value: Option<&String>) -> Result<Option<ExitContract>> {
+    let Some(section) = value else {
+        return Ok(None);
+    };
+    let entries =
+        parse_key_value_section(Some(section)).context("invalid Exit contract section")?;
     if entries.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let map = entries.into_iter().collect::<BTreeMap<_, _>>();
-    Some(ExitContract {
-        completion: CompletionLevel::parse(map.get("completion")?)?,
-        durability: DurabilityLevel::parse(map.get("durability")?)?,
-        proof: ProofLevel::parse(map.get("proof")?)?,
-        doc_impact: DocImpact::parse(map.get("doc-impact")?)?,
-    })
+    let completion = map
+        .get("completion")
+        .context("exit contract missing completion")?;
+    let durability = map
+        .get("durability")
+        .context("exit contract missing durability")?;
+    let proof = map.get("proof").context("exit contract missing proof")?;
+    let doc_impact = map
+        .get("doc-impact")
+        .context("exit contract missing doc-impact")?;
+    Ok(Some(ExitContract {
+        completion: CompletionLevel::parse(completion)
+            .ok_or_else(|| anyhow::anyhow!("invalid exit contract completion"))?,
+        durability: DurabilityLevel::parse(durability)
+            .ok_or_else(|| anyhow::anyhow!("invalid exit contract durability"))?,
+        proof: ProofLevel::parse(proof)
+            .ok_or_else(|| anyhow::anyhow!("invalid exit contract proof"))?,
+        doc_impact: DocImpact::parse(doc_impact)
+            .ok_or_else(|| anyhow::anyhow!("invalid exit contract doc-impact"))?,
+    }))
 }
 
 fn parse_prompt(value: Option<&String>) -> String {
@@ -502,39 +612,70 @@ fn parse_prompt(value: Option<&String>) -> String {
     }
 }
 
-fn split_prompt_sections(text: &str) -> Vec<PromptSection> {
+fn parse_prompt_contract(text: &str) -> PromptContract {
+    PromptContract {
+        sections: split_prompt_sections(text),
+    }
+}
+
+fn split_prompt_sections(text: &str) -> Vec<PromptContractSection> {
     let mut sections = Vec::new();
     let mut current_heading: Option<String> = None;
-    let mut current_body = String::new();
+    let mut current_lines = Vec::new();
+    let mut in_fence = false;
 
     for line in text.lines() {
         let trimmed = line.trim();
-        if is_prompt_section_heading(trimmed) {
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+        }
+
+        if !in_fence && is_prompt_section_heading(trimmed) {
             if let Some(heading) = current_heading.take() {
-                sections.push(PromptSection {
-                    heading,
-                    body: current_body.trim().to_string(),
-                });
-                current_body.clear();
+                sections.push(build_prompt_section(heading, &current_lines));
+                current_lines.clear();
             }
             current_heading = Some(trimmed.trim_end_matches(':').trim().to_string());
             continue;
         }
 
         if current_heading.is_some() {
-            current_body.push_str(line);
-            current_body.push('\n');
+            current_lines.push(line.to_string());
         }
     }
 
     if let Some(heading) = current_heading {
-        sections.push(PromptSection {
-            heading,
-            body: current_body.trim().to_string(),
-        });
+        sections.push(build_prompt_section(heading, &current_lines));
     }
 
     sections
+}
+
+fn build_prompt_section(heading: String, lines: &[String]) -> PromptContractSection {
+    let body = lines.join("\n");
+    let mut items = Vec::new();
+    let mut in_fence = false;
+
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+
+        if !in_fence && trimmed.starts_with("- ") {
+            let item = trimmed.trim_start_matches("- ").trim();
+            if !item.is_empty() {
+                items.push(item.to_string());
+            }
+        }
+    }
+
+    PromptContractSection {
+        heading,
+        body: body.trim().to_string(),
+        items,
+    }
 }
 
 fn is_prompt_section_heading(line: &str) -> bool {
@@ -542,28 +683,30 @@ fn is_prompt_section_heading(line: &str) -> bool {
 }
 
 fn find_prompt_section<'a>(
-    sections: &'a [PromptSection],
+    sections: &'a [PromptContractSection],
     heading: &str,
-) -> Option<&'a PromptSection> {
+) -> Option<&'a PromptContractSection> {
     sections
         .iter()
         .find(|section| section.heading.eq_ignore_ascii_case(heading))
 }
 
 fn parse_prompt_list_section(prompt: &str, heading: &str) -> Vec<String> {
-    let sections = split_prompt_sections(prompt);
-    let Some(section) = find_prompt_section(&sections, heading) else {
-        return Vec::new();
-    };
+    parse_prompt_contract(prompt)
+        .section(heading)
+        .map(|section| section.items.clone())
+        .unwrap_or_default()
+}
 
-    section
-        .body
-        .lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with("- "))
-        .map(|line| line.trim_start_matches("- ").trim().to_string())
-        .filter(|line| !line.is_empty())
-        .collect()
+fn path_is_owned_by(path: &str, owned_path: &str) -> bool {
+    let path = normalize_owned_path(path);
+    let owned_path = normalize_owned_path(owned_path);
+
+    path == owned_path || path.starts_with(&(owned_path + "/"))
+}
+
+fn normalize_owned_path(path: &str) -> String {
+    path.trim().trim_end_matches('/').to_string()
 }
 
 fn unquote(value: &str) -> String {
@@ -576,6 +719,7 @@ fn unquote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn parses_rich_wave_document() {
@@ -707,6 +851,11 @@ File ownership (only touch these paths):
         assert_eq!(wave.agents[1].deliverables.len(), 1);
         assert_eq!(wave.agents[1].final_markers.len(), 3);
         assert!(wave.agents[1].prompt.contains("Primary goal:"));
+        assert!(wave.agents[1].prompt_has_required_implementation_sections());
+        assert_eq!(
+            wave.agents[1].prompt_restated_file_ownership(),
+            vec!["crates/wave-control-plane/src/lib.rs".to_string()]
+        );
     }
 
     #[test]
@@ -744,6 +893,35 @@ File ownership (only touch these paths):
                 "crates/wave-control-plane/src/lib.rs".to_string(),
                 "crates/wave-cli/src/main.rs".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn parses_prompt_sections_with_fenced_content() {
+        let prompt = [
+            "Primary goal:",
+            "- Ship the reducer.",
+            "",
+            "Specific expectations:",
+            "```text",
+            "Example heading:",
+            "- not a section",
+            "```",
+            "- Emit [wave-proof] as a plain line.",
+            "",
+            "File ownership (only touch these paths):",
+            "- crates/wave-control-plane/src/lib.rs",
+        ]
+        .join("\n");
+
+        let contract = parse_prompt_contract(&prompt);
+        let section = contract
+            .section("Specific expectations")
+            .expect("specific expectations section");
+        assert!(section.body.contains("Example heading:"));
+        assert_eq!(
+            section.items,
+            vec!["Emit [wave-proof] as a plain line.".to_string()]
         );
     }
 
@@ -828,5 +1006,152 @@ File ownership (only touch these paths):
         let wave = parse_wave_document(PathBuf::from("waves/08-plain-commit.md"), raw)
             .expect("wave parses");
         assert_eq!(wave.commit_message.as_deref(), Some("Feat: plain label"));
+    }
+
+    #[test]
+    fn parses_wave_two_authored_contract_sections() {
+        let raw = include_str!("../../../waves/02-config-spec-lint.md");
+        let wave =
+            parse_wave_document(PathBuf::from("waves/02-config-spec-lint.md"), raw).expect("wave");
+
+        assert_eq!(wave.metadata.id, 2);
+        assert_eq!(
+            wave.commit_message.as_deref(),
+            Some("Feat: land typed config, authored-wave parser, and lint")
+        );
+        assert_eq!(wave.component_promotions.len(), 2);
+        assert_eq!(wave.deploy_environments.len(), 1);
+        assert_eq!(
+            wave.context7_defaults
+                .as_ref()
+                .map(|context7| context7.bundle.as_str()),
+            Some("rust-config-spec")
+        );
+        assert_eq!(wave.agents.len(), 6);
+        let a2 = wave
+            .agents
+            .iter()
+            .find(|agent| agent.id == "A2")
+            .expect("A2 agent");
+        assert!(a2.prompt_has_required_implementation_sections());
+        assert_eq!(
+            a2.prompt_restated_file_ownership(),
+            vec!["crates/wave-spec/src/lib.rs".to_string()]
+        );
+        assert_eq!(
+            a2.prompt_list_section("Specific expectations"),
+            vec![
+                "parse the authored-wave markdown structure directly instead of hiding meaning in freeform prose".to_string(),
+                "keep the model explicit enough for lint, doctor, queue status, and later launcher compilation".to_string(),
+                "emit the final [wave-proof], [wave-doc-delta], and [wave-component] markers as plain lines by themselves at the end of the output".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_context7_without_bundle() {
+        let raw = r#"+++
+id = 9
+slug = "bad-context7"
+title = "Bad context7"
+mode = "dark-factory"
+owners = ["A1"]
+depends_on = []
+validation = []
+rollback = []
+proof = []
++++
+# Wave 9 - Bad context7
+
+## Context7 defaults
+- query: "missing bundle"
+"#;
+
+        let err = parse_wave_document(PathBuf::from("waves/09-bad-context7.md"), raw)
+            .expect_err("wave should fail");
+        assert!(
+            err.to_string()
+                .contains("Context7 section is missing a bundle")
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_bullet_sections() {
+        let raw = r#"+++
+id = 10
+slug = "bad-bullets"
+title = "Bad bullets"
+mode = "dark-factory"
+owners = ["A1"]
+depends_on = []
+validation = []
+rollback = []
+proof = []
++++
+# Wave 10 - Bad bullets
+
+## Component promotions
+queue-reducer: repo-landed
+"#;
+
+        let err = parse_wave_document(PathBuf::from("waves/10-bad-bullets.md"), raw)
+            .expect_err("wave should fail");
+        assert!(
+            err.to_string()
+                .contains("expected key/value bullet, found `queue-reducer: repo-landed`")
+        );
+    }
+
+    #[test]
+    fn wave_agent_helpers_expose_closure_contracts_and_owned_paths() {
+        let agent = WaveAgent {
+            id: "A8".to_string(),
+            title: "Integration".to_string(),
+            role_prompts: vec!["docs/agents/wave-integration-role.md".to_string()],
+            executor: BTreeMap::from([("profile".to_string(), "review-codex".to_string())]),
+            context7: Some(Context7Defaults {
+                bundle: "none".to_string(),
+                query: Some("Repository docs remain canonical".to_string()),
+            }),
+            skills: vec!["wave-core".to_string()],
+            components: Vec::new(),
+            capabilities: Vec::new(),
+            exit_contract: None,
+            deliverables: Vec::new(),
+            file_ownership: vec![
+                ".wave/integration/wave-0.md".to_string(),
+                "docs/plans/".to_string(),
+            ],
+            final_markers: vec!["[wave-integration]".to_string()],
+            prompt: [
+                "Primary goal:",
+                "- Reconcile the authored-wave slices.",
+                "",
+                "Required context before coding:",
+                "- Read README.md.",
+                "",
+                "Specific expectations:",
+                "- emit the final [wave-integration] marker as a plain last line",
+                "",
+                "File ownership (only touch these paths):",
+                "- .wave/integration/wave-0.md",
+                "- docs/plans/",
+            ]
+            .join("\n"),
+        };
+
+        assert_eq!(
+            agent.expected_role_prompts(),
+            &["docs/agents/wave-integration-role.md"]
+        );
+        assert_eq!(
+            agent
+                .prompt_section_text("Specific expectations")
+                .as_deref(),
+            Some("- emit the final [wave-integration] marker as a plain last line")
+        );
+        assert!(agent.owns_path(".wave/integration/wave-0.md"));
+        assert!(agent.owns_path("docs/plans/master-plan.md"));
+        assert!(!agent.owns_path("crates/wave-spec/src/lib.rs"));
     }
 }

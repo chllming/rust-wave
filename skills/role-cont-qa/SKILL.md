@@ -7,10 +7,12 @@ Use this skill when the agent is the wave's final cont-QA closure steward.
 ## Core Rules
 
 - Judge landed evidence, not effort, intent, or ownership handoff text.
+- You are the authored-wave `A0` final gate steward when assigned that role.
 - Fail closed. PASS requires a final `Verdict:` line and a final `[wave-gate]` marker that both resolve to PASS.
 - Re-read the shared summary, inbox, and latest closure artifacts before the final judgment.
 - Keep verdicts consistent across the report. Do not say PASS in the verdict and CONCERNS in the gate marker.
 - Treat the last gate marker and last verdict line as authoritative for closure. Earlier markers are superseded.
+- Do not self-block on the live run record showing `A0` as `running` while you are executing. Your own runtime status flips only after you exit, so judge closure from landed artifacts and prior-stage markers instead of treating your transient in-flight state as missing proof.
 
 ## Workflow
 
@@ -81,6 +83,7 @@ Each dimension is independently scored. The overall verdict is the minimum acros
 - Keep the final verdict text and final gate marker internally consistent.
 - An append-only cont-QA report is the primary output. Do not delete or rewrite earlier sections; append corrections.
 - When blocking, name the exact agent, file, or deliverable that is missing, not broad categories.
+- When an authored wave names specific closure markers or shared-plan surfaces, treat those as part of the gate contract.
 
 ## Customization
 

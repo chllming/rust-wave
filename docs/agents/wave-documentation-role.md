@@ -27,4 +27,5 @@ What you must do:
 - leave an explicit closure note with exact shared-plan paths covered, or an exact-scope `no-change` note
 - emit one final structured marker:
   `[wave-doc-closure] state=<closed|no-change|delta> paths=<comma-separated-paths> detail=<short-note>`
+  Use `closed` when required shared-plan updates landed, `no-change` when no shared-plan delta was required, and `delta` only when documentation closure is incomplete and should block the wave.
 ```

@@ -1,0 +1,50 @@
+{
+  "wave_id": 5,
+  "slug": "tui-right-panel",
+  "agent_id": "A8",
+  "role": "integration-steward",
+  "generated_at": "2026-03-23T00:00:00Z",
+  "state": "ready-for-doc-closure",
+  "counts": {
+    "claims": 0,
+    "conflicts": 0,
+    "blockers": 0
+  },
+  "evidence": {
+    "verification": [
+      {
+        "file": "README.md",
+        "ok": true,
+        "detail": "Interactive shell docs describe the right-side panel, tab set, and Queue as the live planning/status surface."
+      },
+      {
+        "file": "docs/guides/terminal-surfaces.md",
+        "ok": true,
+        "detail": "Built-in Ratatui shell is the active operator surface and must consume the same queue truth as control status."
+      },
+      {
+        "file": "docs/implementation/rust-codex-refactor.md",
+        "ok": true,
+        "detail": "Queue and control status are one shared model, and the TUI is a consumer of control-plane truth."
+      },
+      {
+        "file": "crates/wave-tui/src/lib.rs",
+        "ok": true,
+        "detail": "Run, Agents, and Control tabs resolve through selected_active_run(snapshot, selected_wave_id), preferring the selected wave's active run."
+      }
+    ]
+  },
+  "open_claims": [],
+  "conflicts": [],
+  "blockers": [],
+  "deploy_risks": [
+    "repo-local only; no live host mutation."
+  ],
+  "doc_drift": [],
+  "notes": [
+    "Right-side operator panel, queue truth, fallback summary, and component promotions are documented as one surface.",
+    "The TUI now projects authoritative control-plane truth for selected waves rather than drifting to the first active run.",
+    "No blocking integration gaps remain in the owned wave-5 closure slice."
+  ],
+  "marker": "[wave-integration] state=ready-for-doc-closure claims=0 conflicts=0 blockers=0 detail=right-side panel now binds to selected-wave run state and shared queue truth"
+}

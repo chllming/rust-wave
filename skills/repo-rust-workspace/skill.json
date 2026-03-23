@@ -1,0 +1,44 @@
+{
+  "id": "repo-rust-workspace",
+  "title": "Repo Rust Workspace",
+  "description": "Repository-specific guidance for Rust workspace layout, crate boundaries, CLI bootstrap, and authored-wave friendly crate ownership.",
+  "activation": {
+    "when": "Attach when implementation work changes the Rust workspace, crate topology, config/spec parsing, or operator CLI bootstrap surfaces.",
+    "roles": [
+      "implementation",
+      "documentation",
+      "integration"
+    ],
+    "runtimes": [
+      "codex"
+    ],
+    "deployKinds": []
+  },
+  "termination": "Stop when the Rust workspace slice has clear crate ownership, compileable boundaries, and docs aligned to the landed structure.",
+  "permissions": {
+    "network": [],
+    "shell": [
+      "cargo",
+      "rustc",
+      "rustfmt"
+    ],
+    "mcpServers": []
+  },
+  "trust": {
+    "tier": "repo-owned"
+  },
+  "evalCases": [
+    {
+      "id": "implementation-codex-rust-workspace",
+      "role": "implementation",
+      "runtime": "codex",
+      "expectActive": true
+    },
+    {
+      "id": "deploy-codex-rust-workspace",
+      "role": "deploy",
+      "runtime": "codex",
+      "expectActive": false
+    }
+  ]
+}

@@ -3,9 +3,11 @@ name = "wave-control-plane"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 
 [dependencies]
 serde.workspace = true
 wave-config.workspace = true
 wave-dark-factory.workspace = true
 wave-spec.workspace = true
+wave-trace.workspace = true

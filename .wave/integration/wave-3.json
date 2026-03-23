@@ -1,0 +1,109 @@
+{
+  "wave_id": 3,
+  "slug": "control-plane-bootstrap",
+  "agent_id": "A8",
+  "role": "integration-steward",
+  "generated_at": "2026-03-23T00:00:00Z",
+  "run_state": {
+    "run_id": "wave-03-1774260206812",
+    "status": "running"
+  },
+  "state": "ready-for-doc-closure",
+  "counts": {
+    "claims": 0,
+    "conflicts": 0,
+    "blockers": 1
+  },
+  "evidence": {
+    "implementation_agents": [
+      {
+        "id": "A1",
+        "status": "succeeded",
+        "observed_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "summary": "Typed control-plane queue and reducer model landed."
+      },
+      {
+        "id": "A2",
+        "status": "succeeded",
+        "observed_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "summary": "CLI status and JSON reporting landed."
+      },
+      {
+        "id": "A3",
+        "status": "succeeded",
+        "observed_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "summary": "Operator guidance and planning-status docs landed."
+      }
+    ],
+    "verification": [
+      {
+        "command": "README.md",
+        "ok": true,
+        "detail": "Operator surface and status summary are documented as one control-plane projection."
+      },
+      {
+        "command": "docs/implementation/rust-codex-refactor.md",
+        "ok": true,
+        "detail": "Planning status is described as typed and consistently projected."
+      },
+      {
+        "command": "docs/guides/terminal-surfaces.md",
+        "ok": true,
+        "detail": "Queue truth is documented as matching control-plane status output."
+      }
+    ],
+    "queue_visibility": {
+      "summary": {
+        "total_waves": 10,
+        "ready_waves": 0,
+        "blocked_waves": 9,
+        "active_waves": 1,
+        "completed_waves": 0,
+        "total_agents": 60,
+        "implementation_agents": 30,
+        "closure_agents": 30,
+        "waves_with_complete_closure": 10,
+        "waves_missing_closure": 0,
+        "total_missing_closure_agents": 0,
+        "lint_error_waves": 0,
+        "skill_catalog_issue_count": 0
+      },
+      "wave_3": {
+        "blocked_by": [
+          "wave:2:pending"
+        ],
+        "ready": false,
+        "closure_complete": true,
+        "completed": false,
+        "last_run_status": null,
+        "rerun_requested": false
+      }
+    }
+  },
+  "open_claims": [],
+  "conflicts": [],
+  "blockers": [
+    "wave:2:pending"
+  ],
+  "deploy_risks": [
+    "repo-local only; no live host mutation."
+  ],
+  "doc_drift": [],
+  "notes": [
+    "Planning status, JSON status, and operator guidance are consistent.",
+    "Wave 3 remains upstream-blocked by wave 2."
+  ],
+  "marker": "[wave-integration] state=ready-for-doc-closure claims=0 conflicts=0 blockers=1 detail=typed planning status and queue projection align, but wave:2 still blocks claimability"
+}

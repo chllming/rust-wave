@@ -1,0 +1,58 @@
+{
+  "wave_id": 4,
+  "slug": "codex-launcher",
+  "agent_id": "A8",
+  "role": "integration-steward",
+  "generated_at": "2026-03-23T00:00:00Z",
+  "state": "ready-for-doc-closure",
+  "counts": {
+    "claims": 0,
+    "conflicts": 0,
+    "blockers": 0
+  },
+  "evidence": {
+    "verification": [
+      {
+        "file": "crates/wave-runtime/src/lib.rs",
+        "ok": true,
+        "detail": "Launches Codex exec, writes last-message.txt, and pins project-scoped Codex home."
+      },
+      {
+        "file": "crates/wave-cli/src/main.rs",
+        "ok": true,
+        "detail": "launch and autonomous are Codex-gated entrypoints with dry-run support."
+      },
+      {
+        "file": "crates/wave-app-server/src/lib.rs",
+        "ok": true,
+        "detail": "Operator actions mirror Codex availability for launch and autonomous."
+      },
+      {
+        "file": "wave.toml",
+        "ok": true,
+        "detail": "Repo-local Codex home and state roots are explicit project config."
+      },
+      {
+        "file": "third_party/codex-rs/UPSTREAM.toml",
+        "ok": true,
+        "detail": "Vendored Codex baseline is pinned to an explicit upstream commit."
+      },
+      {
+        "file": "docs/reference/runtime-config/codex.md",
+        "ok": true,
+        "detail": "Docs match the live launcher invocation and runtime path contract."
+      }
+    ]
+  },
+  "open_claims": [],
+  "conflicts": [],
+  "blockers": [],
+  "deploy_risks": [
+    "repo-local only; no live host mutation."
+  ],
+  "doc_drift": [],
+  "notes": [
+    "Codex-first runtime, project-scoped state, and CLI/operator gates are coherent."
+  ],
+  "marker": "[wave-integration] state=ready-for-doc-closure claims=0 conflicts=0 blockers=0 detail=Codex-first launcher and repo-local state roots are aligned"
+}

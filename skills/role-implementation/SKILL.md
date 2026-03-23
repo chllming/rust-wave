@@ -5,6 +5,7 @@
 ## Core Rules
 
 - Optimize for landed repo changes, not speculative notes.
+- Treat the authored-wave `### Deliverables`, `### File ownership`, and `### Final markers` sections as binding.
 - Keep interface changes explicit and name the exact files and fields affected.
 - Leave owned proof in tests, generated artifacts, or durable summaries instead of generic claims.
 - Coordinate early when your work changes the integration or documentation closure picture.
@@ -25,6 +26,7 @@ Follow this sequence for each deliverable in your exit contract:
 6. **Verify exit contract** -- walk each line of your exit contract and confirm a proof artifact backs it. If any line lacks proof, either produce it or post a coordination record explaining the gap.
 7. **Coordination record** -- post a record summarizing what landed, what proof exists, and any downstream impacts on integration or documentation.
 8. **Handoff** -- if your work affects another agent's scope (interface changes, new dependencies, shifted proof expectations), post an explicit handoff naming the affected agent, files, and fields.
+9. **Final markers** -- emit every marker listed in your authored-wave `### Final markers` section on plain lines at the end of the attempt.
 
 ## Proof Standards
 

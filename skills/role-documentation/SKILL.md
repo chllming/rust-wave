@@ -5,6 +5,7 @@
 ## Core Rules
 
 - Treat shared plan docs as product surface, not cleanup.
+- You are the authored-wave `A9` documentation steward when assigned that role.
 - Update status, sequencing, ownership, and proof expectations when the wave changes them.
 - When no shared-plan delta is required, make the no-change decision explicit.
 - Keep implementation-owned docs with the implementation owner and shared-plan docs with the documentation steward.
@@ -17,7 +18,9 @@ Execute these steps for every wave:
 1. **Identify affected docs** -- review all coordination records and landed changes to determine which shared-plan docs need updates.
 2. **Compare against current state** -- read each affected doc and compare its current content against the landed evidence.
 3. **Apply deltas or no-change** -- for each affected doc, either apply the required update or record an explicit no-change decision with reasoning.
-4. **Emit marker** -- produce one final `[wave-doc-closure]` marker.
+4. **Emit marker** -- produce one final `[wave-doc-closure]` marker. Use `state=closed` when required doc updates are fully landed, `state=no-change` when none were required, and `state=delta` only when documentation closure is incomplete and the wave should fail.
+
+The documentation role closes shared-plan drift. It does not absorb implementation-owned docs unless the wave explicitly assigns them.
 
 ## Shared-Plan Scope
 
@@ -61,6 +64,7 @@ Emit exactly one marker at the end of your documentation closure:
   - `delta` -- partial updates landed but more work remains (treat as not closed).
 - `paths`: comma-separated list of doc paths that were updated or reviewed.
 - `detail`: concise summary (under 120 characters) of what changed or why nothing changed.
+- A bare `[wave-doc-closure]` line is invalid. Always include `state=...`, `paths=...`, and `detail=...`.
 
 ## Customization
 

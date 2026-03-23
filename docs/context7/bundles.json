@@ -1,13 +1,158 @@
 {
   "version": 1,
-  "defaultBundle": "none",
+  "defaultBundle": "rust-config-spec",
   "laneDefaults": {
-    "main": "none"
+    "main": "rust-config-spec"
   },
   "bundles": {
     "none": {
-      "description": "Disable Context7 prefetch for this run.",
+      "description": "Disable Context7 prefetch for closure-only and docs-only review steps.",
       "libraries": []
+    },
+    "rust-cli-core": {
+      "description": "Rust and Clap docs for the `wave` CLI bootstrap and command tree.",
+      "libraries": [
+        {
+          "libraryId": "/rust-lang/rust",
+          "libraryName": "rust",
+          "queryHint": "workspace layout, path handling, and filesystem IO for the `wave` CLI bootstrap"
+        },
+        {
+          "libraryId": "/websites/doc_rust-lang_cargo",
+          "libraryName": "cargo",
+          "queryHint": "workspace manifests, binary targets, and test execution for the `wave` CLI package"
+        },
+        {
+          "libraryId": "/websites/rs_clap",
+          "libraryName": "clap",
+          "queryHint": "derive parsers, subcommands, global flags, and help text for the `wave` CLI"
+        }
+      ]
+    },
+    "rust-config-spec": {
+      "description": "Serde, TOML, and markdown parsing docs for typed project config and authored-wave contracts.",
+      "libraries": [
+        {
+          "libraryId": "/rust-lang/rust",
+          "libraryName": "rust",
+          "queryHint": "filesystem IO, string parsing, and markdown section scanning for typed config and authored-wave docs"
+        },
+        {
+          "libraryId": "/websites/serde_rs",
+          "libraryName": "serde",
+          "queryHint": "derive serialization, optional fields, and typed config models for project and wave specs"
+        },
+        {
+          "libraryId": "/websites/rs_toml",
+          "libraryName": "toml",
+          "queryHint": "document parsing, value conversion, and config decoding for wave.toml and authored metadata"
+        }
+      ]
+    },
+    "rust-control-plane": {
+      "description": "State modeling docs for queue projections, closure coverage, and JSON status views.",
+      "libraries": [
+        {
+          "libraryId": "/rust-lang/rust",
+          "libraryName": "rust",
+          "queryHint": "queue reducers, ordering, and borrowed state structures for planning projections"
+        },
+        {
+          "libraryId": "/websites/serde_rs",
+          "libraryName": "serde",
+          "queryHint": "serializable state records, optional fields, and stable wire-shape modeling for queue JSON"
+        },
+        {
+          "libraryId": "/serde-rs/json",
+          "libraryName": "serde_json",
+          "queryHint": "pretty-printing, JSON artifacts, and queue-status serialization"
+        }
+      ]
+    },
+    "rust-async-runtime": {
+      "description": "Async runtime docs for launcher loops, Codex subprocess orchestration, and cancellation gates.",
+      "libraries": [
+        {
+          "libraryId": "/rust-lang/rust",
+          "libraryName": "rust",
+          "queryHint": "process management, error handling, channels, and task coordination for launcher loops"
+        },
+        {
+          "libraryId": "/websites/rs_tokio_1_49_0",
+          "libraryName": "tokio",
+          "queryHint": "async tasks, subprocess orchestration, timing loops, select patterns, and cancellation gates"
+        },
+        {
+          "libraryId": "/websites/rs_tracing",
+          "libraryName": "tracing",
+          "queryHint": "spans, structured logs, subscriber wiring, and runtime instrumentation for launcher debugging"
+        }
+      ]
+    },
+    "rust-tui": {
+      "description": "Terminal UI docs for the right-side operator panel and resize-aware shell layout.",
+      "libraries": [
+        {
+          "libraryId": "/rust-lang/rust",
+          "libraryName": "rust",
+          "queryHint": "iterator-driven rendering, ownership across UI state, and event loop plumbing for shell panels"
+        },
+        {
+          "libraryId": "/ratatui/ratatui",
+          "libraryName": "ratatui",
+          "queryHint": "layout splits, side panels, tables, tabs, widgets, and responsive operator rendering"
+        },
+        {
+          "libraryId": "/crossterm-rs/crossterm",
+          "libraryName": "crossterm",
+          "queryHint": "keyboard events, terminal control, resize handling, and alternate-screen behavior"
+        }
+      ]
+    },
+    "rust-policy-gates": {
+      "description": "Fail-closed validation docs for dark-factory lint rules and catalog checks.",
+      "libraries": [
+        {
+          "libraryId": "/rust-lang/rust",
+          "libraryName": "rust",
+          "queryHint": "validation logic, error propagation, guard clauses, and fail-closed control flow for lint gates"
+        },
+        {
+          "libraryId": "/websites/rs_clap",
+          "libraryName": "clap",
+          "queryHint": "command gating, validation errors, argument contracts, and operator diagnostics for lint commands"
+        },
+        {
+          "libraryId": "/websites/serde_rs",
+          "libraryName": "serde",
+          "queryHint": "policy structs, serialization constraints, and enforcement-friendly state modeling for catalog checks"
+        },
+        {
+          "libraryId": "/websites/rs_toml",
+          "libraryName": "toml",
+          "queryHint": "config-backed policy decoding and machine-readable execution requirements for fail-closed checks"
+        }
+      ]
+    },
+    "rust-trace-replay": {
+      "description": "Rust observability docs for trace capture, persisted artifacts, and replay validation.",
+      "libraries": [
+        {
+          "libraryId": "/rust-lang/rust",
+          "libraryName": "rust",
+          "queryHint": "filesystem durability, structured artifacts, hashing inputs, and deterministic replay helpers for proofs"
+        },
+        {
+          "libraryId": "/websites/rs_tracing",
+          "libraryName": "tracing",
+          "queryHint": "event capture, structured spans, layered subscribers, and replay-friendly instrumentation for trace replay"
+        },
+        {
+          "libraryId": "/serde-rs/json",
+          "libraryName": "serde_json",
+          "queryHint": "trace bundle serialization, pretty JSON output, and replay artifact parsing"
+        }
+      ]
     },
     "node-typescript": {
       "description": "Node.js and TypeScript runtime docs for JavaScript service and tooling work.",

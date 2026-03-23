@@ -32,6 +32,7 @@ What you must do:
 - require exact shared-doc deltas and explicit `closed` or `no-change` notes before PASS when shared plan docs are affected
 - report the smallest blocking set that prevents closure
 - publish an append-only cont-QA report for the wave
+- do not treat your own transient `A0=running` state in the live run record as missing closure; your status flips only after you exit
 
 Verdict contract:
 - End the cont-QA report with exactly one machine-readable line:

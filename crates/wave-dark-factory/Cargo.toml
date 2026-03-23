@@ -3,8 +3,10 @@ name = "wave-dark-factory"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 wave-config.workspace = true
 wave-spec.workspace = true

@@ -5,6 +5,7 @@
 ## Core Rules
 
 - Synthesize contradictions, blockers, proof gaps, deploy risk, and doc drift across the full wave.
+- You are the authored-wave `A8` integration steward when assigned that role.
 - Fail closed on unresolved contradictions or missing proof.
 - Prefer exact blocker owners and exact closure conditions over broad summaries.
 - Keep the integration artifact decision-ready for documentation and cont-QA closure.
@@ -22,7 +23,9 @@ Execute these steps in order:
 6. **Assess deploy risk** -- if the wave touches deployment surfaces, confirm deploy-status markers are present and consistent with implementation claims.
 7. **Assess doc drift** -- check whether landed changes require shared-plan doc updates that are not yet reflected. Flag drift for the documentation steward.
 8. **Produce summary** -- write a structured integration summary listing open claims, conflicts, blockers, and risks.
-9. **Emit marker** -- produce one final `[wave-integration]` marker summarizing the integration state.
+9. **Emit marker** -- produce one final structured `[wave-integration]` marker summarizing the integration state. Bare `[wave-integration]` tokens are invalid.
+
+The integration role does not rewrite implementation slices. If the wave is inconsistent, record the inconsistency and keep it open.
 
 ## Synthesis Checklist
 

@@ -12,11 +12,12 @@
     "deprecation-ready"
   ],
   "components": {
-    "wave-parser-and-launcher": {
-      "title": "Wave parser and launcher",
+    "authored-wave-schema": {
+      "title": "Authored-wave schema",
       "canonicalDocs": [
         "README.md",
-        "docs/plans/wave-orchestrator.md"
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/00-architecture-baseline.md"
       ],
       "currentLevel": "repo-landed",
       "promotions": [
@@ -26,74 +27,17 @@
         }
       ],
       "proofSurfaces": [
-        "wave parsing",
-        "launcher dry-run",
-        "wave parser tests"
+        "frontmatter and section parsing",
+        "typed wave and agent model",
+        "prompt and ownership restatement parsing"
       ]
     },
-    "executor-abstraction-and-prompt-transport": {
-      "title": "Executor abstraction and prompt transport",
+    "closure-contracts-and-skill-catalog": {
+      "title": "Closure contracts and skill catalog",
       "canonicalDocs": [
         "README.md",
-        "docs/plans/context7-wave-orchestrator.md"
-      ],
-      "currentLevel": "repo-landed",
-      "promotions": [],
-      "proofSurfaces": [
-        "executor launch specs",
-        "runtime overlays",
-        "executor tests"
-      ]
-    },
-    "closure-sweep-and-role-gates": {
-      "title": "Closure sweep and role gates",
-      "canonicalDocs": [
-        "docs/plans/wave-orchestrator.md",
-        "docs/agents/wave-cont-qa-role.md",
-        "docs/agents/wave-documentation-role.md"
-      ],
-      "currentLevel": "repo-landed",
-      "promotions": [],
-      "proofSurfaces": [
-        "structured gate markers",
-        "closure sweep",
-        "launcher tests"
-      ]
-    },
-    "context7-scope-and-prefetch": {
-      "title": "Context7 scope and prefetch",
-      "canonicalDocs": [
-        "docs/plans/context7-wave-orchestrator.md",
-        "docs/context7/bundles.json"
-      ],
-      "currentLevel": "repo-landed",
-      "promotions": [],
-      "proofSurfaces": [
-        "bundle resolution",
-        "prefetch cache",
-        "prompt injection"
-      ]
-    },
-    "state-artifacts-and-feedback": {
-      "title": "State artifacts and feedback",
-      "canonicalDocs": [
-        "docs/plans/wave-orchestrator.md",
-        "docs/plans/current-state.md"
-      ],
-      "currentLevel": "repo-landed",
-      "promotions": [],
-      "proofSurfaces": [
-        "status summaries",
-        "dashboards",
-        "feedback queue"
-      ]
-    },
-    "starter-docs-and-adoption-guidance": {
-      "title": "Starter docs and adoption guidance",
-      "canonicalDocs": [
-        "README.md",
-        "docs/plans/master-plan.md",
-        "docs/plans/migration.md"
+        "docs/reference/skills.md",
+        "waves/00-architecture-baseline.md"
       ],
       "currentLevel": "repo-landed",
       "promotions": [
@@ -103,9 +47,373 @@
         }
       ],
       "proofSurfaces": [
-        "starter wave docs",
-        "adoption guidance",
-        "shared-plan closure"
+        "closure-agent skill enforcement",
+        "skill catalog manifest validation",
+        "closure role and marker contracts"
+      ]
+    },
+    "rust-workspace": {
+      "title": "Rust workspace",
+      "canonicalDocs": [
+        "README.md",
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/01-workspace-bootstrap.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 1,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "workspace manifest",
+        "crate layout",
+        "cargo build and test"
+      ]
+    },
+    "wave-cli-bootstrap": {
+      "title": "Wave CLI bootstrap",
+      "canonicalDocs": [
+        "README.md",
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/01-workspace-bootstrap.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 1,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "bootstrap CLI entrypoint",
+        "project show command",
+        "CLI smoke tests"
+      ]
+    },
+    "wave-config-and-spec": {
+      "title": "Wave config and spec",
+      "canonicalDocs": [
+        "README.md",
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/02-config-spec-lint.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 2,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "typed config loading",
+        "typed authored-wave parsing",
+        "spec fixtures"
+      ]
+    },
+    "dark-factory-lint": {
+      "title": "Dark-factory lint",
+      "canonicalDocs": [
+        "README.md",
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/02-config-spec-lint.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 2,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "prompt-section and marker-instruction checks",
+        "ownership restatement and deliverable-boundary checks",
+        "skill and role-boundary validation"
+      ]
+    },
+    "planning-status": {
+      "title": "Planning status",
+      "canonicalDocs": [
+        "README.md",
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/03-control-plane-bootstrap.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 3,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "typed queue summary",
+        "per-wave agent and closure counts",
+        "queue visibility and blocker projection",
+        "control-plane tests"
+      ]
+    },
+    "queue-json-surface": {
+      "title": "Queue JSON surface",
+      "canonicalDocs": [
+        "README.md",
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/03-control-plane-bootstrap.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 3,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "doctor JSON",
+        "control status JSON",
+        "queue visibility projection",
+        "blocker-wave and skill-issue reporting"
+      ]
+    },
+    "codex-launcher-substrate": {
+      "title": "Codex launcher substrate",
+      "canonicalDocs": [
+        "README.md",
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/04-codex-launcher.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 4,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "launcher runtime wiring",
+        "Codex execution flow",
+        "agent lifecycle management",
+        "project-local launch artifacts"
+      ]
+    },
+    "project-scoped-codex-home": {
+      "title": "Project-scoped Codex home",
+      "canonicalDocs": [
+        "README.md",
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/04-codex-launcher.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 4,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "project-local Codex state",
+        "home directory management",
+        "per-run bundle scoping",
+        "runtime isolation checks"
+      ]
+    },
+    "tui-right-side-panel": {
+      "title": "TUI right-side panel",
+      "canonicalDocs": [
+        "README.md",
+        "docs/guides/terminal-surfaces.md",
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/05-tui-right-panel.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 5,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "right-side panel rendering",
+        "layout behavior",
+        "terminal UI tests",
+        "operator-visible queue selection and rerun controls"
+      ]
+    },
+    "operator-status-tabs": {
+      "title": "Operator status tabs",
+      "canonicalDocs": [
+        "README.md",
+        "docs/guides/terminal-surfaces.md",
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/05-tui-right-panel.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 5,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "status tab rendering",
+        "operator navigation",
+        "narrow-terminal fallback",
+        "shared queue/control truth with in-place operator actions",
+        "primary operator affordances for queue selection and rerun intent"
+      ]
+    },
+    "dark-factory-preflight": {
+      "title": "Dark-factory preflight",
+      "canonicalDocs": [
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/06-dark-factory-enforcement.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 6,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "runtime preflight checks",
+        "operator-visible blocker reporting",
+        "prelaunch validation tests",
+        "authoring-time completeness for later queue and dogfood waves"
+      ]
+    },
+    "fail-closed-launch-policy": {
+      "title": "Fail-closed launch policy",
+      "canonicalDocs": [
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/06-dark-factory-enforcement.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 6,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "launch gating",
+        "policy enforcement",
+        "runtime failure-path tests"
+      ]
+    },
+    "autonomous-wave-queue": {
+      "title": "Autonomous wave queue",
+      "canonicalDocs": [
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/07-autonomous-queue.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 7,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "autonomous queue state",
+        "launch selection logic",
+        "typed claimability gating",
+        "scheduler tests"
+      ]
+    },
+    "dependency-aware-scheduler": {
+      "title": "Dependency-aware scheduler",
+      "canonicalDocs": [
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/07-autonomous-queue.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 7,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "dependency blocker handling",
+        "queue ordering",
+        "typed gating for autonomous selection",
+        "scheduler status projections"
+      ]
+    },
+    "trace-bundle-v1": {
+      "title": "Trace bundle v1",
+      "canonicalDocs": [
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/08-trace-replay.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 8,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "trace artifacts",
+        "run metadata",
+        "replay fixtures"
+      ]
+    },
+    "replay-validation": {
+      "title": "Replay validation",
+      "canonicalDocs": [
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/08-trace-replay.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 8,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "trace replay checks",
+        "validator output",
+        "replay compatibility tests"
+      ]
+    },
+    "self-host-dogfood-runbook": {
+      "title": "Self-host dogfood runbook",
+      "canonicalDocs": [
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/09-dogfood.md"
+      ],
+      "currentLevel": "contract-frozen",
+      "promotions": [
+        {
+          "wave": 9,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "dogfood operating guide",
+        "self-host execution record",
+        "repo-local proof artifacts"
+      ]
+    },
+    "dark-factory-dogfood-evidence": {
+      "title": "Dark-factory dogfood evidence",
+      "canonicalDocs": [
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/09-dogfood.md"
+      ],
+      "currentLevel": "contract-frozen",
+      "promotions": [
+        {
+          "wave": 9,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "dogfood validation output",
+        "closure evidence",
+        "repo self-host proof"
       ]
     }
   }
