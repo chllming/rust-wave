@@ -31,6 +31,7 @@ The `Queue` view is the operator planning surface. It reflects the same control-
 - whether a wave is waiting on upstream work or is ready to claim
 
 The panel should keep consuming that same queue truth. The UI may change, but it should not invent a second source of status state.
+In the current Rust implementation, that queue/control truth is reducer-backed: `wave-reducer` computes the planning state and `wave-projections` turns it into the `ProjectionSpine`, operator snapshot input read models, and queue/control status helper read models that `wave control status --json`, `wave-app-server`, and the TUI consume. `wave-app-server` now carries that control-status read model through the operator snapshot so the TUI can render the queue decision story and control attention lines without rebuilding them locally. `wave-control-plane` is now only a forwarding shim over that contract. Compatibility run records still enter as adapter inputs for active-run and replay facts in this stage.
 When multiple waves are active, the `Run`, `Agents`, and `Control` tabs follow the currently selected wave instead of whichever run happens to appear first in the snapshot.
 
 ## Keybindings
@@ -73,14 +74,15 @@ The right-side panel is therefore a shipped dashboard, but only these actions ar
 
 ## State Sources
 
-The shell is backed by the same repo-local state as the CLI:
+The shell is backed by the same repo-local inputs and projection contract as the CLI:
 
+- `waves/`
 - `.wave/state/build/specs/`
 - `.wave/state/runs/`
 - `.wave/state/control/reruns/`
 - `.wave/traces/runs/`
 
-That means the TUI, `wave control ...`, and `wave trace ...` are all reading the same recorded operator state instead of maintaining a separate dashboard substrate.
+Planning, queue, and control tabs are reducer-backed projections assembled from those inputs, rather than UI-local readiness logic. `wave-app-server` now maps reducer-backed operator snapshot inputs plus the projection-owned control-status read model into the transport snapshot the TUI reads, and the TUI queue/control tabs render that snapshot payload so the closure-blocked story, closure-attention lines, and skill-issue lines stay aligned with `wave control status`. `.wave/state/projections/` remains the canonical root for persisted projection material once later waves start writing those read models out durably.
 
 The trace surface is evidence, not debug logging. `wave trace latest` reports the recorded run, replay result, and trace path for each wave, while `wave trace replay` rechecks the stored record or v1 trace bundle against the current run state and emits replay issues when something diverges.
 
@@ -91,8 +93,9 @@ The stored trace bundle records:
 - run-level artifact presence for the bundle directory and the project-scoped Codex home
 
 Replay validation is read-only. It does not rebuild the run; it verifies that the durable artifacts still match the recorded outcome.
+The planning/control projections are reducer-backed in memory today, but replay is still compatibility-backed until the canonical trace/result layers replace the current adapters.
 
-The planning-status surface is therefore control-plane first. Any future TUI dependency should read from the same status model rather than recomputing readiness, blockers, or queue order locally in the UI layer.
+The planning-status surface is therefore control-plane first. Any future TUI dependency should read from the same status model rather than recomputing readiness, blockers, or queue order locally in the UI layer, and any future dashboard transport should start from the same reducer-backed operator snapshot inputs that `wave-app-server` uses today.
 
 ## Current Non-Goals
 

@@ -14,12 +14,14 @@ use wave_app_server::ProofSnapshot;
 use wave_app_server::load_operator_snapshot;
 use wave_config::DEFAULT_CONFIG_PATH;
 use wave_config::ProjectConfig;
-use wave_control_plane::PlanningStatus;
-use wave_control_plane::PlanningStatusProjection;
-use wave_control_plane::WaveQueueEntry;
-use wave_control_plane::WaveRef;
-use wave_control_plane::build_planning_status_projection;
-use wave_control_plane::build_planning_status_with_state;
+use wave_control_plane::ControlStatusReadModel;
+use wave_control_plane::OperatorSnapshotInputs;
+use wave_control_plane::PlanningProjectionReadModel;
+use wave_control_plane::PlanningStatusReadModel;
+use wave_control_plane::ProjectionSpine;
+use wave_control_plane::WaveStatusReadModel;
+use wave_control_plane::build_control_status_read_model_from_spine;
+use wave_control_plane::build_projection_spine_with_state;
 use wave_dark_factory::LintFinding;
 use wave_dark_factory::has_errors;
 use wave_dark_factory::lint_project;
@@ -206,20 +208,26 @@ struct DoctorCheck {
 #[derive(Debug, Serialize)]
 struct DoctorReport {
     ok: bool,
+    status: PlanningStatusReadModel,
+    projection: PlanningProjectionReadModel,
+    operator: OperatorSnapshotInputs,
+    control_status: ControlStatusReadModel,
     checks: Vec<DoctorCheck>,
-    projection: PlanningStatusProjection,
-    status: PlanningStatus,
+    role_prompts: RolePromptSurface,
+    authority: AuthoritySurface,
 }
 
 #[derive(Debug, Serialize)]
 struct ControlStatusReport {
-    projection: PlanningStatusProjection,
-    status: PlanningStatus,
+    status: PlanningStatusReadModel,
+    projection: PlanningProjectionReadModel,
+    operator: OperatorSnapshotInputs,
+    control_status: ControlStatusReadModel,
 }
 
 #[derive(Debug, Serialize)]
 struct ControlShowReport {
-    wave: WaveQueueEntry,
+    wave: WaveStatusReadModel,
     active_run: Option<ActiveRunDetail>,
     rerun_intent: Option<RerunIntentRecord>,
 }
@@ -239,6 +247,100 @@ struct ProofReport {
     replay: Option<ReplayReport>,
 }
 
+#[derive(Debug, Serialize)]
+struct ProjectShowReport {
+    project_name: String,
+    default_lane: String,
+    default_mode: String,
+    waves_dir: PathBuf,
+    docs_dir: PathBuf,
+    skills_dir: PathBuf,
+    codex_vendor_dir: PathBuf,
+    role_prompts: RolePromptSurface,
+    authority: AuthoritySurface,
+}
+
+#[derive(Debug, Serialize)]
+struct RolePromptSurface {
+    dir: PathBuf,
+    cont_qa: PathBuf,
+    cont_eval: PathBuf,
+    integration: PathBuf,
+    documentation: PathBuf,
+    security: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+struct AuthoritySurface {
+    project_codex_home: PathBuf,
+    state_dir: PathBuf,
+    configured_canonical: ConfiguredCanonicalAuthoritySurface,
+    materialized_canonical: MaterializedCanonicalAuthoritySurface,
+    compatibility: CompatibilityAuthoritySurface,
+    projection_source: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct ConfiguredCanonicalAuthoritySurface {
+    build_specs: PathBuf,
+    events: PathBuf,
+    control_events: PathBuf,
+    coordination: PathBuf,
+    results: PathBuf,
+    derived: PathBuf,
+    projections: PathBuf,
+    state_traces: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+struct MaterializedCanonicalAuthoritySurface {
+    build_specs: MaterializedPathSurface,
+    events: MaterializedPathSurface,
+    control_events: MaterializedPathSurface,
+    coordination: MaterializedPathSurface,
+    results: MaterializedPathSurface,
+    derived: MaterializedPathSurface,
+    projections: MaterializedPathSurface,
+    state_traces: MaterializedPathSurface,
+}
+
+#[derive(Debug, Serialize)]
+struct MaterializedPathSurface {
+    path: PathBuf,
+    exists: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct CompatibilityAuthoritySurface {
+    state_control: PathBuf,
+    state_runs: PathBuf,
+    trace_root: PathBuf,
+    trace_runs: PathBuf,
+}
+
+impl MaterializedCanonicalAuthoritySurface {
+    fn entries(&self) -> [&MaterializedPathSurface; 8] {
+        [
+            &self.build_specs,
+            &self.events,
+            &self.control_events,
+            &self.coordination,
+            &self.results,
+            &self.derived,
+            &self.projections,
+            &self.state_traces,
+        ]
+    }
+
+    fn present_count(&self) -> usize {
+        self.entries().iter().filter(|entry| entry.exists).count()
+    }
+
+    fn all_exist(&self) -> bool {
+        self.present_count() == self.entries().len()
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let root = config_root(&cli.config);
@@ -248,13 +350,14 @@ fn main() -> Result<()> {
     let skill_catalog_issues = validate_skill_catalog(&root);
     let latest_runs = load_latest_runs(&root, &config)?;
     let rerun_wave_ids = pending_rerun_wave_ids(&root, &config)?;
-    let status = build_planning_status_with_state(
+    let spine = build_projection_spine_with_state(
         &config,
         &waves,
         &findings,
         &skill_catalog_issues,
         &latest_runs,
         &rerun_wave_ids,
+        codex_binary_available(),
     );
 
     match cli.command {
@@ -262,12 +365,12 @@ fn main() -> Result<()> {
             if io::stdout().is_terminal() && io::stdin().is_terminal() {
                 wave_tui::run(&root, &config)
             } else {
-                render_summary(&config, &status, &latest_runs)
+                render_summary(&config, &spine)
             }
         }
         Some(Command::Project {
             command: ProjectCommand::Show { json },
-        }) => render_project(&config, json),
+        }) => render_project(&config, &root, json),
         Some(Command::Doctor { json }) => render_doctor(
             &cli.config,
             &config,
@@ -275,14 +378,16 @@ fn main() -> Result<()> {
             &waves,
             &findings,
             &latest_runs,
-            &status,
+            &spine,
             json,
         ),
         Some(Command::Lint { json }) => render_lint(&findings, json),
-        Some(Command::Draft { wave, json }) => render_draft(&root, &waves, &status, wave, json),
+        Some(Command::Draft { wave, json }) => {
+            render_draft(&root, &waves, &spine.planning.status, wave, json)
+        }
         Some(Command::Control {
             command: ControlCommand::Status { json },
-        }) => render_status(&status, json),
+        }) => render_status(&spine, json),
         Some(Command::Control {
             command: ControlCommand::Show { wave, json },
         }) => render_control_show(&root, &config, wave, json),
@@ -324,7 +429,7 @@ fn main() -> Result<()> {
             &root,
             &config,
             &waves,
-            &status,
+            &spine.planning.status,
             LaunchOptions {
                 wave_id: wave,
                 dry_run,
@@ -339,7 +444,7 @@ fn main() -> Result<()> {
             &root,
             &config,
             &waves,
-            status,
+            spine.planning.status.clone(),
             AutonomousOptions { limit, dry_run },
             json,
         ),
@@ -368,12 +473,10 @@ fn config_root(config_path: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn render_summary(
-    config: &ProjectConfig,
-    status: &PlanningStatus,
-    latest_runs: &HashMap<u32, WaveRunRecord>,
-) -> Result<()> {
-    let projection = build_planning_status_projection(status);
+fn render_summary(config: &ProjectConfig, spine: &ProjectionSpine) -> Result<()> {
+    let status = &spine.planning.status;
+    let projection = &spine.planning.projection;
+    let control_status = build_control_status_read_model_from_spine(spine);
 
     println!("Wave operator shell");
     println!("project: {}", config.project_name);
@@ -408,39 +511,152 @@ fn render_summary(
         },
         projection.skill_catalog.issue_count
     );
-    render_queue_decision_lines(status, &projection);
+    for line in &control_status.queue_decision.lines {
+        println!("{line}");
+    }
     println!(
         "skill issue paths: {}",
-        format_string_list(&projection.skill_catalog.issue_paths)
+        format_string_list(&control_status.skill_issue_paths)
     );
     println!(
         "launcher: codex={} ready={}",
-        codex_binary_available(),
-        !status.next_ready_wave_ids.is_empty()
+        spine.operator.control.launcher_ready,
+        spine.operator.control.launcher_ready && !status.next_ready_wave_ids.is_empty()
     );
     println!(
         "active runs: {}",
-        latest_runs
-            .values()
-            .filter(|run| !run.completed_successfully())
-            .count()
+        spine.operator.dashboard.active_runs.len()
     );
     Ok(())
 }
 
-fn render_project(config: &ProjectConfig, json: bool) -> Result<()> {
+fn role_prompt_surface(config: &ProjectConfig, root: &Path) -> RolePromptSurface {
+    let resolved = config.resolved_paths(root);
+    RolePromptSurface {
+        dir: resolved.role_prompts.dir,
+        cont_qa: resolved.role_prompts.cont_qa,
+        cont_eval: resolved.role_prompts.cont_eval,
+        integration: resolved.role_prompts.integration,
+        documentation: resolved.role_prompts.documentation,
+        security: resolved.role_prompts.security,
+    }
+}
+
+fn authority_surface(config: &ProjectConfig, root: &Path) -> AuthoritySurface {
+    let resolved = config.resolved_paths(root);
+    let configured_canonical = ConfiguredCanonicalAuthoritySurface {
+        build_specs: resolved.authority.state_build_specs_dir.clone(),
+        events: resolved.authority.state_events_dir.clone(),
+        control_events: resolved.authority.state_events_control_dir.clone(),
+        coordination: resolved.authority.state_events_coordination_dir.clone(),
+        results: resolved.authority.state_results_dir.clone(),
+        derived: resolved.authority.state_derived_dir.clone(),
+        projections: resolved.authority.state_projections_dir.clone(),
+        state_traces: resolved.authority.state_traces_dir.clone(),
+    };
+    AuthoritySurface {
+        project_codex_home: resolved.authority.project_codex_home,
+        state_dir: resolved.authority.state_dir,
+        configured_canonical,
+        materialized_canonical: MaterializedCanonicalAuthoritySurface {
+            build_specs: materialized_path_surface(
+                resolved.authority.state_build_specs_dir.clone(),
+            ),
+            events: materialized_path_surface(resolved.authority.state_events_dir.clone()),
+            control_events: materialized_path_surface(
+                resolved.authority.state_events_control_dir.clone(),
+            ),
+            coordination: materialized_path_surface(
+                resolved.authority.state_events_coordination_dir.clone(),
+            ),
+            results: materialized_path_surface(resolved.authority.state_results_dir.clone()),
+            derived: materialized_path_surface(resolved.authority.state_derived_dir.clone()),
+            projections: materialized_path_surface(
+                resolved.authority.state_projections_dir.clone(),
+            ),
+            state_traces: materialized_path_surface(resolved.authority.state_traces_dir.clone()),
+        },
+        compatibility: CompatibilityAuthoritySurface {
+            state_control: resolved.authority.state_control_dir,
+            state_runs: resolved.authority.state_runs_dir,
+            trace_root: resolved.authority.trace_dir,
+            trace_runs: resolved.authority.trace_runs_dir,
+        },
+        projection_source: "planning, queue, and control status are reducer-backed projections over compatibility run inputs; replay remains compatibility-backed",
+    }
+}
+
+fn render_project(config: &ProjectConfig, root: &Path, json: bool) -> Result<()> {
+    let resolved = config.resolved_paths(root);
+    let report = ProjectShowReport {
+        project_name: config.project_name.clone(),
+        default_lane: config.default_lane.clone(),
+        default_mode: config.default_mode.to_string(),
+        waves_dir: resolved.waves_dir,
+        docs_dir: resolved.docs_dir,
+        skills_dir: resolved.skills_dir,
+        codex_vendor_dir: resolved.codex_vendor_dir,
+        role_prompts: role_prompt_surface(config, root),
+        authority: authority_surface(config, root),
+    };
     if json {
-        print_json(config)
+        print_json(&report)
     } else {
-        println!("project: {}", config.project_name);
-        println!("default lane: {}", config.default_lane);
-        println!("default mode: {}", config.default_mode);
-        println!("waves dir: {}", config.waves_dir.display());
-        println!("codex vendor dir: {}", config.codex_vendor_dir.display());
+        println!("project: {}", report.project_name);
+        println!("default lane: {}", report.default_lane);
+        println!("default mode: {}", report.default_mode);
+        println!("waves dir: {}", report.waves_dir.display());
+        println!("docs dir: {}", report.docs_dir.display());
+        println!("skills dir: {}", report.skills_dir.display());
+        println!("codex vendor dir: {}", report.codex_vendor_dir.display());
         println!(
-            "project codex home: {}",
-            config.project_codex_home.display()
+            "role prompts: dir={} | cont_qa={} cont_eval={} integration={} documentation={} security={}",
+            report.role_prompts.dir.display(),
+            report.role_prompts.cont_qa.display(),
+            report.role_prompts.cont_eval.display(),
+            report.role_prompts.integration.display(),
+            report.role_prompts.documentation.display(),
+            report.role_prompts.security.display()
         );
+        println!(
+            "authority roots: project_codex_home={} state_root={}",
+            report.authority.project_codex_home.display(),
+            report.authority.state_dir.display()
+        );
+        println!(
+            "configured canonical roots: build_specs={} events={} control_events={} coordination={} results={} derived={} projections={} state_traces={}",
+            report.authority.configured_canonical.build_specs.display(),
+            report.authority.configured_canonical.events.display(),
+            report
+                .authority
+                .configured_canonical
+                .control_events
+                .display(),
+            report.authority.configured_canonical.coordination.display(),
+            report.authority.configured_canonical.results.display(),
+            report.authority.configured_canonical.derived.display(),
+            report.authority.configured_canonical.projections.display(),
+            report.authority.configured_canonical.state_traces.display()
+        );
+        println!(
+            "materialized canonical roots: build_specs={} events={} control_events={} coordination={} results={} derived={} projections={} state_traces={}",
+            format_materialized_path(&report.authority.materialized_canonical.build_specs),
+            format_materialized_path(&report.authority.materialized_canonical.events),
+            format_materialized_path(&report.authority.materialized_canonical.control_events),
+            format_materialized_path(&report.authority.materialized_canonical.coordination),
+            format_materialized_path(&report.authority.materialized_canonical.results),
+            format_materialized_path(&report.authority.materialized_canonical.derived),
+            format_materialized_path(&report.authority.materialized_canonical.projections),
+            format_materialized_path(&report.authority.materialized_canonical.state_traces)
+        );
+        println!(
+            "compatibility roots: state_control={} state_runs={} trace_root={} trace_runs={}",
+            report.authority.compatibility.state_control.display(),
+            report.authority.compatibility.state_runs.display(),
+            report.authority.compatibility.trace_root.display(),
+            report.authority.compatibility.trace_runs.display()
+        );
+        println!("projection source: {}", report.authority.projection_source);
         Ok(())
     }
 }
@@ -452,11 +668,44 @@ fn render_doctor(
     waves: &[WaveDocument],
     findings: &[LintFinding],
     latest_runs: &HashMap<u32, WaveRunRecord>,
-    status: &PlanningStatus,
+    spine: &ProjectionSpine,
     json: bool,
 ) -> Result<()> {
-    let projection = build_planning_status_projection(status);
+    let status = &spine.planning.status;
+    let projection = &spine.planning.projection;
+    let control_status = build_control_status_read_model_from_spine(spine);
     let context7_catalog_issues = validate_context7_bundle_catalog(root);
+    let resolved_paths = config.resolved_paths(root);
+    let role_prompts = role_prompt_surface(config, root);
+    let authority = authority_surface(config, root);
+    let role_prompt_checks = resolved_paths
+        .role_prompts
+        .all_files()
+        .iter()
+        .map(|path| path.exists())
+        .collect::<Vec<_>>();
+    let authority_roots_ok = resolved_paths.authority.canonical_roots_within_state_dir();
+    let materialized_root_count = authority.materialized_canonical.present_count();
+    let materialized_root_total = authority.materialized_canonical.entries().len();
+    let authority_materialization_ok =
+        materialized_root_count == 0 || authority.materialized_canonical.all_exist();
+    let authority_materialization_detail = if materialized_root_count == 0 {
+        "runtime bootstrap has not materialized canonical roots yet".to_string()
+    } else {
+        format!(
+            "{} of {} canonical roots materialized | build_specs={} events={} control_events={} coordination={} results={} derived={} projections={} state_traces={}",
+            materialized_root_count,
+            materialized_root_total,
+            format_materialized_path(&authority.materialized_canonical.build_specs),
+            format_materialized_path(&authority.materialized_canonical.events),
+            format_materialized_path(&authority.materialized_canonical.control_events),
+            format_materialized_path(&authority.materialized_canonical.coordination),
+            format_materialized_path(&authority.materialized_canonical.results),
+            format_materialized_path(&authority.materialized_canonical.derived),
+            format_materialized_path(&authority.materialized_canonical.projections),
+            format_materialized_path(&authority.materialized_canonical.state_traces),
+        )
+    };
     let checks = vec![
         DoctorCheck {
             name: "config",
@@ -545,6 +794,41 @@ fn render_doctor(
             ),
         },
         DoctorCheck {
+            name: "typed-role-prompts",
+            ok: role_prompt_checks.iter().all(|ok| *ok),
+            detail: format!(
+                "dir={} | cont_qa={} cont_eval={} integration={} documentation={} security={}",
+                role_prompts.dir.display(),
+                role_prompts.cont_qa.display(),
+                role_prompts.cont_eval.display(),
+                role_prompts.integration.display(),
+                role_prompts.documentation.display(),
+                role_prompts.security.display()
+            ),
+        },
+        DoctorCheck {
+            name: "typed-authority-roots",
+            ok: authority_roots_ok,
+            detail: format!(
+                "state_root={} | build_specs={} control_events={} coordination={} results={} derived={} projections={} state_traces={} | compatibility truth remains state_runs={} trace_runs={}",
+                authority.state_dir.display(),
+                authority.configured_canonical.build_specs.display(),
+                authority.configured_canonical.control_events.display(),
+                authority.configured_canonical.coordination.display(),
+                authority.configured_canonical.results.display(),
+                authority.configured_canonical.derived.display(),
+                authority.configured_canonical.projections.display(),
+                authority.configured_canonical.state_traces.display(),
+                authority.compatibility.state_runs.display(),
+                authority.compatibility.trace_runs.display()
+            ),
+        },
+        DoctorCheck {
+            name: "materialized-authority-roots",
+            ok: authority_materialization_ok,
+            detail: authority_materialization_detail,
+        },
+        DoctorCheck {
             name: "codex-binary",
             ok: codex_binary_available(),
             detail: "checked `codex --version`".to_string(),
@@ -580,9 +864,13 @@ fn render_doctor(
     ];
     let report = DoctorReport {
         ok: checks.iter().all(|check| check.ok),
-        checks,
-        projection: projection.clone(),
         status: status.clone(),
+        projection: projection.clone(),
+        operator: spine.operator.clone(),
+        control_status: control_status.clone(),
+        checks,
+        role_prompts,
+        authority,
     };
     if json {
         print_json(&report)
@@ -617,11 +905,61 @@ fn render_doctor(
             },
             projection.skill_catalog.issue_count
         );
-        render_queue_decision_lines(status, &projection);
+        for line in &control_status.queue_decision.lines {
+            println!("{line}");
+        }
         println!(
             "skill issue paths: {}",
-            format_string_list(&projection.skill_catalog.issue_paths)
+            format_string_list(&control_status.skill_issue_paths)
         );
+        println!(
+            "typed role prompts: dir={} | cont_qa={} cont_eval={} integration={} documentation={} security={}",
+            report.role_prompts.dir.display(),
+            report.role_prompts.cont_qa.display(),
+            report.role_prompts.cont_eval.display(),
+            report.role_prompts.integration.display(),
+            report.role_prompts.documentation.display(),
+            report.role_prompts.security.display()
+        );
+        println!(
+            "typed authority roots: project_codex_home={} state_root={}",
+            report.authority.project_codex_home.display(),
+            report.authority.state_dir.display()
+        );
+        println!(
+            "configured canonical roots: build_specs={} events={} control_events={} coordination={} results={} derived={} projections={} state_traces={}",
+            report.authority.configured_canonical.build_specs.display(),
+            report.authority.configured_canonical.events.display(),
+            report
+                .authority
+                .configured_canonical
+                .control_events
+                .display(),
+            report.authority.configured_canonical.coordination.display(),
+            report.authority.configured_canonical.results.display(),
+            report.authority.configured_canonical.derived.display(),
+            report.authority.configured_canonical.projections.display(),
+            report.authority.configured_canonical.state_traces.display()
+        );
+        println!(
+            "materialized canonical roots: build_specs={} events={} control_events={} coordination={} results={} derived={} projections={} state_traces={}",
+            format_materialized_path(&report.authority.materialized_canonical.build_specs),
+            format_materialized_path(&report.authority.materialized_canonical.events),
+            format_materialized_path(&report.authority.materialized_canonical.control_events),
+            format_materialized_path(&report.authority.materialized_canonical.coordination),
+            format_materialized_path(&report.authority.materialized_canonical.results),
+            format_materialized_path(&report.authority.materialized_canonical.derived),
+            format_materialized_path(&report.authority.materialized_canonical.projections),
+            format_materialized_path(&report.authority.materialized_canonical.state_traces)
+        );
+        println!(
+            "compatibility truth: state_control={} state_runs={} trace_root={} trace_runs={}",
+            report.authority.compatibility.state_control.display(),
+            report.authority.compatibility.state_runs.display(),
+            report.authority.compatibility.trace_root.display(),
+            report.authority.compatibility.trace_runs.display()
+        );
+        println!("projection source: {}", report.authority.projection_source);
         for check in &report.checks {
             println!(
                 "- {}: {} ({})",
@@ -630,9 +968,11 @@ fn render_doctor(
                 check.detail
             );
         }
-        render_projection_attention_lines(&projection);
-        for issue in &projection.skill_catalog.issues {
-            println!("skill issue: {} ({})", issue.path, issue.message);
+        for line in &control_status.closure_attention_lines {
+            println!("{line}");
+        }
+        for line in &control_status.skill_issue_lines {
+            println!("{line}");
         }
         for issue in &context7_catalog_issues {
             println!("context7 issue: {} ({})", issue.path, issue.message);
@@ -668,7 +1008,7 @@ fn render_lint(findings: &[LintFinding], json: bool) -> Result<()> {
 fn render_draft(
     root: &Path,
     waves: &[WaveDocument],
-    status: &PlanningStatus,
+    status: &PlanningStatusReadModel,
     wave_id: Option<u32>,
     json: bool,
 ) -> Result<()> {
@@ -691,13 +1031,16 @@ fn render_draft(
     }
 }
 
-fn render_status(status: &PlanningStatus, json: bool) -> Result<()> {
-    let projection = build_planning_status_projection(status);
-
+fn render_status(spine: &ProjectionSpine, json: bool) -> Result<()> {
+    let status = &spine.planning.status;
+    let projection = &spine.planning.projection;
+    let control_status = build_control_status_read_model_from_spine(spine);
     if json {
         print_json(&ControlStatusReport {
-            projection,
             status: status.clone(),
+            projection: projection.clone(),
+            operator: spine.operator.clone(),
+            control_status: control_status.clone(),
         })
     } else {
         println!("project: {}", status.project_name);
@@ -731,17 +1074,21 @@ fn render_status(status: &PlanningStatus, json: bool) -> Result<()> {
             },
             projection.skill_catalog.issue_count
         );
-        render_queue_decision_lines(status, &projection);
+        for line in &control_status.queue_decision.lines {
+            println!("{line}");
+        }
         println!(
             "skill issue paths: {}",
-            format_string_list(&projection.skill_catalog.issue_paths)
+            format_string_list(&control_status.skill_issue_paths)
         );
-        if projection.waves.iter().any(|wave| !wave.closure.complete) {
-            render_projection_attention_lines(&projection);
+        if !control_status.closure_attention_lines.is_empty() {
+            for line in &control_status.closure_attention_lines {
+                println!("{line}");
+            }
         }
-        if !projection.skill_catalog.issues.is_empty() {
-            for issue in &projection.skill_catalog.issues {
-                println!("skill issue: {} ({})", issue.path, issue.message);
+        if !control_status.skill_issue_lines.is_empty() {
+            for line in &control_status.skill_issue_lines {
+                println!("{line}");
             }
         }
         Ok(())
@@ -1001,7 +1348,7 @@ fn render_launch(
     root: &Path,
     config: &ProjectConfig,
     waves: &[WaveDocument],
-    status: &PlanningStatus,
+    status: &PlanningStatusReadModel,
     options: LaunchOptions,
     json: bool,
 ) -> Result<()> {
@@ -1034,7 +1381,7 @@ fn render_autonomous(
     root: &Path,
     config: &ProjectConfig,
     waves: &[WaveDocument],
-    status: PlanningStatus,
+    status: PlanningStatusReadModel,
     options: AutonomousOptions,
     json: bool,
 ) -> Result<()> {
@@ -1253,18 +1600,6 @@ fn select_wave_id(snapshot: &OperatorSnapshot, requested: Option<u32>) -> Result
     anyhow::bail!("no waves are available")
 }
 
-fn format_wave_ids(wave_ids: &[u32]) -> String {
-    if wave_ids.is_empty() {
-        "none".to_string()
-    } else {
-        wave_ids
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-}
-
 fn format_string_list(values: &[String]) -> String {
     if values.is_empty() {
         "none".to_string()
@@ -1273,91 +1608,17 @@ fn format_string_list(values: &[String]) -> String {
     }
 }
 
-fn format_wave_refs(values: &[WaveRef]) -> String {
-    if values.is_empty() {
-        "none".to_string()
-    } else {
-        values
-            .iter()
-            .map(|wave| format!("{}:{}", wave.id, wave.slug))
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
+fn materialized_path_surface(path: PathBuf) -> MaterializedPathSurface {
+    let exists = path.exists();
+    MaterializedPathSurface { path, exists }
 }
 
-fn render_queue_decision_lines(status: &PlanningStatus, projection: &PlanningStatusProjection) {
-    let next_wave = status
-        .queue
-        .next_ready_wave_ids
-        .first()
-        .copied()
-        .map(|wave_id| wave_id.to_string())
-        .unwrap_or_else(|| "none".to_string());
-    for line in queue_decision_story_lines(
-        &next_wave,
-        &status.queue.queue_ready_reason,
-        &status.queue.claimable_wave_ids,
-        projection.queue.blocker_summary.dependency,
-        projection.queue.blocker_summary.lint,
-        projection.queue.blocker_summary.closure,
-        projection.queue.blocker_summary.active_run,
-        &projection.queue.blocker_waves.closure,
-    ) {
-        println!("{line}");
-    }
-}
-
-fn queue_decision_story_lines(
-    next_wave: &str,
-    queue_ready_reason: &str,
-    claimable_wave_ids: &[u32],
-    dependency_blockers: usize,
-    lint_blockers: usize,
-    closure_blockers: usize,
-    active_run_blockers: usize,
-    closure_blocked: &[WaveRef],
-) -> Vec<String> {
-    vec![
-        format!("queue decision: next claimable wave={next_wave}"),
-        format!(
-            "queue decision: claimable waves={}",
-            format_wave_ids(claimable_wave_ids)
-        ),
-        format!("queue decision: queue ready reason={queue_ready_reason}"),
-        format!(
-            "queue decision: blocker story dependency={} lint={} closure={} active_run={}",
-            dependency_blockers, lint_blockers, closure_blockers, active_run_blockers
-        ),
-        format!(
-            "queue decision: closure-blocked={}",
-            format_wave_refs(closure_blocked)
-        ),
-    ]
-}
-
-fn render_projection_attention_lines(projection: &PlanningStatusProjection) {
-    for wave in &projection.waves {
-        if !wave.closure.complete {
-            println!(
-                "closure gap: wave {} {} missing {} | agents={} (impl={} closure={}) | blockers={}",
-                wave.id,
-                wave.slug,
-                format_string_list(&wave.closure.missing_agents),
-                wave.agents.total,
-                wave.agents.implementation,
-                wave.agents.closure,
-                format_blockers(&wave.blocked_by)
-            );
-        }
-    }
-}
-
-fn format_blockers(blocked_by: &[String]) -> String {
-    if blocked_by.is_empty() {
-        "none".to_string()
-    } else {
-        blocked_by.join(", ")
-    }
+fn format_materialized_path(path: &MaterializedPathSurface) -> String {
+    format!(
+        "{} [{}]",
+        path.path.display(),
+        if path.exists { "present" } else { "missing" }
+    )
 }
 
 fn print_json<T: Serialize>(value: &T) -> Result<()> {
@@ -1380,5 +1641,46 @@ mod tests {
     fn config_root_defaults_to_current_directory() {
         let root = config_root(Path::new("wave.toml"));
         assert_eq!(root, PathBuf::from("."));
+    }
+
+    #[test]
+    fn materialized_authority_surface_counts_presence() {
+        let surface = MaterializedCanonicalAuthoritySurface {
+            build_specs: MaterializedPathSurface {
+                path: PathBuf::from("/repo/.wave/state/build/specs"),
+                exists: true,
+            },
+            events: MaterializedPathSurface {
+                path: PathBuf::from("/repo/.wave/state/events"),
+                exists: true,
+            },
+            control_events: MaterializedPathSurface {
+                path: PathBuf::from("/repo/.wave/state/events/control"),
+                exists: true,
+            },
+            coordination: MaterializedPathSurface {
+                path: PathBuf::from("/repo/.wave/state/events/coordination"),
+                exists: true,
+            },
+            results: MaterializedPathSurface {
+                path: PathBuf::from("/repo/.wave/state/results"),
+                exists: true,
+            },
+            derived: MaterializedPathSurface {
+                path: PathBuf::from("/repo/.wave/state/derived"),
+                exists: true,
+            },
+            projections: MaterializedPathSurface {
+                path: PathBuf::from("/repo/.wave/state/projections"),
+                exists: true,
+            },
+            state_traces: MaterializedPathSurface {
+                path: PathBuf::from("/repo/.wave/state/traces"),
+                exists: false,
+            },
+        };
+
+        assert_eq!(surface.present_count(), 7);
+        assert!(!surface.all_exist());
     }
 }

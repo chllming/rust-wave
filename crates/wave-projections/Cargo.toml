@@ -1,0 +1,16 @@
+[package]
+name = "wave-projections"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+# Reducer-backed planning, queue, control, and operator read-model contract.
+wave-config = { path = "../wave-config" }
+wave-dark-factory = { path = "../wave-dark-factory" }
+wave-gates = { path = "../wave-gates" }
+wave-reducer = { path = "../wave-reducer" }
+wave-spec = { path = "../wave-spec" }
+wave-trace = { path = "../wave-trace" }

@@ -3,8 +3,14 @@ members = [
     # Bootstrap surface
     "crates/wave-cli",
     "crates/wave-config",
+    "crates/wave-coordination",
     "crates/wave-control-plane",
     "crates/wave-dark-factory",
+    "crates/wave-domain",
+    "crates/wave-events",
+    "crates/wave-gates",
+    "crates/wave-projections",
+    "crates/wave-reducer",
 
     # Runtime landing zones kept in the same workspace for later waves
     "crates/wave-app-server",
@@ -32,8 +38,14 @@ toml = "0.8"
 
 wave-app-server = { path = "crates/wave-app-server" }
 wave-config = { path = "crates/wave-config" }
+wave-coordination = { path = "crates/wave-coordination" }
 wave-control-plane = { path = "crates/wave-control-plane" }
 wave-dark-factory = { path = "crates/wave-dark-factory" }
+wave-domain = { path = "crates/wave-domain" }
+wave-events = { path = "crates/wave-events" }
+wave-gates = { path = "crates/wave-gates" }
+wave-projections = { path = "crates/wave-projections" }
+wave-reducer = { path = "crates/wave-reducer" }
 wave-runtime = { path = "crates/wave-runtime" }
 wave-spec = { path = "crates/wave-spec" }
 wave-trace = { path = "crates/wave-trace" }

@@ -1,0 +1,15 @@
+[package]
+name = "wave-gates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+wave-domain.workspace = true
+wave-spec.workspace = true
+wave-trace.workspace = true
+
+[dev-dependencies]
+wave-config.workspace = true

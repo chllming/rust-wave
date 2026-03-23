@@ -11,6 +11,15 @@
     "cutover-ready",
     "deprecation-ready"
   ],
+  "cutoverNotes": {
+    "wave11": {
+      "landing": "Reducer-backed planning, queue, and control/operator projections are live over compatibility run inputs.",
+      "nextExecutableWave": 12,
+      "nextWork": "Land structured result envelopes and proof lifecycle.",
+      "remainingCompatibilityBoundary": "Structured result envelopes are not yet authoritative. Proof lifecycle and replay ratification still depend on compatibility run and trace artifacts.",
+      "qaClosure": "Wave 11 cont-QA closure is owned by A0 and is not claimed by the component matrix."
+    }
+  },
   "components": {
     "authored-wave-schema": {
       "title": "Authored-wave schema",
@@ -112,6 +121,90 @@
         "spec fixtures"
       ]
     },
+    "authority-core-domain": {
+      "title": "Authority core domain",
+      "canonicalDocs": [
+        "README.md",
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/10-authority-core.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 10,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "typed task seeds",
+        "authority-domain records",
+        "declared closure dependencies",
+        "domain crate tests"
+      ]
+    },
+    "authority-event-log": {
+      "title": "Authority event log",
+      "canonicalDocs": [
+        "README.md",
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/10-authority-core.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 10,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "append-only control-event logs",
+        "JSONL append and query helpers",
+        "canonical control-event paths"
+      ]
+    },
+    "authority-coordination-log": {
+      "title": "Authority coordination log",
+      "canonicalDocs": [
+        "README.md",
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/10-authority-core.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 10,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "durable coordination records",
+        "JSONL append and query helpers",
+        "contradiction and fact storage path"
+      ]
+    },
+    "typed-authority-roots": {
+      "title": "Typed authority roots",
+      "canonicalDocs": [
+        "README.md",
+        "docs/reference/runtime-config/README.md",
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/10-authority-core.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 10,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "typed project-config defaults",
+        "authority-root path resolution",
+        "project show authority roots",
+        "doctor authority-root checks",
+        "compatibility run and trace surfaces remain under .wave/state/runs and .wave/traces/runs for reducer inputs, proof lifecycle, and replay ratification"
+      ]
+    },
     "dark-factory-lint": {
       "title": "Dark-factory lint",
       "canonicalDocs": [
@@ -132,25 +225,69 @@
         "skill and role-boundary validation"
       ]
     },
+    "reducer-state-spine": {
+      "title": "Reducer state spine",
+      "canonicalDocs": [
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/11-reducer-projection-spine.md"
+      ],
+      "currentLevel": "baseline-proved",
+      "promotions": [
+        {
+          "wave": 11,
+          "target": "baseline-proved"
+        }
+      ],
+      "proofSurfaces": [
+        "pure reducer state over authored declarations and compatibility adapters",
+        "deterministic lifecycle and blocker fixtures",
+        "planning and operator projections consume reducer state while structured result envelopes remain later authority work"
+      ]
+    },
+    "gate-verdict-spine": {
+      "title": "Gate verdict spine",
+      "canonicalDocs": [
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/11-reducer-projection-spine.md"
+      ],
+      "currentLevel": "baseline-proved",
+      "promotions": [
+        {
+          "wave": 11,
+          "target": "baseline-proved"
+        }
+      ],
+      "proofSurfaces": [
+        "typed gate verdict helpers",
+        "closure verdict helpers over reducer-backed state",
+        "proof lifecycle and replay ratification remain compatibility-backed in Wave 11"
+      ]
+    },
     "planning-status": {
       "title": "Planning status",
       "canonicalDocs": [
         "README.md",
         "docs/implementation/rust-codex-refactor.md",
-        "waves/03-control-plane-bootstrap.md"
+        "waves/03-control-plane-bootstrap.md",
+        "waves/11-reducer-projection-spine.md"
       ],
-      "currentLevel": "repo-landed",
+      "currentLevel": "baseline-proved",
       "promotions": [
         {
           "wave": 3,
           "target": "repo-landed"
+        },
+        {
+          "wave": 11,
+          "target": "baseline-proved"
         }
       ],
       "proofSurfaces": [
-        "typed queue summary",
+        "reducer-backed planning summary over compatibility run adapters",
         "per-wave agent and closure counts",
         "queue visibility and blocker projection",
-        "control-plane tests"
+        "projection and reducer parity tests",
+        "queue and control status are reducer-backed while proof lifecycle remains compatibility-backed"
       ]
     },
     "queue-json-surface": {
@@ -158,20 +295,26 @@
       "canonicalDocs": [
         "README.md",
         "docs/implementation/rust-codex-refactor.md",
-        "waves/03-control-plane-bootstrap.md"
+        "waves/03-control-plane-bootstrap.md",
+        "waves/11-reducer-projection-spine.md"
       ],
-      "currentLevel": "repo-landed",
+      "currentLevel": "baseline-proved",
       "promotions": [
         {
           "wave": 3,
           "target": "repo-landed"
+        },
+        {
+          "wave": 11,
+          "target": "baseline-proved"
         }
       ],
       "proofSurfaces": [
         "doctor JSON",
         "control status JSON",
-        "queue visibility projection",
-        "blocker-wave and skill-issue reporting"
+        "reducer-backed queue visibility projection over compatibility inputs",
+        "blocker-wave and skill-issue reporting",
+        "queue and control JSON are reducer-backed while proof and replay evidence remain compatibility-backed"
       ]
     },
     "codex-launcher-substrate": {
@@ -192,7 +335,7 @@
         "launcher runtime wiring",
         "Codex execution flow",
         "agent lifecycle management",
-        "project-local launch artifacts"
+        "compatibility run artifacts for queue, proof lifecycle, and replay"
       ]
     },
     "project-scoped-codex-home": {
@@ -235,7 +378,9 @@
         "right-side panel rendering",
         "layout behavior",
         "terminal UI tests",
-        "operator-visible queue selection and rerun controls"
+        "operator-visible queue selection and rerun controls",
+        "reducer-backed queue and control panel projections",
+        "proof and replay lines still read compatibility-backed artifacts"
       ]
     },
     "operator-status-tabs": {
@@ -257,8 +402,9 @@
         "status tab rendering",
         "operator navigation",
         "narrow-terminal fallback",
-        "shared queue/control truth with in-place operator actions",
-        "primary operator affordances for queue selection and rerun intent"
+        "shared reducer-backed queue/control truth with in-place operator actions",
+        "primary operator affordances for queue selection and rerun intent",
+        "queue/control tabs are reducer-backed while proof/replay remain compatibility-backed"
       ]
     },
     "dark-factory-preflight": {
@@ -315,7 +461,7 @@
       ],
       "proofSurfaces": [
         "autonomous queue state",
-        "launch selection logic",
+        "launch selection logic over reducer-backed planning state with compatibility adapters",
         "typed claimability gating",
         "scheduler tests"
       ]
@@ -337,7 +483,7 @@
         "dependency blocker handling",
         "queue ordering",
         "typed gating for autonomous selection",
-        "scheduler status projections"
+        "compatibility-backed scheduler status projections"
       ]
     },
     "trace-bundle-v1": {
@@ -354,8 +500,8 @@
         }
       ],
       "proofSurfaces": [
-        "trace artifacts",
-        "run metadata",
+        "compatibility trace artifacts",
+        "compatibility run metadata",
         "replay fixtures"
       ]
     },
@@ -373,7 +519,7 @@
         }
       ],
       "proofSurfaces": [
-        "trace replay checks",
+        "compatibility trace replay checks",
         "validator output",
         "replay compatibility tests"
       ]

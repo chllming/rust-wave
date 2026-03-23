@@ -1,21 +1,25 @@
 //! Bootstrap operator snapshot assembly for the Wave workspace.
 //!
-//! This crate stays focused on reading authored wave state, live run records,
-//! and rerun intents into a single operator snapshot. It is a landing zone for
-//! later control-plane and UI refinements, not a separate source of truth.
+//! This crate stays focused on mapping the reducer-backed projection spine plus
+//! compatibility active-run details into a transport snapshot for the operator
+//! surfaces, including the projection-owned control-status payload that queue
+//! and control consumers share. It is a landing zone for later control-plane
+//! and UI refinements, not a separate source of truth.
 
 use anyhow::Result;
 use serde::Serialize;
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use wave_config::ProjectConfig;
-use wave_control_plane::ControlProjection;
-use wave_control_plane::PlanningStatus;
-use wave_control_plane::PlanningStatusProjection;
+use wave_control_plane::ControlActionReadModel;
+use wave_control_plane::ControlStatusReadModel;
+use wave_control_plane::DashboardReadModel;
+use wave_control_plane::OperatorSnapshotInputs;
+use wave_control_plane::PlanningStatusReadModel;
+use wave_control_plane::ProjectionSpine;
 use wave_control_plane::QueueBlockerSummary;
-use wave_control_plane::build_planning_status_projection;
-use wave_control_plane::build_planning_status_with_state;
+use wave_control_plane::build_control_status_read_model_from_spine;
+use wave_control_plane::build_projection_spine_with_state;
 use wave_dark_factory::lint_project;
 use wave_dark_factory::validate_skill_catalog;
 use wave_runtime::RerunIntentRecord;
@@ -56,7 +60,8 @@ pub struct ActiveRunSnapshot {
 pub struct OperatorSnapshot {
     pub generated_at_ms: u128,
     pub dashboard: DashboardSnapshot,
-    pub planning: PlanningStatus,
+    pub planning: PlanningStatusReadModel,
+    pub control_status: ControlStatusReadModel,
     pub panels: OperatorPanelsSnapshot,
     pub launcher: LauncherStatus,
     pub active_run_details: Vec<ActiveRunDetail>,
@@ -107,6 +112,16 @@ pub struct QueuePanelSnapshot {
     pub claimable_wave_ids: Vec<u32>,
     pub queue_ready: bool,
     pub queue_ready_reason: String,
+    pub waves: Vec<QueuePanelWaveSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct QueuePanelWaveSnapshot {
+    pub id: u32,
+    pub slug: String,
+    pub title: String,
+    pub queue_state: String,
+    pub blocked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -117,6 +132,7 @@ pub struct ControlPanelSnapshot {
     pub autonomous_supported: bool,
     pub launcher_required: bool,
     pub launcher_ready: bool,
+    pub actions: Vec<ControlAction>,
     pub implemented_actions: Vec<ControlAction>,
     pub unavailable_actions: Vec<ControlAction>,
     pub unavailable_reasons: Vec<String>,
@@ -188,15 +204,16 @@ pub fn load_operator_snapshot(root: &Path, config: &ProjectConfig) -> Result<Ope
     let skill_catalog_issues = validate_skill_catalog(root);
     let latest_runs = load_latest_runs(root, config)?;
     let rerun_wave_ids = pending_rerun_wave_ids(root, config)?;
-    let planning = build_planning_status_with_state(
+    let launcher_ready = codex_binary_available();
+    let spine = build_projection_spine_with_state(
         config,
         &waves,
         &findings,
         &skill_catalog_issues,
         &latest_runs,
         &rerun_wave_ids,
+        launcher_ready,
     );
-    let planning_projection = build_planning_status_projection(&planning);
     let rerun_intents = list_rerun_intents(root, config)?
         .into_values()
         .collect::<Vec<_>>();
@@ -206,43 +223,36 @@ pub fn load_operator_snapshot(root: &Path, config: &ProjectConfig) -> Result<Ope
         .filter_map(|run| build_active_run_detail(root, &waves, run))
         .collect::<Vec<_>>();
     active_run_details.sort_by_key(|detail| detail.wave_id);
-    let control_actions =
-        build_control_actions(&planning_projection.control, codex_binary_available());
     Ok(build_operator_snapshot(
-        &planning,
-        &planning_projection,
-        &latest_runs,
+        &spine,
         rerun_intents,
         active_run_details,
-        control_actions,
     )?)
 }
 
 pub fn build_operator_snapshot(
-    planning: &PlanningStatus,
-    projection: &PlanningStatusProjection,
-    latest_runs: &HashMap<u32, WaveRunRecord>,
+    spine: &ProjectionSpine,
     mut rerun_intents: Vec<RerunIntentRecord>,
     active_run_details: Vec<ActiveRunDetail>,
-    control_actions: Vec<ControlAction>,
 ) -> Result<OperatorSnapshot> {
     rerun_intents.sort_by_key(|intent| intent.wave_id);
-    let launcher_ready = codex_binary_available();
+    let control_status = build_control_status_read_model_from_spine(spine);
+    let control_actions = build_control_actions(&spine.operator.control.actions);
     let launcher = LauncherStatus {
-        codex_binary_available: launcher_ready,
-        ready: launcher_ready,
+        codex_binary_available: spine.operator.control.launcher_ready,
+        ready: spine.operator.control.launcher_ready,
     };
     let panels = build_operator_panels_snapshot(
-        projection,
-        launcher_ready,
+        &spine.operator,
         active_run_details.clone(),
         control_actions.clone(),
     );
 
     Ok(OperatorSnapshot {
         generated_at_ms: now_epoch_ms()?,
-        dashboard: build_dashboard_snapshot(planning, latest_runs),
-        planning: planning.clone(),
+        dashboard: build_dashboard_snapshot(&spine.operator.dashboard),
+        planning: spine.planning.status.clone(),
+        control_status,
         panels,
         launcher,
         active_run_details,
@@ -252,12 +262,11 @@ pub fn build_operator_snapshot(
 }
 
 fn build_operator_panels_snapshot(
-    projection: &PlanningStatusProjection,
-    launcher_ready: bool,
+    operator: &OperatorSnapshotInputs,
     active_run_details: Vec<ActiveRunDetail>,
     control_actions: Vec<ControlAction>,
 ) -> OperatorPanelsSnapshot {
-    let active_wave_ids = projection.run.active_wave_ids.clone();
+    let active_wave_ids = operator.run.active_wave_ids.clone();
     let active_run_ids = active_run_details
         .iter()
         .map(|run| run.run_id.clone())
@@ -274,63 +283,54 @@ fn build_operator_panels_snapshot(
         run: RunPanelSnapshot {
             active_wave_ids,
             active_run_ids,
-            active_run_count: projection.run.active_run_count,
-            completed_run_count: projection.run.completed_run_count,
+            active_run_count: operator.run.active_run_count,
+            completed_run_count: operator.run.completed_run_count,
             active_runs: active_run_details,
             proof_complete_run_count,
         },
         agents: AgentsPanelSnapshot {
-            total_agents: projection.agents.total_agents,
-            implementation_agents: projection.agents.implementation_agents,
-            closure_agents: projection.agents.closure_agents,
-            required_closure_agents: projection.agents.required_closure_agents.clone(),
-            present_closure_agents: projection.agents.present_closure_agents.clone(),
-            missing_closure_agents: projection.agents.missing_closure_agents.clone(),
+            total_agents: operator.agents.total_agents,
+            implementation_agents: operator.agents.implementation_agents,
+            closure_agents: operator.agents.closure_agents,
+            required_closure_agents: operator.agents.required_closure_agents.clone(),
+            present_closure_agents: operator.agents.present_closure_agents.clone(),
+            missing_closure_agents: operator.agents.missing_closure_agents.clone(),
             agent_details,
         },
         queue: QueuePanelSnapshot {
-            ready_wave_count: projection.queue.ready.len(),
-            blocked_wave_count: projection.queue.blocked.len(),
-            active_wave_count: projection.queue.active.len(),
-            completed_wave_count: projection.queue.completed.len(),
-            ready_wave_ids: projection.queue.ready.iter().map(|wave| wave.id).collect(),
-            blocked_wave_ids: projection
+            ready_wave_count: operator.queue.ready_wave_count,
+            blocked_wave_count: operator.queue.blocked_wave_count,
+            active_wave_count: operator.queue.active_wave_count,
+            completed_wave_count: operator.queue.completed_wave_count,
+            ready_wave_ids: operator.queue.ready_wave_ids.clone(),
+            blocked_wave_ids: operator.queue.blocked_wave_ids.clone(),
+            active_wave_ids: operator.queue.active_wave_ids.clone(),
+            blocker_summary: operator.queue.blocker_summary.clone(),
+            next_ready_wave_ids: operator.queue.next_ready_wave_ids.clone(),
+            claimable_wave_ids: operator.queue.claimable_wave_ids.clone(),
+            queue_ready: operator.queue.queue_ready,
+            queue_ready_reason: operator.queue.queue_ready_reason.clone(),
+            waves: operator
                 .queue
-                .blocked
+                .waves
                 .iter()
-                .map(|wave| wave.id)
+                .map(|wave| QueuePanelWaveSnapshot {
+                    id: wave.id,
+                    slug: wave.slug.clone(),
+                    title: wave.title.clone(),
+                    queue_state: wave.queue_state.clone(),
+                    blocked: wave.blocked,
+                })
                 .collect(),
-            active_wave_ids: projection.queue.active.iter().map(|wave| wave.id).collect(),
-            blocker_summary: projection.queue.blocker_summary.clone(),
-            next_ready_wave_ids: projection.queue.ready.iter().map(|wave| wave.id).collect(),
-            claimable_wave_ids: projection.queue.ready.iter().map(|wave| wave.id).collect(),
-            queue_ready: !projection.queue.ready.is_empty() || !projection.queue.active.is_empty(),
-            queue_ready_reason: if !projection.queue.ready.is_empty() {
-                "ready waves are available to claim".to_string()
-            } else if !projection.queue.active.is_empty() {
-                "active waves are still in flight".to_string()
-            } else if !projection.queue.blocked.is_empty() {
-                let blocked_count = projection.queue.blocked.len();
-                let dependency = projection.queue.blocker_summary.dependency;
-                let lint = projection.queue.blocker_summary.lint;
-                let closure = projection.queue.blocker_summary.closure;
-                let active_run = projection.queue.blocker_summary.active_run;
-                let already_completed = projection.queue.blocker_summary.already_completed;
-                let other = projection.queue.blocker_summary.other;
-                format!(
-                    "{blocked_count} wave(s) are blocked: dependency={dependency}, lint={lint}, closure={closure}, active_run={active_run}, already_completed={already_completed}, other={other}"
-                )
-            } else {
-                "no ready or active waves are currently available".to_string()
-            },
         },
         control: ControlPanelSnapshot {
-            rerun_supported: projection.control.rerun_supported,
-            clear_rerun_supported: projection.control.clear_rerun_supported,
-            launch_supported: projection.control.launch_supported,
-            autonomous_supported: projection.control.autonomous_supported,
-            launcher_required: projection.control.launcher_required,
-            launcher_ready,
+            rerun_supported: operator.control.rerun_supported,
+            clear_rerun_supported: operator.control.clear_rerun_supported,
+            launch_supported: operator.control.launch_supported,
+            autonomous_supported: operator.control.autonomous_supported,
+            launcher_required: operator.control.launcher_required,
+            launcher_ready: operator.control.launcher_ready,
+            actions: control_actions.clone(),
             implemented_actions: control_actions
                 .iter()
                 .filter(|action| action.implemented)
@@ -341,116 +341,39 @@ fn build_operator_panels_snapshot(
                 .filter(|action| !action.implemented)
                 .cloned()
                 .collect(),
-            unavailable_reasons: projection.control.unavailable_reasons.clone(),
+            unavailable_reasons: operator.control.unavailable_reasons.clone(),
         },
     }
 }
 
-fn build_control_actions(control: &ControlProjection, launcher_ready: bool) -> Vec<ControlAction> {
-    let actions = vec![
-        ControlAction {
-            key: "Tab".to_string(),
-            label: "Next panel".to_string(),
-            description: "Cycle the right-side panel tabs.".to_string(),
-            implemented: true,
-        },
-        ControlAction {
-            key: "j/k".to_string(),
-            label: "Select wave".to_string(),
-            description: "Move the queue selection in the operator shell.".to_string(),
-            implemented: true,
-        },
-        ControlAction {
-            key: "r".to_string(),
-            label: "Request rerun".to_string(),
-            description: if control.rerun_supported {
-                "Write a rerun intent for the selected wave.".to_string()
-            } else {
-                "Rerun requests are not supported by the control plane yet.".to_string()
-            },
-            implemented: control.rerun_supported,
-        },
-        ControlAction {
-            key: "c".to_string(),
-            label: "Clear rerun".to_string(),
-            description: if control.clear_rerun_supported {
-                "Clear the selected wave's rerun intent.".to_string()
-            } else {
-                "Clearing rerun intents is not supported by the control plane yet.".to_string()
-            },
-            implemented: control.clear_rerun_supported,
-        },
-        ControlAction {
-            key: "launch".to_string(),
-            label: "Launch wave".to_string(),
-            description: if control.launch_supported {
-                if launcher_ready {
-                    "Start the selected ready wave through the Codex launcher.".to_string()
-                } else {
-                    "Launch is unavailable because the Codex binary is missing.".to_string()
-                }
-            } else {
-                "Launch is not supported by the control plane yet.".to_string()
-            },
-            implemented: control.launch_supported && launcher_ready,
-        },
-        ControlAction {
-            key: "autonomous".to_string(),
-            label: "Launch queue".to_string(),
-            description: if control.autonomous_supported {
-                if launcher_ready {
-                    "Run the ready queue through the Codex launcher.".to_string()
-                } else {
-                    "Autonomous launch is unavailable because the Codex binary is missing."
-                        .to_string()
-                }
-            } else {
-                "Autonomous launch is not supported by the control plane yet.".to_string()
-            },
-            implemented: control.autonomous_supported && launcher_ready,
-        },
-        ControlAction {
-            key: "q".to_string(),
-            label: "Quit".to_string(),
-            description: "Leave the operator shell.".to_string(),
-            implemented: true,
-        },
-    ];
-
+fn build_control_actions(actions: &[ControlActionReadModel]) -> Vec<ControlAction> {
     actions
-        .into_iter()
-        .map(|mut action| {
-            action.implemented = match action.key.as_str() {
-                "r" => control.rerun_supported,
-                "c" => control.clear_rerun_supported,
-                "launch" => control.launch_supported && launcher_ready,
-                "autonomous" => control.autonomous_supported && launcher_ready,
-                _ => true,
-            };
-            action
+        .iter()
+        .map(|action| ControlAction {
+            key: action.key.clone(),
+            label: action.label.clone(),
+            description: action.description.clone(),
+            implemented: action.implemented,
         })
         .collect()
 }
 
-pub fn build_dashboard_snapshot(
-    status: &PlanningStatus,
-    latest_runs: &HashMap<u32, WaveRunRecord>,
-) -> DashboardSnapshot {
+pub fn build_dashboard_snapshot(dashboard: &DashboardReadModel) -> DashboardSnapshot {
     DashboardSnapshot {
-        project_name: status.project_name.clone(),
-        next_ready_wave_ids: status.next_ready_wave_ids.clone(),
-        active_runs: latest_runs
-            .values()
-            .filter(|run| !run.completed_successfully())
+        project_name: dashboard.project_name.clone(),
+        next_ready_wave_ids: dashboard.next_ready_wave_ids.clone(),
+        active_runs: dashboard
+            .active_runs
+            .iter()
             .map(|run| ActiveRunSnapshot {
                 wave_id: run.wave_id,
                 run_id: run.run_id.clone(),
-                status: run.status.to_string(),
-                agent_count: run.agents.len(),
+                status: run.status.clone(),
+                agent_count: run.agent_count,
             })
             .collect(),
-        total_waves: status.waves.len(),
-        completed_waves: status.waves.iter().filter(|wave| wave.completed).count(),
+        total_waves: dashboard.total_waves,
+        completed_waves: dashboard.completed_waves,
     }
 }
 
@@ -592,19 +515,23 @@ fn read_tail(path: &Path, max_lines: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::path::PathBuf;
+    use wave_control_plane::PlanningProjectionBundle;
+    use wave_control_plane::PlanningStatusReadModel;
     use wave_control_plane::PlanningStatusSummary;
-    use wave_control_plane::QueueReadinessProjection;
-    use wave_control_plane::QueueReadinessState;
+    use wave_control_plane::QueueBlockerKindReadModel;
+    use wave_control_plane::QueueBlockerReadModel;
+    use wave_control_plane::QueueReadinessReadModel;
+    use wave_control_plane::QueueReadinessStateReadModel;
     use wave_control_plane::SkillCatalogHealth;
-    use wave_control_plane::WaveBlockerKind;
-    use wave_control_plane::WaveBlockerState;
-    use wave_control_plane::WaveQueueEntry;
-    use wave_control_plane::WaveReadinessState;
+    use wave_control_plane::WaveReadinessReadModel;
+    use wave_control_plane::WaveStatusReadModel;
+    use wave_control_plane::build_dashboard_read_model;
 
     #[test]
     fn dashboard_snapshot_counts_completed_waves() {
-        let status = PlanningStatus {
+        let status = PlanningStatusReadModel {
             project_name: "Test".to_string(),
             default_mode: wave_config::ExecutionMode::DarkFactory,
             summary: PlanningStatusSummary {
@@ -627,7 +554,7 @@ mod tests {
                 issue_count: 0,
                 issues: Vec::new(),
             },
-            queue: QueueReadinessProjection {
+            queue: QueueReadinessReadModel {
                 next_ready_wave_ids: vec![2],
                 next_ready_wave_id: Some(2),
                 claimable_wave_ids: vec![2],
@@ -640,7 +567,7 @@ mod tests {
             },
             next_ready_wave_ids: vec![2],
             waves: vec![
-                WaveQueueEntry {
+                WaveStatusReadModel {
                     id: 0,
                     slug: "zero".to_string(),
                     title: "Zero".to_string(),
@@ -664,16 +591,16 @@ mod tests {
                         "A9".to_string(),
                     ],
                     missing_closure_agents: Vec::new(),
-                    readiness: WaveReadinessState {
-                        state: QueueReadinessState::Completed,
+                    readiness: WaveReadinessReadModel {
+                        state: QueueReadinessStateReadModel::Completed,
                         claimable: false,
-                        reasons: vec![WaveBlockerState {
-                            kind: WaveBlockerKind::AlreadyCompleted,
+                        reasons: vec![QueueBlockerReadModel {
+                            kind: QueueBlockerKindReadModel::AlreadyCompleted,
                             raw: "already-completed".to_string(),
                             detail: None,
                         }],
-                        primary_reason: Some(WaveBlockerState {
-                            kind: WaveBlockerKind::AlreadyCompleted,
+                        primary_reason: Some(QueueBlockerReadModel {
+                            kind: QueueBlockerKindReadModel::AlreadyCompleted,
                             raw: "already-completed".to_string(),
                             detail: None,
                         }),
@@ -682,7 +609,7 @@ mod tests {
                     completed: true,
                     last_run_status: Some(WaveRunStatus::Succeeded),
                 },
-                WaveQueueEntry {
+                WaveStatusReadModel {
                     id: 2,
                     slug: "two".to_string(),
                     title: "Two".to_string(),
@@ -706,8 +633,8 @@ mod tests {
                         "A9".to_string(),
                     ],
                     missing_closure_agents: Vec::new(),
-                    readiness: WaveReadinessState {
-                        state: QueueReadinessState::Ready,
+                    readiness: WaveReadinessReadModel {
+                        state: QueueReadinessStateReadModel::Ready,
                         claimable: true,
                         reasons: Vec::new(),
                         primary_reason: None,
@@ -740,14 +667,15 @@ mod tests {
             },
         )]);
 
-        let snapshot = build_dashboard_snapshot(&status, &latest_runs);
+        let dashboard = build_dashboard_read_model(&status, &latest_runs);
+        let snapshot = build_dashboard_snapshot(&dashboard);
         assert_eq!(snapshot.completed_waves, 1);
         assert_eq!(snapshot.active_runs.len(), 1);
     }
 
     #[test]
     fn operator_snapshot_exposes_control_plane_truth() {
-        let status = PlanningStatus {
+        let status = PlanningStatusReadModel {
             project_name: "Test".to_string(),
             default_mode: wave_config::ExecutionMode::DarkFactory,
             summary: PlanningStatusSummary {
@@ -770,7 +698,7 @@ mod tests {
                 issue_count: 0,
                 issues: Vec::new(),
             },
-            queue: QueueReadinessProjection {
+            queue: QueueReadinessReadModel {
                 next_ready_wave_ids: vec![7],
                 next_ready_wave_id: Some(7),
                 claimable_wave_ids: vec![7],
@@ -782,14 +710,14 @@ mod tests {
                 queue_ready_reason: "ready waves are available to claim".to_string(),
             },
             next_ready_wave_ids: vec![7],
-            waves: vec![wave_control_plane::WaveQueueEntry {
+            waves: vec![wave_control_plane::WaveStatusReadModel {
                 id: 7,
                 slug: "seven".to_string(),
                 title: "Seven".to_string(),
                 depends_on: Vec::new(),
                 blocked_by: Vec::new(),
-                blocker_state: vec![WaveBlockerState {
-                    kind: wave_control_plane::WaveBlockerKind::Other,
+                blocker_state: vec![QueueBlockerReadModel {
+                    kind: wave_control_plane::QueueBlockerKindReadModel::Other,
                     raw: "none".to_string(),
                     detail: Some("none".to_string()),
                 }],
@@ -802,8 +730,8 @@ mod tests {
                 required_closure_agents: vec!["A0".to_string(), "A8".to_string(), "A9".to_string()],
                 present_closure_agents: vec!["A0".to_string(), "A8".to_string(), "A9".to_string()],
                 missing_closure_agents: Vec::new(),
-                readiness: WaveReadinessState {
-                    state: QueueReadinessState::Ready,
+                readiness: WaveReadinessReadModel {
+                    state: QueueReadinessStateReadModel::Ready,
                     claimable: true,
                     reasons: Vec::new(),
                     primary_reason: None,
@@ -815,37 +743,32 @@ mod tests {
             has_errors: false,
         };
         let projection = wave_control_plane::build_planning_status_projection(&status);
-        let snapshot = build_operator_snapshot(
-            &status,
-            &projection,
-            &HashMap::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![
-                ControlAction {
-                    key: "r".to_string(),
-                    label: "Request rerun".to_string(),
-                    description: "Request rerun".to_string(),
-                    implemented: true,
-                },
-                ControlAction {
-                    key: "launch".to_string(),
-                    label: "Launch wave".to_string(),
-                    description: "Launch is unavailable".to_string(),
-                    implemented: false,
-                },
-            ],
-        )
-        .unwrap();
+        let planning = PlanningProjectionBundle {
+            status: status.clone(),
+            projection,
+        };
+        let operator =
+            wave_control_plane::build_operator_snapshot_inputs(&planning, &HashMap::new(), false);
+        let spine = ProjectionSpine { planning, operator };
+        let snapshot = build_operator_snapshot(&spine, Vec::new(), Vec::new()).unwrap();
 
         assert!(snapshot.panels.queue.queue_ready);
         assert_eq!(
             snapshot.panels.queue.queue_ready_reason,
             "ready waves are available to claim"
         );
-        assert!(snapshot.panels.control.unavailable_reasons.is_empty());
-        assert_eq!(snapshot.panels.control.implemented_actions.len(), 1);
-        assert_eq!(snapshot.panels.control.unavailable_actions.len(), 1);
+        assert_eq!(
+            snapshot.control_status.queue_decision.lines[0],
+            "queue decision: next claimable wave=7"
+        );
+        assert_eq!(
+            snapshot.panels.control.unavailable_reasons,
+            vec!["codex binary is missing"]
+        );
+        assert_eq!(snapshot.panels.control.implemented_actions.len(), 5);
+        assert_eq!(snapshot.panels.control.unavailable_actions.len(), 2);
         assert_eq!(snapshot.panels.control.unavailable_actions[0].key, "launch");
+        assert_eq!(snapshot.panels.control.actions.len(), 7);
+        assert_eq!(snapshot.panels.queue.waves[0].queue_state, "ready");
     }
 }

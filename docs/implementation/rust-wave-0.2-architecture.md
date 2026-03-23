@@ -55,6 +55,28 @@ The bootstrap waves already landed the following repo-local capabilities:
 
 That is enough proof to stop treating the current crate seams as sacred.
 
+## Latest Upstream Reference
+
+The newest upstream package repo is already ahead of the vendored docs snapshot in this worktree.
+
+- vendored reference in this repo:
+  `third_party/agent-wave-orchestrator/UPSTREAM.toml` still points at `docs/wave-positioning-refresh` commit `8b421c79d58713b8be3f137e16d8777ebd445851`
+- latest upstream inspected for this doc:
+  `https://github.com/chllming/agent-wave-orchestrator` `main` at commit `8a7a0ee4b4fb4c3ef8ea60c350b4c736ddde797c`
+- latest upstream release surface:
+  `@chllming/wave-orchestration@0.7.1`
+
+That upstream now includes features the Rust rewrite does not yet model:
+
+- a canonical control-plane event log
+- a unified `wave control` mutation surface for tasks, proof bundles, reruns, and telemetry
+- planner project profiles, agentic draft packets, and ad-hoc flows
+- multi-runtime executor profiles and runtime-specific skill projection
+- local-first telemetry delivery to the hosted `services/wave-control` analysis plane
+- benchmark and verification command surfaces
+
+The 0.2 plan should therefore target the current upstream architecture, not just the older docs branch pinned in `third_party/`.
+
 ## What 0.2 Must Fix
 
 The current rewrite is strong at the edges and still too coupled in the middle.
@@ -147,6 +169,18 @@ Keep it. Its long-term role is:
 - expose immutable `WaveDocument` and `WaveAgent` models
 - synthesize declaration-level task seeds
 - stay free of runtime decisions
+
+#### `wave-planner` (new)
+
+The latest upstream planner surface is now large enough that 0.2 should give it an explicit home instead of smearing authoring logic across CLI and docs helpers.
+
+It should own:
+
+- project profile memory
+- interactive draft templates
+- agentic draft packets
+- draft review and apply flows
+- ad-hoc plan and promote flows
 
 #### `wave-domain` (new)
 
@@ -284,6 +318,33 @@ Examples:
 - integration summary
 - proof summary
 - retry summary
+
+### Telemetry And Benchmark Crates
+
+#### `wave-benchmarks` (new)
+
+Latest upstream treats benchmarks and eval verification as first-class runtime evidence, not just extra docs.
+
+It should own:
+
+- benchmark catalog loading
+- local benchmark case execution
+- external benchmark adapter manifests
+- benchmark result normalization
+- validity classification for benchmark results
+
+#### `wave-telemetry` (new)
+
+Remote analysis should stay explicitly non-authoritative, but the latest upstream proves the local-first telemetry layer is still worth preserving.
+
+It should own:
+
+- local telemetry spool
+- artifact descriptor selection
+- best-effort remote delivery
+- query and flush helpers for the local queue
+
+The remote service must stay an analysis plane, never the scheduler of record.
 
 ### Runtime And Execution Crates
 
@@ -674,6 +735,39 @@ That avoids path ambiguity later when retries, replay, or partial reruns become 
 | `wave-tui` | operator shell | keep thin and projection-only |
 | `wave-cli` | command tree plus orchestration policy wiring | keep thinner and push policy down |
 
+## Upstream Feature Gap Map
+
+Use this section as the bridge between the latest upstream package surface and the Rust 0.2 architecture.
+
+`Map level` means:
+
+- `core`
+  required to close the architectural gap before 0.2 cutover
+- `post-cutover`
+  should map after the new authority model is stable
+- `intentional divergence`
+  preserve the concept, not necessarily the exact upstream UX
+
+| Upstream feature family | Latest upstream surface | Rust rewrite today | Map level | 0.2 mapping | Target wave |
+| --- | --- | --- | --- | --- | --- |
+| Canonical coordination log | `.tmp/<lane>-wave-launcher/coordination/*.jsonl`, shared summary, inboxes, ledger, integration summary | missing as scheduler truth | `core` | `wave-coordination`, `wave-derived`, `wave-projections` | `10-11` |
+| Canonical control-plane event log | append-only control-plane events backing task, rerun, proof, telemetry projections | missing | `core` | `wave-events`, reducer-backed projections | `10-11` |
+| Unified `wave control` surface | `status`, `task`, `rerun`, `proof`, `telemetry` | only a much smaller read-mostly control surface exists | `core` | `wave-events`, `wave-coordination`, `wave-results`, `wave-retry`, thinner CLI | `11-14` |
+| Task lifecycle and blocking edges | targeted tasks with blocking and informational kinds | missing | `core` | task entities in `wave-domain`, task reducers in `wave-reducer` | `14` |
+| Proof bundle lifecycle | active, superseded, revoked proof bundles | missing | `core` | `wave-results` plus `wave-gates` and proof projections | `12` |
+| Targeted rerun and reuse control | selected agents, reuse selectors, invalidation, resume cursor | only wave-level rerun intent exists | `core` | `wave-retry` plus task graph and attempt lineage | `14` |
+| Clarification and human-input chains | clarification routing, escalation, answer flows | missing | `core` | human-input workflow state in `wave-domain` and `wave-coordination` | `15` |
+| Cross-lane dependency tickets | `wave dep` and dependency snapshots | missing | `post-cutover` | dependency-ticket model on top of `wave-domain` plus backend support | `20-21` |
+| Multi-runtime executor boundary | Codex, Claude, OpenCode, local with runtime-specific overlays and fallbacks | Codex-only | `core` | `wave-executor-api`, `wave-executor-codex`, later Claude/OpenCode adapters | `13,17` |
+| Skill activation and runtime projection | role/runtime/deploy-kind activation, metadata-first skill projection | skills exist but launcher-time resolution/projection is minimal | `core` | planner plus launcher-side skill resolution and runtime projection | `17,19` |
+| Planner project profile and draft packets | `wave project setup|show`, interactive and agentic draft, apply-run | missing beyond prompt compilation | `post-cutover` | `wave-planner` | `19` |
+| Ad-hoc plan, run, and promote | `wave adhoc plan|run|show|promote` | stubbed | `post-cutover` | `wave-planner` + `wave-launcher` over the same domain model | `19` |
+| Trace v2 and launch previews | attempt-scoped traces, launch previews, quality snapshots, richer replay fixtures | v1 run-record-oriented traces only | `core` | narrower `wave-trace` plus reducer-backed replay and launch-preview projections | `16` |
+| Local-first telemetry and remote Wave Control | local event spool, artifact descriptors, best-effort delivery, hosted analysis service | missing | `post-cutover` | `wave-telemetry`; optional service parity later | `20` |
+| Benchmark and eval telemetry | benchmark CLI, benchmark validity classes, verification and review events | optional `E0` role exists, benchmark runtime does not | `post-cutover` | `wave-benchmarks`, `wave-gates`, `wave-telemetry` | `20` |
+| Dashboard attach and terminal surfaces | tmux and VS Code attach surfaces, resident orchestrator, dashboard attach | intentionally replaced by built-in TUI today | `intentional divergence` | keep the built-in TUI primary; only preserve attachable supervisor semantics if needed | `21` |
+| Workspace/package lifecycle | `wave init`, `wave upgrade`, `wave self-update`, `wave changelog` | missing | `post-cutover` | package-layer tooling after architecture cutover | `21` |
+
 ## Closure-Goal Vocabulary
 
 0.2 waves should use one explicit closure-goal vocabulary. For this repo, those goals should align with the existing component maturity model rather than inventing a second ladder.
@@ -698,14 +792,40 @@ The next architectural phases should be authored as waves, not as vague backgrou
 | Wave | Theme | Primary components | Closure goal | Required exit evidence |
 | --- | --- | --- | --- | --- |
 | `10` | Authority reset | `wave-domain`, `wave-events`, `wave-coordination` | `repo-landed` | canonical event types, append/query APIs, declaration-to-domain mapping, docs updated |
-| `11` | Reducer spine | `wave-reducer`, `wave-projections` | `baseline-proved` | deterministic queue, closure, and blocker fixtures match current surfaces |
-| `12` | Result envelope migration | `wave-results`, legacy marker adapter | `repo-landed` | envelope schema, adapter coverage, envelope-first gate inputs |
-| `13` | Runtime breakup | `wave-launcher`, `wave-supervisor`, `wave-executor-api`, `wave-executor-codex` | `repo-landed` | process lifecycle split from policy, launch path still functional |
-| `14` | Task graph and retry | task model, retry planner | `baseline-proved` | retry planner fixtures, invalidation scope tests, task-targeted reruns |
-| `15` | Facts and contradictions | contradiction and fact lineage | `pilot-live` | self-host run produces contradiction-aware integration state |
-| `16` | Replay ratification | reducer-backed replay and trace fixtures | `qa-proved` | replay compares computed state to stored outcomes, not just artifact presence |
-| `17` | Workflow backend boundary | backend trait plus local-file backend | `pilot-live` | orchestration logic no longer hard-codes local files everywhere |
-| `18` | 0.2 cutover | compatibility reduction and self-host closure | `cutover-ready` | legacy `WaveRunRecord` and marker-only paths are demoted or removable |
+| `11` | Reducer and control projection spine | `wave-reducer`, `wave-projections`, unified status model | `baseline-proved` | deterministic queue, closure, task, and blocker fixtures match current surfaces |
+| `12` | Result envelope and proof lifecycle | `wave-results`, legacy marker adapter, proof lifecycle | `repo-landed` | envelope schema, proof lifecycle, adapter coverage, envelope-first gate inputs |
+| `13` | Runtime breakup and executor boundary | `wave-launcher`, `wave-supervisor`, `wave-executor-api`, `wave-executor-codex` | `repo-landed` | process lifecycle split from policy, launch path still functional, Codex edge isolated |
+| `14` | Task graph and targeted rerun | task model, retry planner, attempt lineage | `baseline-proved` | retry fixtures, invalidation scope tests, task-targeted reruns, explicit reuse controls |
+| `15` | Contradictions, clarifications, human input | contradiction/fact lineage, clarification chains, human-input workflow | `pilot-live` | self-host run produces contradiction-aware integration and human-input state |
+| `16` | Trace v2 and replay ratification | reducer-backed replay, richer trace fixtures, launch previews | `qa-proved` | replay compares computed state to stored outcomes, not just artifact presence |
+| `17` | Runtime plurality and skill projection | Claude/OpenCode adapters, runtime-aware skill projection | `pilot-live` | non-Codex runtime path works without changing wave semantics |
+| `18` | Backend boundary and 0.2 cutover | backend trait plus local-file backend, compatibility reduction | `cutover-ready` | legacy `WaveRunRecord` and marker-only paths are demoted or removable |
+| `19` | Planner and ad-hoc parity | `wave-planner`, project profile, draft packets, ad-hoc specs | `repo-landed` | planner and ad-hoc flows target the same declaration and reducer model |
+| `20` | Telemetry, benchmarks, and dependencies | `wave-benchmarks`, `wave-telemetry`, dependency ticket model | `pilot-live` | local-first telemetry and benchmark/eval evidence flow from the 0.2 state model |
+| `21` | Package parity and optional attach surfaces | workspace lifecycle tooling, optional dashboard attach semantics | `qa-proved` | package and operator parity close without reintroducing a second authority model |
+
+Waves `10` through `18` are the core 0.2 cutover. Waves `19` through `21` close the remaining upstream package-surface gap after the new authority model is stable.
+
+### Control-Discipline Overlays
+
+The architectural waves should also absorb the control-discipline hardening that execution exposed:
+
+- Wave `12`
+  typed result envelopes should carry machine-readable proof, doc-delta, and closure input so gate evaluation stops depending directly on free-form marker scans
+- Wave `13`
+  the launcher and supervisor split should add mandatory post-agent gates so a broken source workspace cannot advance just because one agent emitted markers
+- Wave `14`
+  task graph and retry planning should support mid-wave checkpoints and targeted retry instead of whole-wave restarts by default
+- Wave `15`
+  code, docs, and component-state mismatches should become durable contradiction and clarification state instead of review-only observations
+- Wave `16`
+  replay should ratify reducer state, projection state, and gate outcomes rather than artifact presence alone
+- Wave `18`
+  hard cutover should make it impossible for compatibility run artifacts or marker-first closure to slip back in as hidden authority paths
+- Wave `19`
+  the planner should emit architecture sections in scope, invariants to preserve, staged gate plans, and doc-parity expectations as part of the authored wave contract
+- Wave `20`
+  telemetry should record gate failures, doc-parity drift, and contradiction-driven repair loops without making any remote service authoritative
 
 ### Wave 10: Authority Reset
 
@@ -751,8 +871,9 @@ Must be true at closure:
 - new runs produce structured envelopes
 - old runs still replay through the adapter
 - closure logic no longer depends directly on scanning free-form text files
+- machine-readable proof, doc-delta, and closure inputs exist at the result-envelope layer even if human-readable markers remain as evidence
 
-### Wave 13: Runtime Breakup
+### Wave 13: Runtime Breakup And Executor Boundary
 
 Primary goal:
 
@@ -763,8 +884,9 @@ Must be true at closure:
 - queue and retry policy no longer live inside the process supervisor
 - Codex-specific behavior is isolated to the Codex adapter
 - launcher code coordinates engines instead of owning all semantics itself
+- launcher flow can stop after implementation slices, run post-agent verification gates, and refuse to advance on a broken source workspace
 
-### Wave 14: Task Graph And Retry
+### Wave 14: Task Graph And Targeted Retry
 
 Primary goal:
 
@@ -777,12 +899,14 @@ Must be true at closure:
 - retry plans are explainable from reducer state
 - reruns do not require whole-wave restarts by default
 - `owned_slice_proven` is distinct from final wave closure
+- mid-wave checkpoints can fail only the implicated owners and feed targeted retry scope
 
-### Wave 15: Facts And Contradictions
+### Wave 15: Contradictions, Clarifications, And Human Input
 
 Primary goal:
 
 - add first-class contradictions and fact lineage
+- add clarification and human-input chains as durable workflow state
 - make integration closure block on unresolved material conflicts
 
 Must be true at closure:
@@ -790,12 +914,15 @@ Must be true at closure:
 - integration summaries can cite specific contradictory facts
 - closure state can explain why reconciliation is blocked
 - self-host runs can record contradiction-aware repair loops
+- clarification routing and escalation stay inside durable workflow state
+- doc, component, and implementation mismatches can be persisted as contradictions instead of remaining review-only notes
 
-### Wave 16: Replay Ratification
+### Wave 16: Trace V2 And Replay Ratification
 
 Primary goal:
 
 - make replay reducer-driven
+- replace the current v1 run-record-centered trace shape with attempt-scoped trace bundles and launch previews
 - treat historical traces as regression fixtures
 
 Must be true at closure:
@@ -803,33 +930,81 @@ Must be true at closure:
 - replay compares stored outcomes against recomputed reducer and gate state
 - artifact presence alone is not considered sufficient replay proof
 - regression fixtures cover success, failure, rerun, and contradiction paths
+- replay evidence can explain mismatches in projection state and gate outcomes, not just missing artifacts
 
-### Wave 17: Workflow Backend Boundary
+### Wave 17: Runtime Plurality And Skill Projection
+
+Primary goal:
+
+- add at least one non-Codex executor path on the new architecture
+- make skill resolution and projection runtime-aware without changing the higher-level wave contract
+- preserve executor-native settings behind the adapter seam
+
+Must be true at closure:
+
+- the same wave declaration and reducer state can drive Codex and one additional runtime
+- runtime-specific overlays do not leak into the reducer or declaration model
+- skill projection is recomputed after executor resolution and fallback
+
+### Wave 18: Backend Boundary And 0.2 Cutover
 
 Primary goal:
 
 - introduce a backend trait
 - keep the local-file backend first
 - stop hard-coding file layout into orchestration decisions
+- demote or remove the legacy run-record and marker-first assumptions
 
 Must be true at closure:
 
 - launcher and reducer depend on backend interfaces instead of direct file-walking everywhere
 - timers, human input, and workflow bookkeeping can move behind the backend seam
 - local-file backend remains the default and still powers self-host runs
+- the repo can dogfood the 0.2 path on itself with compatibility files clearly marked derived
+- compatibility run artifacts and marker-first closure can no longer regain hidden semantic authority after the cutover
 
-### Wave 18: 0.2 Cutover
+### Wave 19: Planner And Ad-Hoc Parity
 
 Primary goal:
 
-- demote or remove the legacy run-record and marker-first assumptions
-- close 0.2 on real self-host evidence
+- add project profile memory
+- add interactive and agentic draft packets
+- add ad-hoc plan, run, show, and promote flows on the same domain model
 
 Must be true at closure:
 
-- the repo can dogfood the 0.2 path on itself
-- compatibility files are clearly derived, not silently authoritative
-- operators can explain queue, retry, closure, contradictions, and replay from one model
+- planner output targets the same declaration and reducer contract used by live execution
+- ad-hoc work is stored as first-class packets instead of bypassing the authority model
+- draft review and apply flows do not invent a second spec format
+- authored waves can declare architecture sections in scope, invariants to preserve, staged gate expectations, and doc-parity requirements without inventing a second control plane
+
+### Wave 20: Telemetry, Benchmarks, And Dependencies
+
+Primary goal:
+
+- add local-first telemetry egress
+- add benchmark and verification result modeling
+- add dependency-ticket state beyond a single repo-local lane
+
+Must be true at closure:
+
+- remote analysis remains best-effort and non-authoritative
+- benchmark results are typed and validity-scored
+- dependency chains can be represented without collapsing them into generic blockers
+- telemetry can describe gate failures, doc-parity drift, and contradiction-driven repair loops without becoming scheduler truth
+
+### Wave 21: Package Parity And Optional Attach Surfaces
+
+Primary goal:
+
+- close remaining package-surface gaps only after the 0.2 authority model is stable
+- add workspace lifecycle tooling and optional attach semantics where they still make sense
+
+Must be true at closure:
+
+- package lifecycle commands do not bypass the reducer-backed state model
+- any attachable dashboard or resident-orchestrator surface remains a projection or supervisor concern, not a second planner
+- the built-in Rust TUI can remain the primary operator surface without blocking package parity
 
 ## Non-Goals For 0.2
 

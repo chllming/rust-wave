@@ -340,6 +340,7 @@ pub fn compile_wave_bundle(
     wave: &WaveDocument,
     run_id: &str,
 ) -> Result<DraftBundle> {
+    bootstrap_authority_roots(root, config)?;
     let bundle_dir = build_specs_dir(root, config).join(run_id);
     let agents_dir = bundle_dir.join("agents");
     fs::create_dir_all(&agents_dir)
@@ -1290,7 +1291,7 @@ fn build_launch_preflight(wave: &WaveDocument, dry_run: bool) -> LaunchPreflight
 }
 
 fn bootstrap_project_codex_home(root: &Path, config: &ProjectConfig) -> Result<PathBuf> {
-    let project_codex_home = root.join(&config.project_codex_home);
+    let project_codex_home = config.resolved_paths(root).authority.project_codex_home;
     fs::create_dir_all(&project_codex_home)
         .with_context(|| format!("failed to create {}", project_codex_home.display()))?;
 
@@ -1316,6 +1317,25 @@ fn bootstrap_project_codex_home(root: &Path, config: &ProjectConfig) -> Result<P
     Ok(project_codex_home)
 }
 
+fn bootstrap_authority_roots(root: &Path, config: &ProjectConfig) -> Result<()> {
+    let authority = config.resolved_paths(root).authority;
+    for path in [
+        authority.state_dir,
+        authority.state_build_specs_dir,
+        authority.state_events_dir,
+        authority.state_events_control_dir,
+        authority.state_events_coordination_dir,
+        authority.state_results_dir,
+        authority.state_derived_dir,
+        authority.state_projections_dir,
+        authority.state_traces_dir,
+    ] {
+        fs::create_dir_all(&path)
+            .with_context(|| format!("failed to create {}", path.display()))?;
+    }
+    Ok(())
+}
+
 fn global_codex_home() -> PathBuf {
     if let Ok(codex_home) = env::var("CODEX_HOME") {
         return PathBuf::from(codex_home);
@@ -1327,19 +1347,19 @@ fn global_codex_home() -> PathBuf {
 }
 
 fn build_specs_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
-    root.join(&config.state_dir).join("build").join("specs")
+    config.resolved_paths(root).authority.state_build_specs_dir
 }
 
 fn state_runs_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
-    root.join(&config.state_dir).join("runs")
+    config.resolved_paths(root).authority.state_runs_dir
 }
 
 fn trace_runs_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
-    root.join(&config.trace_dir).join("runs")
+    config.resolved_paths(root).authority.trace_runs_dir
 }
 
 fn state_control_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
-    root.join(&config.state_dir).join("control")
+    config.resolved_paths(root).authority.state_control_dir
 }
 
 fn control_reruns_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
@@ -1369,6 +1389,7 @@ fn write_rerun_intent(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use wave_config::AuthorityConfig;
     use wave_config::ExecutionMode;
     use wave_spec::Context7Defaults;
     use wave_spec::WaveMetadata;
@@ -1673,21 +1694,86 @@ mod tests {
             default_lane: "main".to_string(),
             default_mode: ExecutionMode::DarkFactory,
             waves_dir: PathBuf::from("waves"),
-            project_codex_home: PathBuf::from(".wave/codex"),
-            state_dir: PathBuf::from(".wave/state"),
-            state_runs_dir: PathBuf::from(".wave/state/runs"),
-            state_control_dir: PathBuf::from(".wave/state/control"),
-            trace_dir: PathBuf::from(".wave/traces"),
-            trace_runs_dir: PathBuf::from(".wave/traces/runs"),
+            authority: AuthorityConfig {
+                project_codex_home: PathBuf::from(".wave/codex"),
+                state_dir: PathBuf::from(".wave/state"),
+                state_build_specs_dir: PathBuf::from(".wave/state/build/specs"),
+                state_runs_dir: PathBuf::from(".wave/state/runs"),
+                state_control_dir: PathBuf::from(".wave/state/control"),
+                trace_dir: PathBuf::from(".wave/traces"),
+                trace_runs_dir: PathBuf::from(".wave/traces/runs"),
+                ..AuthorityConfig::default()
+            },
             codex_vendor_dir: PathBuf::from("third_party/codex-rs"),
             reference_wave_repo_dir: PathBuf::from("third_party/agent-wave-orchestrator"),
             dark_factory: Default::default(),
             lanes: BTreeMap::new(),
+            ..ProjectConfig::default()
         };
 
         assert_eq!(
             build_specs_dir(Path::new("/repo"), &config),
             PathBuf::from("/repo/.wave/state/build/specs")
         );
+    }
+
+    #[test]
+    fn bootstrap_authority_roots_materializes_canonical_state_dirs() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-authority-roots-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority roots");
+        let authority = config.resolved_paths(&root).authority;
+
+        for path in [
+            authority.state_dir,
+            authority.state_build_specs_dir,
+            authority.state_events_dir,
+            authority.state_events_control_dir,
+            authority.state_events_coordination_dir,
+            authority.state_results_dir,
+            authority.state_derived_dir,
+            authority.state_projections_dir,
+            authority.state_traces_dir,
+        ] {
+            assert!(path.is_dir(), "{} should exist", path.display());
+        }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[ignore = "materializes repo-local authority roots for verification"]
+    fn repo_local_bootstrap_materializes_authority_roots() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("canonical repo root");
+        let config = ProjectConfig::load_from_repo_root(&root).expect("load repo config");
+
+        bootstrap_authority_roots(&root, &config).expect("bootstrap repo authority roots");
+        let authority = config.resolved_paths(&root).authority;
+
+        for path in [
+            authority.state_dir,
+            authority.state_build_specs_dir,
+            authority.state_events_dir,
+            authority.state_events_control_dir,
+            authority.state_events_coordination_dir,
+            authority.state_results_dir,
+            authority.state_derived_dir,
+            authority.state_projections_dir,
+            authority.state_traces_dir,
+        ] {
+            assert!(path.is_dir(), "{} should exist", path.display());
+        }
     }
 }

@@ -979,11 +979,18 @@ dependencies = [
 name = "wave-control-plane"
 version = "0.1.0"
 dependencies = [
+ "wave-projections",
+]
+
+[[package]]
+name = "wave-coordination"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
  "serde",
+ "serde_json",
  "wave-config",
- "wave-dark-factory",
- "wave-spec",
- "wave-trace",
+ "wave-domain",
 ]
 
 [[package]]
@@ -994,6 +1001,63 @@ dependencies = [
  "serde_json",
  "wave-config",
  "wave-spec",
+]
+
+[[package]]
+name = "wave-domain"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "wave-config",
+ "wave-spec",
+]
+
+[[package]]
+name = "wave-events"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "wave-config",
+ "wave-domain",
+]
+
+[[package]]
+name = "wave-gates"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "wave-config",
+ "wave-domain",
+ "wave-spec",
+ "wave-trace",
+]
+
+[[package]]
+name = "wave-projections"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "wave-config",
+ "wave-dark-factory",
+ "wave-gates",
+ "wave-reducer",
+ "wave-spec",
+ "wave-trace",
+]
+
+[[package]]
+name = "wave-reducer"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "wave-config",
+ "wave-dark-factory",
+ "wave-domain",
+ "wave-gates",
+ "wave-spec",
+ "wave-trace",
 ]
 
 [[package]]

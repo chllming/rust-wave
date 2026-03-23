@@ -9,8 +9,8 @@ This repository now has a working local operator/runtime slice of the refactor:
 - repo-specific skills for Rust workspace, control-plane, Codex runtime, TUI, and closure-marker work
 - pinned and vendored upstream baselines for Codex OSS and the Wave control-plane docs branch
 - live Codex-backed launcher state under the repo-local `.wave/codex/`
-- recorded run state under `.wave/state/runs/`
-- replay-aware trace bundles under `.wave/traces/runs/`
+- canonical authority roots under `.wave/state/events/control/`, `.wave/state/events/coordination/`, `.wave/state/results/`, `.wave/state/derived/`, `.wave/state/projections/`, and `.wave/state/traces/`
+- compatibility run outputs under `.wave/state/runs/` and replay-aware compatibility trace bundles under `.wave/traces/runs/` until later cutover waves replace them
 
 This is still a bootstrap slice. The docs should describe what the control-plane can already prove, not imply that every live operator feature has shipped.
 
@@ -35,6 +35,34 @@ This slice now spans the earlier bootstrap waves and parts of the runtime/operat
 3. add lint and planning-status primitives
 4. add the Codex-backed launcher, operator snapshot, and right-side TUI shell
 5. add rerun intents, trace bundles, replay validation, and control-plane actions over recorded run state
+
+## Authority Core Baseline
+
+Wave 0.2 authority work is now present in-tree as typed Rust crates and config, and the planning/operator read models now cut over to reducer-backed projections even though compatibility run adapters still feed those reducers in this stage:
+
+- `wave-domain`
+  typed task ids, attempt ids, closure roles, gate dispositions, fact and contradiction records, rerun requests, human-input requests, and declaration-to-task-seed mapping from authored waves
+- `wave-events`
+  append/query primitives for canonical control-event logs under `.wave/state/events/control/`
+- `wave-coordination`
+  append/query primitives for durable coordination records under `.wave/state/events/coordination/`
+- `wave-projections`
+  reducer-backed human-facing read models for planning status, queue projections, control/status views, and operator snapshot inputs, including the `ProjectionSpine` contract plus queue/control status helper read models that feed CLI status surfaces and the TUI queue narrative
+- `wave-control-plane`
+  forwarding shim that re-exports the `wave-projections` contract for existing callers while the workspace finishes the dependency cutover; it no longer owns authoritative planner or operator projection logic
+
+`wave.toml` now carries the authority-root contract directly. `wave project show --json` exposes those paths, and `wave doctor --json` verifies both role-prompt availability and that the authority roots stay under `.wave/state/`.
+
+The canonical Wave 0.2 authority roots under `.wave/state/` are:
+
+- control events: `.wave/state/events/control/`
+- coordination records: `.wave/state/events/coordination/`
+- structured results: `.wave/state/results/`
+- derived state: `.wave/state/derived/`
+- projections: `.wave/state/projections/`
+- canonical traces: `.wave/state/traces/`
+
+This is now an authority-core plus projection-spine landing. Wave 0.2 still keeps compatibility run and trace artifacts under `.wave/state/runs/` and `.wave/traces/runs/` as adapter inputs, but planning status, queue truth, control status, and operator snapshot inputs now derive from reducer-backed projections rather than an ad hoc compatibility-only planner.
 
 ## Authored-Wave Contract
 
@@ -77,10 +105,10 @@ The current bootstrap already uses one authored-wave contract across authoring, 
 1. `waves/*.md` provides the canonical human-authored spec
 2. `wave-spec` parses the rich markdown into typed wave and agent models
 3. `wave-dark-factory` rejects underspecified waves, ownership drift, weak prompts, marker drift, and bad skill references
-4. `wave-control-plane` and `wave doctor` project closure coverage, skill-catalog health, and queue readiness from the same typed model
+4. `wave-projections` computes reducer-backed planning, queue, and control read models from the typed wave model plus compatibility-backed run inputs, and `build_projection_spine_with_state(...)` packages those with operator snapshot inputs for CLI and app-server consumers while `wave-control-plane` forwards the contract
 5. `wave draft` writes compiled per-agent prompts under `.wave/state/build/specs/`
 6. `wave launch` and `wave autonomous` write `preflight.json`, refuse closed on missing requirements, and only then use the compiled prompts with the project-scoped Codex runtime under `.wave/codex/`
-7. `wave-app-server` and `wave-tui` render operator state from authored waves, lint findings, rerun intents, recorded runs, and replay state
+7. `wave-app-server` and `wave-tui` render the current operator views from authored waves, lint findings, rerun intents, compatibility run outputs, and replay state
 
 That end-to-end flow is why repo guidance must stay practical and synchronized with enforcement. If the docs describe a looser model than the toolchain accepts, operators will author broken waves.
 
@@ -90,22 +118,26 @@ That same model feeds the operator surfaces today:
   parses the rich markdown structure into typed wave and agent models
 - `wave-dark-factory`
   rejects underspecified or inconsistent authored waves
+- `wave-projections`
+  computes reducer-backed planning status, queue readiness, closure coverage, control/status views, and operator snapshot inputs from the typed wave model plus compatibility-backed run adapters; this is the authoritative projection/read-model crate
 - `wave-control-plane`
-  computes queue readiness, closure coverage, and missing-agent status from the typed wave model
+  forwards the projection contract so existing runtime and CLI callers compile while the manifests still point at the older crate name
 - `wave-cli`
-  exposes the model through `wave`, `wave doctor`, `wave lint`, `wave control ...`, `wave launch`, `wave autonomous`, and `wave trace ...`
+  exposes the model through `wave`, `wave doctor`, `wave lint`, `wave control ...`, `wave launch`, `wave autonomous`, and `wave trace ...`, with `doctor` and `control status` now reading the same projection spine contract that feeds the operator shell and emitting the projection-owned control-status read model in their JSON reports
 - `wave-app-server`
-  builds authoritative operator snapshots from waves, lint findings, recorded runs, rerun intents, and replay state
+  assembles transport snapshots from reducer-backed operator snapshot inputs plus compatibility-backed active-run details, rerun intents, and replay state; it now carries the projection-owned control-status payload alongside the operator panels instead of re-deriving queue/control truth locally
 - `wave-tui`
-  renders the right-side operator panel for `Run`, `Agents`, `Queue`, and `Control`
+  renders the right-side operator panel for `Run`, `Agents`, `Queue`, and `Control`, with the queue story and control attention lines coming from the app-server snapshot's reducer-backed control-status payload rather than terminal-local recomputation
 
-Trace data is part of the same operator truth. `wave trace latest` surfaces the durable record for each completed wave, including the trace path and replay verdict, and `wave trace replay` validates that the stored trace bundle or legacy run record still matches the live run state and artifact inventory.
+Trace data is part of the same operator evidence boundary. `wave trace latest` surfaces the durable record for each completed wave, including the trace path and replay verdict, and `wave trace replay` validates that the stored compatibility trace bundle or compatibility run record still matches the live run state and artifact inventory.
 
 The repo guidance docs should therefore describe the same concrete contract that these crates enforce, not a looser future-state summary.
 
 ## Planning Status Model
 
 Planning status is now a first-class control-plane concern in this refactor. The documented status surface should stay aligned with the queue and operator snapshot rather than with any UI-specific interpretation.
+The live Rust implementation now routes this through `wave-reducer` into `wave-projections`, with `wave-control-plane` left as a forwarding layer for compatibility. Compatibility run records still act as adapter inputs until canonical attempt/result envelopes replace them.
+`wave-projections` now also owns the operator-facing queue/control panel inputs and the queue/control status helper read models, so CLI status, app-server snapshot assembly, and the TUI all consume the same reducer-backed read-model spine instead of rebuilding those surfaces independently. The queue decision story, closure-gap attention lines, and skill-issue lines now come from projection helpers rather than from per-surface formatting code.
 
 The current status model should be read as:
 
@@ -198,9 +230,9 @@ If a future wave changes the contract, update the parser, lint rules, queue/stat
 - `wave`
   Opens the interactive operator TUI on interactive terminals and falls back to a textual summary otherwise.
 - `wave project show [--json]`
-  Prints the parsed `wave.toml`.
+  Prints the parsed `wave.toml`, including the canonical authority roots.
 - `wave doctor [--json]`
-  Verifies config loading, wave parsing, skill-catalog health, queue state, and upstream metadata presence.
+  Verifies config loading, wave parsing, role-prompt paths, canonical authority roots, skill-catalog health, queue state, and upstream metadata presence.
 - `wave lint [--json]`
   Validates wave files and dark-factory requirements.
 - `wave control status [--json]`
@@ -214,7 +246,7 @@ If a future wave changes the contract, update the parser, lint rules, queue/stat
 - `wave autonomous [--dry-run]`
   Runs the current ready queue through the same launcher contract.
 - `wave trace latest|replay`
-  Shows recorded run state and validates replay semantics against stored artifacts in `.wave/traces/runs/`.
+  Shows compatibility run and trace outputs and validates replay semantics against stored artifacts in `.wave/traces/runs/`.
 
 Two areas are still intentionally incomplete:
 
@@ -248,12 +280,24 @@ The current Rust runtime writes durable local state here:
 
 - `.wave/state/build/specs/`
   Compiled wave bundles and per-agent prompts.
+- `.wave/state/events/control/`
+  Canonical append-only control-event logs for Wave 0.2 authority state.
+- `.wave/state/events/coordination/`
+  Canonical append-only coordination records for contradictions, facts, citations, and human-input state.
+- `.wave/state/results/`
+  Canonical authority root for result-envelope storage and attempt-scoped structured outputs as the result layer lands.
+- `.wave/state/derived/`
+  Canonical authority root reserved for reducer-backed derived state once later cutover waves stop emitting compatibility-only queue outputs.
+- `.wave/state/projections/`
+  Canonical authority root reserved for reducer-backed queue, control, and operator projections in later cutover waves.
+- `.wave/state/traces/`
+  Canonical authority root reserved for canonical trace state, replay v2, and attempt-scoped provenance after the compatibility trace path is retired.
 - `.wave/state/runs/`
-  Recorded run state for live and dry-run launches.
+  Compatibility recorded run output for live and dry-run launches until later cutover waves replace it.
 - `.wave/state/control/reruns/`
   Operator-written rerun intents.
 - `.wave/traces/runs/`
-  Stored trace bundles and replay inputs for completed runs. These bundles capture the recorded run, agent artifact presence, and replay inputs that `wave trace replay` checks without mutating runtime state.
+  Compatibility trace bundles and replay inputs for completed runs until later cutover waves replace them with canonical trace-state readers. These bundles capture the recorded run, agent artifact presence, and replay inputs that `wave trace replay` checks without mutating runtime state.
 - `.wave/codex/`
   Project-scoped Codex auth, config, sqlite state, and session logs. The launcher must not write into the user's global Codex home.
 
@@ -269,7 +313,7 @@ The Codex-backed launcher slice depends on a few concrete assumptions that shoul
 - preflight refusal is part of the shipped launch contract, so missing requirements should surface before any live mutation begins
 - the self-host flow is repo-local dogfood, not live-host mutation or fleet orchestration
 - the shipped self-host loop is `project show`, `doctor`, `lint`, `draft`, `launch`, `control`, `trace`, and the built-in TUI on the same repo-scoped state roots
-- queue and trace projections are evidence surfaces first; they should stay aligned with the launcher, but they are not a promise that every future orchestration feature has shipped
+- planning, queue, and control-status projections are reducer-backed read models over compatibility inputs in this wave, while trace and replay remain compatibility-backed evidence surfaces rather than a promise that every future orchestration feature has shipped
 
 Keep these assumptions aligned with the launcher code. If one changes, update the config and the reference docs in the same wave.
 
@@ -291,7 +335,7 @@ The live right-side panel contract is intentionally narrow:
 
 Only the tab-switching, wave-navigation, rerun-intent, and quit bindings are live today. Other dashboard affordances mentioned in older docs should be treated as planned until the TUI actually ships them.
 
-The TUI is a consumer of control-plane truth, not an independent planner. Any future terminal-surface changes should preserve that dependency so the queue view, `wave control status`, and replay/proof surfaces remain consistent.
+The TUI is a consumer of control-plane truth, not an independent planner. Any future terminal-surface changes should preserve that dependency so the queue view, `wave control status`, and replay/proof surfaces remain consistent. The current app-server snapshot now carries the projection-owned control-status read model directly so the TUI does not have to rebuild the queue decision story from planning status in its own process.
 When there are multiple active runs, the `Run`, `Agents`, and `Control` tabs should bind to the currently selected wave rather than drifting to an unrelated first-active-run snapshot.
 
 Only these actions are shipped today:
@@ -313,7 +357,7 @@ The intended self-host loop for this repository is the same one the code already
 3. `wave draft` compiles the active wave into runtime prompts under `.wave/state/build/specs/`.
 4. `wave launch --wave <id> --dry-run --json` writes the preflight report before mutation.
 5. `wave launch --wave <id> --json` runs the local operator slice when the dry run is clean.
-6. `wave control show --wave <id> --json`, `wave control task list --wave <id> --json`, `wave trace latest --json`, and `wave trace replay --json` expose the queue and trace evidence for that run.
+6. `wave control show --wave <id> --json`, `wave control task list --wave <id> --json`, `wave trace latest --json`, and `wave trace replay --json` expose the queue and trace evidence for that run from the current compatibility outputs.
 7. `wave` on an interactive terminal shows the same state in the built-in TUI.
 
 This is dogfood evidence, not a claim that live-host deployment, remote fleet control, or a separate dashboard product has landed.

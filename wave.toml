@@ -6,17 +6,47 @@ project_name = "Codex Wave Mode"
 default_lane = "main"
 default_mode = "dark-factory"
 waves_dir = "waves"
+docs_dir = "docs"
+skills_dir = "skills"
+cont_qa_agent_id = "A0"
+cont_eval_agent_id = "E0"
+integration_agent_id = "A8"
+documentation_agent_id = "A9"
+context7_bundle_index_path = "docs/context7/bundles.json"
+benchmark_catalog_path = "docs/evals/benchmark-catalog.json"
+component_cutover_matrix_doc_path = "docs/plans/component-cutover-matrix.md"
+component_cutover_matrix_json_path = "docs/plans/component-cutover-matrix.json"
+codex_vendor_dir = "third_party/codex-rs"
+reference_wave_repo_dir = "third_party/agent-wave-orchestrator"
+
+[role_prompts]
+dir = "docs/agents"
+cont_qa = "docs/agents/wave-cont-qa-role.md"
+cont_eval = "docs/agents/wave-cont-eval-role.md"
+integration = "docs/agents/wave-integration-role.md"
+documentation = "docs/agents/wave-documentation-role.md"
+security = "docs/agents/wave-security-role.md"
+
+[authority]
 # Project-scoped Codex home for launcher auth, sqlite state, and session logs.
 # This must stay repo-local so launches do not mutate the operator's global Codex home.
 project_codex_home = ".wave/codex"
 # Run-state, control intents, and traces stay under the same repo-local root.
 state_dir = ".wave/state"
+# Compiled bundles now resolve from typed config instead of an implicit runtime join.
+state_build_specs_dir = ".wave/state/build/specs"
 state_runs_dir = ".wave/state/runs"
 state_control_dir = ".wave/state/control"
+# Canonical 0.2 authority roots live under `.wave/state/`; legacy run records remain compatibility output.
+state_events_dir = ".wave/state/events"
+state_events_control_dir = ".wave/state/events/control"
+state_events_coordination_dir = ".wave/state/events/coordination"
+state_results_dir = ".wave/state/results"
+state_derived_dir = ".wave/state/derived"
+state_projections_dir = ".wave/state/projections"
+state_traces_dir = ".wave/state/traces"
 trace_dir = ".wave/traces"
 trace_runs_dir = ".wave/traces/runs"
-codex_vendor_dir = "third_party/codex-rs"
-reference_wave_repo_dir = "third_party/agent-wave-orchestrator"
 
 [dark_factory]
 # Dark-factory mode stays fail-closed on validation, rollback, proof, and closure.

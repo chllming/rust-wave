@@ -1,0 +1,13 @@
+[package]
+name = "wave-domain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+wave-spec.workspace = true
+
+[dev-dependencies]
+wave-config.workspace = true

@@ -2,8 +2,9 @@
 //!
 //! This crate keeps the TUI thin: it reads operator snapshots, renders the
 //! current state, and forwards basic rerun actions into the local runtime
-//! surface. Presentation details can evolve later without moving the state
-//! ownership boundary.
+//! surface. Queue and control truth stay owned by reducer-backed projection
+//! helpers and arrive through the app-server snapshot rather than terminal-
+//! local readiness logic.
 
 use anyhow::Context;
 use anyhow::Result;
@@ -522,6 +523,8 @@ fn narrow_summary_lines<'a>(snapshot: &'a OperatorSnapshot, state: &'a AppState)
         format_u32_list(&snapshot.panels.queue.active_wave_ids),
         format_u32_list(&snapshot.panels.queue.blocked_wave_ids)
     )));
+    lines.extend(closure_attention_lines(snapshot));
+    lines.extend(skill_issue_lines(snapshot));
 
     lines.push(Line::raw(""));
     push_summary_heading(&mut lines, "Control");
@@ -607,65 +610,34 @@ fn format_string_list(values: &[String]) -> String {
 }
 
 fn queue_decision_lines(snapshot: &OperatorSnapshot) -> Vec<Line<'static>> {
-    let next_wave = snapshot
-        .planning
-        .next_ready_wave_ids
-        .first()
-        .copied()
-        .map(|wave_id| wave_id.to_string())
-        .unwrap_or_else(|| "none".to_string());
-    let blocked_closure = snapshot
-        .planning
-        .waves
+    snapshot
+        .control_status
+        .queue_decision
+        .lines
         .iter()
-        .filter(|wave| !wave.blocked_by.is_empty())
-        .map(|wave| format!("{}:{}", wave.id, wave.slug))
-        .collect::<Vec<_>>();
-    queue_decision_story_lines(
-        &next_wave,
-        &snapshot.panels.queue.queue_ready_reason,
-        &snapshot.panels.queue.claimable_wave_ids,
-        snapshot.panels.queue.blocker_summary.dependency,
-        snapshot.panels.queue.blocker_summary.lint,
-        snapshot.panels.queue.blocker_summary.closure,
-        snapshot.panels.queue.blocker_summary.active_run,
-        &blocked_closure,
-    )
-    .into_iter()
-    .map(Line::raw)
-    .collect()
+        .cloned()
+        .map(Line::raw)
+        .collect()
 }
 
-fn queue_decision_story_lines(
-    next_wave: &str,
-    queue_ready_reason: &str,
-    claimable_wave_ids: &[u32],
-    dependency_blockers: usize,
-    lint_blockers: usize,
-    closure_blockers: usize,
-    active_run_blockers: usize,
-    closure_blocked: &[String],
-) -> Vec<String> {
-    vec![
-        format!("queue decision: next claimable wave={next_wave}"),
-        format!(
-            "queue decision: claimable waves={}",
-            format_u32_list(claimable_wave_ids)
-        ),
-        format!("queue decision: queue ready reason={queue_ready_reason}"),
-        format!(
-            "queue decision: blocker story dependency={} lint={} closure={} active_run={}",
-            dependency_blockers, lint_blockers, closure_blockers, active_run_blockers
-        ),
-        format!(
-            "queue decision: closure-blocked={}",
-            if closure_blocked.is_empty() {
-                "none".to_string()
-            } else {
-                closure_blocked.join(", ")
-            }
-        ),
-    ]
+fn closure_attention_lines(snapshot: &OperatorSnapshot) -> Vec<Line<'static>> {
+    snapshot
+        .control_status
+        .closure_attention_lines
+        .iter()
+        .cloned()
+        .map(Line::raw)
+        .collect()
+}
+
+fn skill_issue_lines(snapshot: &OperatorSnapshot) -> Vec<Line<'static>> {
+    snapshot
+        .control_status
+        .skill_issue_lines
+        .iter()
+        .cloned()
+        .map(Line::raw)
+        .collect()
 }
 
 fn yes_no(value: bool) -> &'static str {
@@ -864,20 +836,11 @@ fn draw_queue_tab(frame: &mut ratatui::Frame<'_>, area: Rect, snapshot: &Operato
     );
     frame.render_widget(summary, chunks[0]);
 
-    let rows = snapshot.planning.waves.iter().map(|wave| {
-        let state = if wave.completed {
-            "completed".to_string()
-        } else if wave.ready {
-            "ready".to_string()
-        } else if wave.blocked_by.is_empty() {
-            "pending".to_string()
-        } else {
-            format!("blocked: {}", wave.blocked_by.join(", "))
-        };
+    let rows = snapshot.panels.queue.waves.iter().map(|wave| {
         Row::new(vec![
             Cell::from(wave.id.to_string()),
             Cell::from(wave.title.clone()),
-            Cell::from(state),
+            Cell::from(wave.queue_state.clone()),
         ])
     });
 
@@ -939,7 +902,7 @@ fn draw_control_tab(
         chunks[0],
     );
 
-    let proof_items = selected_active_run(snapshot, selected_wave_id)
+    let mut status_items = selected_active_run(snapshot, selected_wave_id)
         .map(|run| {
             if run.replay.ok {
                 vec![ListItem::new(format!(
@@ -955,13 +918,31 @@ fn draw_control_tab(
             }
         })
         .unwrap_or_else(|| vec![ListItem::new("No active replay state.")]);
+    status_items.extend(
+        snapshot
+            .control_status
+            .closure_attention_lines
+            .iter()
+            .cloned()
+            .map(ListItem::new),
+    );
+    status_items.extend(
+        snapshot
+            .control_status
+            .skill_issue_lines
+            .iter()
+            .cloned()
+            .map(ListItem::new),
+    );
     frame.render_widget(
-        List::new(proof_items).block(Block::default().borders(Borders::ALL).title("Proof")),
+        List::new(status_items).block(Block::default().borders(Borders::ALL).title("Status")),
         chunks[1],
     );
 
     let action_items = snapshot
-        .control_actions
+        .panels
+        .control
+        .actions
         .iter()
         .map(|action| {
             ListItem::new(format!(
@@ -1024,9 +1005,16 @@ impl fmt::Display for HumanDuration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wave_control_plane::QueueReadinessProjection;
-    use wave_control_plane::QueueReadinessState;
-    use wave_control_plane::WaveReadinessState;
+    use wave_control_plane::ControlStatusReadModel;
+    use wave_control_plane::PlanningStatusReadModel;
+    use wave_control_plane::PlanningStatusSummary;
+    use wave_control_plane::QueueBlockerSummary;
+    use wave_control_plane::QueueDecisionReadModel;
+    use wave_control_plane::QueueReadinessReadModel;
+    use wave_control_plane::QueueReadinessStateReadModel;
+    use wave_control_plane::SkillCatalogHealth;
+    use wave_control_plane::WaveReadinessReadModel;
+    use wave_control_plane::WaveStatusReadModel;
 
     #[test]
     fn wide_layout_keeps_right_side_panel() {
@@ -1109,7 +1097,7 @@ mod tests {
         snapshot
             .planning
             .waves
-            .push(wave_control_plane::WaveQueueEntry {
+            .push(wave_control_plane::WaveStatusReadModel {
                 id: 6,
                 slug: "dark-factory-enforcement".to_string(),
                 title: "Make dark-factory an enforced execution profile".to_string(),
@@ -1128,16 +1116,16 @@ mod tests {
                 rerun_requested: false,
                 completed: false,
                 last_run_status: Some(WaveRunStatus::Running),
-                readiness: WaveReadinessState {
-                    state: QueueReadinessState::Active,
+                readiness: WaveReadinessReadModel {
+                    state: QueueReadinessStateReadModel::Active,
                     claimable: false,
-                    reasons: vec![wave_control_plane::WaveBlockerState {
-                        kind: wave_control_plane::WaveBlockerKind::ActiveRun,
+                    reasons: vec![wave_control_plane::QueueBlockerReadModel {
+                        kind: wave_control_plane::QueueBlockerKindReadModel::ActiveRun,
                         raw: "active-run:running".to_string(),
                         detail: Some("wave is already active".to_string()),
                     }],
-                    primary_reason: Some(wave_control_plane::WaveBlockerState {
-                        kind: wave_control_plane::WaveBlockerKind::ActiveRun,
+                    primary_reason: Some(wave_control_plane::QueueBlockerReadModel {
+                        kind: wave_control_plane::QueueBlockerKindReadModel::ActiveRun,
                         raw: "active-run:running".to_string(),
                         detail: Some("wave is already active".to_string()),
                     }),
@@ -1160,6 +1148,33 @@ mod tests {
         assert_eq!(
             selected_active_run(&snapshot, Some(99)).map(|run| run.wave_id),
             Some(5)
+        );
+    }
+
+    #[test]
+    fn queue_story_comes_from_snapshot_control_status() {
+        let mut snapshot = test_snapshot();
+        snapshot.control_status.queue_decision.lines = vec![
+            "queue decision: next claimable wave=custom".to_string(),
+            "queue decision: claimable waves=custom".to_string(),
+        ];
+
+        let rendered = queue_decision_lines(&snapshot)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rendered,
+            vec![
+                "queue decision: next claimable wave=custom".to_string(),
+                "queue decision: claimable waves=custom".to_string(),
+            ]
         );
     }
 
@@ -1187,12 +1202,8 @@ mod tests {
         use wave_app_server::ProofArtifactStatus;
         use wave_app_server::ProofSnapshot;
         use wave_app_server::QueuePanelSnapshot;
+        use wave_app_server::QueuePanelWaveSnapshot;
         use wave_app_server::RunPanelSnapshot;
-        use wave_control_plane::PlanningStatus;
-        use wave_control_plane::PlanningStatusSummary;
-        use wave_control_plane::QueueBlockerSummary;
-        use wave_control_plane::SkillCatalogHealth;
-        use wave_control_plane::WaveQueueEntry;
         use wave_runtime::RerunIntentRecord;
         use wave_runtime::RerunIntentStatus;
 
@@ -1260,7 +1271,7 @@ mod tests {
                 total_waves: 10,
                 completed_waves: 5,
             },
-            planning: PlanningStatus {
+            planning: PlanningStatusReadModel {
                 project_name: "Codex Wave Mode".to_string(),
                 default_mode: wave_config::ExecutionMode::DarkFactory,
                 summary: PlanningStatusSummary {
@@ -1284,7 +1295,7 @@ mod tests {
                     issues: Vec::new(),
                 },
                 next_ready_wave_ids: vec![6],
-                queue: QueueReadinessProjection {
+                queue: QueueReadinessReadModel {
                     next_ready_wave_ids: vec![6],
                     next_ready_wave_id: Some(6),
                     claimable_wave_ids: vec![6],
@@ -1295,7 +1306,7 @@ mod tests {
                     queue_ready: true,
                     queue_ready_reason: "ready waves are available to claim".to_string(),
                 },
-                waves: vec![WaveQueueEntry {
+                waves: vec![WaveStatusReadModel {
                     id: 5,
                     slug: "tui-right-panel".to_string(),
                     title: "Build the right-side operator panel in the TUI".to_string(),
@@ -1322,22 +1333,50 @@ mod tests {
                     rerun_requested: false,
                     completed: false,
                     last_run_status: Some(WaveRunStatus::Running),
-                    readiness: WaveReadinessState {
-                        state: QueueReadinessState::Active,
+                    readiness: WaveReadinessReadModel {
+                        state: QueueReadinessStateReadModel::Active,
                         claimable: false,
-                        reasons: vec![wave_control_plane::WaveBlockerState {
-                            kind: wave_control_plane::WaveBlockerKind::ActiveRun,
+                        reasons: vec![wave_control_plane::QueueBlockerReadModel {
+                            kind: wave_control_plane::QueueBlockerKindReadModel::ActiveRun,
                             raw: "active-run:running".to_string(),
                             detail: Some("wave is already active".to_string()),
                         }],
-                        primary_reason: Some(wave_control_plane::WaveBlockerState {
-                            kind: wave_control_plane::WaveBlockerKind::ActiveRun,
+                        primary_reason: Some(wave_control_plane::QueueBlockerReadModel {
+                            kind: wave_control_plane::QueueBlockerKindReadModel::ActiveRun,
                             raw: "active-run:running".to_string(),
                             detail: Some("wave is already active".to_string()),
                         }),
                     },
                 }],
                 has_errors: false,
+            },
+            control_status: ControlStatusReadModel {
+                queue_decision: QueueDecisionReadModel {
+                    next_claimable_wave_id: Some(6),
+                    claimable_wave_ids: vec![6],
+                    queue_ready_reason: "ready waves are available to claim".to_string(),
+                    blocker_summary: QueueBlockerSummary {
+                        dependency: 3,
+                        lint: 0,
+                        closure: 0,
+                        active_run: 1,
+                        already_completed: 5,
+                        other: 0,
+                    },
+                    closure_blocked: Vec::new(),
+                    lines: vec![
+                        "queue decision: next claimable wave=6".to_string(),
+                        "queue decision: claimable waves=6".to_string(),
+                        "queue decision: queue ready reason=ready waves are available to claim"
+                            .to_string(),
+                        "queue decision: blocker story dependency=3 lint=0 closure=0 active_run=1"
+                            .to_string(),
+                        "queue decision: closure-blocked=none".to_string(),
+                    ],
+                },
+                closure_attention_lines: Vec::new(),
+                skill_issue_paths: Vec::new(),
+                skill_issue_lines: Vec::new(),
             },
             panels: OperatorPanelsSnapshot {
                 run: RunPanelSnapshot {
@@ -1385,6 +1424,13 @@ mod tests {
                     claimable_wave_ids: vec![6],
                     queue_ready: true,
                     queue_ready_reason: "ready waves are available to claim".to_string(),
+                    waves: vec![QueuePanelWaveSnapshot {
+                        id: 5,
+                        slug: "tui-right-panel".to_string(),
+                        title: "Build the right-side operator panel in the TUI".to_string(),
+                        queue_state: "blocked: active-run:running".to_string(),
+                        blocked: true,
+                    }],
                 },
                 control: ControlPanelSnapshot {
                     rerun_supported: true,
@@ -1393,6 +1439,22 @@ mod tests {
                     autonomous_supported: true,
                     launcher_required: true,
                     launcher_ready: false,
+                    actions: vec![
+                        ControlAction {
+                            key: "r".to_string(),
+                            label: "Request rerun".to_string(),
+                            description: "Request rerun".to_string(),
+                            implemented: true,
+                        },
+                        ControlAction {
+                            key: "launch".to_string(),
+                            label: "Launch wave".to_string(),
+                            description:
+                                "Launch is unavailable because the Codex binary is missing."
+                                    .to_string(),
+                            implemented: false,
+                        },
+                    ],
                     implemented_actions: vec![ControlAction {
                         key: "r".to_string(),
                         label: "Request rerun".to_string(),
@@ -1422,12 +1484,21 @@ mod tests {
                 requested_at_ms: 1,
                 cleared_at_ms: None,
             }],
-            control_actions: vec![ControlAction {
-                key: "r".to_string(),
-                label: "Request rerun".to_string(),
-                description: "Request rerun".to_string(),
-                implemented: true,
-            }],
+            control_actions: vec![
+                ControlAction {
+                    key: "r".to_string(),
+                    label: "Request rerun".to_string(),
+                    description: "Request rerun".to_string(),
+                    implemented: true,
+                },
+                ControlAction {
+                    key: "launch".to_string(),
+                    label: "Launch wave".to_string(),
+                    description: "Launch is unavailable because the Codex binary is missing."
+                        .to_string(),
+                    implemented: false,
+                },
+            ],
         }
     }
 }

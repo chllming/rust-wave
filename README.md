@@ -5,13 +5,14 @@ This repository is the in-progress Rust rewrite of Wave, rebuilt around Codex OS
 The current state is an executable local operator slice:
 
 - a Rust workspace with the target crate layout
-- a project config in `wave.toml` with workspace-local roots for waves, Codex state, run state, and traces
+- a project config in `wave.toml` with workspace-local roots for waves, Codex state, typed authority roots under `.wave/state/`, and compatibility run and trace outputs retained until later cutover waves replace them
 - production-style human-authored waves under `waves/` with closure agents, owned paths, deliverables, Context7 defaults, and final markers
 - a compileable `wave` CLI and interactive TUI shell
 - repo-specific skill bundles for Rust workspace, control-plane, Codex runtime, TUI, and closure-marker work
 - pinned and vendored upstream baselines for Codex OSS and the Wave control-plane reference branch
 - project-scoped Codex state under `.wave/codex/`
-- live run state under `.wave/state/runs/`, rerun intents under `.wave/state/control/reruns/`, and trace bundles under `.wave/traces/runs/`
+- canonical authority roots under `.wave/state/events/control/`, `.wave/state/events/coordination/`, `.wave/state/results/`, `.wave/state/derived/`, `.wave/state/projections/`, and `.wave/state/traces/`
+- compatibility outputs under `.wave/state/runs/` and `.wave/traces/runs/`, plus rerun intents under `.wave/state/control/reruns/`
 
 ## Status
 
@@ -109,7 +110,7 @@ cargo run -p wave-cli -- launch --wave <id> --dry-run --json
 cargo run -p wave-cli -- launch --wave <id> --json
 ```
 
-5. Watch the same run through the queue and trace surfaces:
+5. Watch the same run through the current compatibility queue and trace surfaces:
 
 ```bash
 cargo run -p wave-cli -- control show --wave <id> --json
@@ -131,7 +132,7 @@ Current gaps remain explicit:
 - `wave adhoc` and `wave dep` still short-circuit with not-implemented messages.
 - The TUI is the built-in operator shell, not a separate dashboard app.
 - Self-host dogfooding is local-first; it does not imply live-host deployment or remote fleet control.
-- Queue and trace evidence are real, but they are still evidence surfaces rather than a guarantee that every future orchestration feature has shipped.
+- Wave 0.2 now lands authority-core plus reducer-backed planning, queue, and control projections over compatibility run inputs; replay and proof lifecycle still depend on compatibility run and trace artifacts until later waves land result envelopes and replay ratification.
 
 ## Context7
 
@@ -149,6 +150,25 @@ Current gaps remain explicit:
 - `project_codex_home = ".wave/codex"`
 - `state_dir = ".wave/state"`
 - `trace_dir = ".wave/traces"`
+- `state_events_control_dir = ".wave/state/events/control"`
+- `state_events_coordination_dir = ".wave/state/events/coordination"`
+- `state_results_dir = ".wave/state/results"`
+- `state_derived_dir = ".wave/state/derived"`
+- `state_projections_dir = ".wave/state/projections"`
+- `state_traces_dir = ".wave/state/traces"`
+
+The canonical Wave 0.2 authority-root contract is the set of `.wave/state/` paths above:
+
+- control events: `.wave/state/events/control/`
+- coordination records: `.wave/state/events/coordination/`
+- structured results: `.wave/state/results/`
+- derived state: `.wave/state/derived/`
+- projections: `.wave/state/projections/`
+- canonical traces: `.wave/state/traces/`
+
+At the current Wave 0.2 stage, those roots are typed, resolved, and doctor-checked. Planning, queue, and control projections are now reducer-backed read models over compatibility run inputs, while replay and proof lifecycle still rely on compatibility run and trace artifacts until the later envelope and replay waves land.
+
+`state_runs_dir` and `trace_runs_dir` remain present as compatibility outputs while later cutover waves replace the current run-record and trace-bundle path. `state_control_dir` continues to house rerun intents for the current operator slice.
 
 Use `cargo run -p wave-cli -- project show --json` to verify the loaded config, and keep any new repo-local state rooted under those paths.
 
@@ -252,11 +272,13 @@ For future waves, write the spec as if `wave lint` were the first reviewer:
 
 - config and wave loading
 - skill-catalog health under `skills/`
+- role-prompt path availability under `docs/agents/`
+- canonical authority roots under `.wave/state/`
 - upstream metadata pins
 - closure coverage across waves
-- queue and run-state visibility
+- queue and compatibility run-state visibility
 - project-scoped Codex binary availability
-- recorded run-state and active-wave visibility
+- recorded compatibility run-state and active-wave visibility
 
 ## Operator Shell
 

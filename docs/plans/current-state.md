@@ -5,10 +5,13 @@
 - This repository is on the Rust/Codex rewrite baseline, not the older npm/package launcher baseline.
 - `wave.toml` is the project config for the current implementation and is loaded into a typed project-config model.
 - `waves/*.md` is the canonical authored-wave source directory and is parsed directly by the Rust crates into typed wave and agent models.
+- `wave-domain`, `wave-events`, and `wave-coordination` now define the typed authority-core baseline for task seeds, control events, and coordination records.
+- Wave 11 is the current architecture landing: planning, queue, and control/operator truth now flow through reducer-backed projections over compatibility run inputs, while structured result envelopes are not yet authoritative and proof lifecycle plus replay ratification still use compatibility artifacts.
+- The next executable architecture work is Wave 12's result-envelope and proof-lifecycle migration; replay ratification remains the later follow-on cutover after that.
 - The repo-local operator/runtime surface now extends through the Codex-backed launcher and agent lifecycle manager, TUI, autonomous scheduling, dependency-aware queue gating, and replay-aware traces.
 - The live TUI operator surface includes the right-side panel as the direct queue/control dashboard, not just a passive status view.
 - Operators can directly inspect run, agent, queue, and control truth from the shell without switching to a separate CLI status path first, and they can act on queue selection and rerun intents in-place.
-- Remaining planned-only work is the still-stubbed `wave adhoc` and `wave dep` commands; trace and replay semantics are already landed and dogfood evidence is now repo-landed.
+- `wave adhoc` and `wave dep` remain planned-only command surfaces; the rest of the repo-local operator slice described here is live, even while replay and proof lifecycle remain compatibility-backed.
 
 ## Shipped CLI Surface
 
@@ -26,11 +29,13 @@
 ## Live Runtime Surfaces
 
 - `wave` opens the interactive Ratatui operator shell on an interactive terminal and falls back to a text summary otherwise.
-- The right-side panel exposes live `Run`, `Agents`, `Queue`, and `Control` tabs from authoritative Wave state, with `Queue` and `Control` serving as the operator's direct planning and rerun surfaces.
+- The right-side panel exposes live `Run`, `Agents`, `Queue`, and `Control` tabs from the current repo-local Wave state, with `Queue` and `Control` serving as the operator's direct planning and rerun surfaces through reducer-backed projections over compatibility run inputs.
 - The shell is an operator panel with actionable queue/control affordances, not merely a terminal summary of state.
-- The launcher writes compiled prompts under `.wave/build/specs/`, run state under `.wave/state/runs/`, rerun intents under `.wave/state/control/reruns/`, trace bundles under `.wave/traces/runs/`, and project-scoped Codex state under `.wave/codex/`.
+- The launcher writes compiled prompts under `.wave/state/build/specs/`, compatibility run state under `.wave/state/runs/`, rerun intents under `.wave/state/control/reruns/`, compatibility trace bundles under `.wave/traces/runs/`, and project-scoped Codex state under `.wave/codex/`.
+- Canonical authority roots now exist under `.wave/state/events/control/`, `.wave/state/events/coordination/`, `.wave/state/results/`, `.wave/state/derived/`, `.wave/state/projections/`, and `.wave/state/traces/`.
+- Planning, queue, blocker, and closure-coverage summaries plus operator truth are now reducer-backed over compatibility run inputs. Structured result envelopes are not yet authoritative, and proof lifecycle plus replay ratification still depend on `.wave/state/runs/` and `.wave/traces/runs/` until the later cutover waves land.
 - The launcher contract is project-scoped: it keeps Codex auth, sqlite state, and session logs under `.wave/codex/` and records each agent's final assistant message in the per-run bundle.
-- Autonomous queueing, dependency-aware scheduling, and replay validation are live repo-local features on top of the same recorded run state, so later waves can prove recorded outcomes without needing live-host mutation proof.
+- Autonomous queueing, dependency-aware scheduling, and replay validation are live repo-local features on top of the same reducer-backed planning state plus compatibility-backed replay artifacts, so later waves can prove recorded outcomes without needing live-host mutation proof.
 
 ## Authored-Wave Contract Now Live
 
@@ -51,13 +56,14 @@
 ## Validation And Status Surfaces
 
 - `wave lint` rejects missing frontmatter metadata, missing shared wave sections, waves with no implementation agents, missing deliverables/components/capabilities/exit-contract fields, role-section drift between implementation and closure agents, weak prompts, missing plain-line marker instructions, duplicate owned paths/deliverables/skills, deliverables outside ownership, overlapping ownership, missing closure agents, missing role-prompt files, missing skill declarations on any agent, unknown skills, and weak Context7 declarations.
-- `wave doctor` verifies config loading, wave loading, skill-catalog health under `skills/`, upstream metadata pins, and the typed planning-status projection used by status reporting.
-- `wave control status` exposes queue readiness, per-wave agent counts, closure totals, blocker categories, and skill-catalog health from the same typed wave model that feeds `wave doctor`.
+- `wave doctor` verifies config loading, wave loading, configured role-prompt paths, canonical authority roots under `.wave/state/`, skill-catalog health under `skills/`, upstream metadata pins, and the typed planning-status projection used by status reporting.
+- `wave control status` exposes queue readiness, per-wave agent counts, closure totals, blocker categories, and skill-catalog health from the same reducer-backed planning projection that feeds `wave doctor`; compatibility run records remain adapter inputs at this stage.
 - The committed authored-wave backlog currently lints cleanly and has complete closure coverage across the wave set.
-- cont-QA: closed; wave 9 landed the repo-local self-host dogfood loop and its durable evidence, so the remaining gaps are now limited to the still-stubbed `wave adhoc` and `wave dep` commands.
-- cont-QA: closed; wave 5 landed direct shell control without changing closure sequencing or planning-status semantics.
-- cont-QA: closed; dark-factory is now an enforced execution profile at launch, so later queue and dogfood waves must be authored with complete preflightable contract data before they are considered ready.
-- cont-QA: closed; wave 7 added autonomous queue selection and dependency-aware gating, so later waves should assume queue claimability is computed from typed control-plane state rather than operator guesswork.
+- Wave 11 documentation now records the reducer/projection spine as landed, keeps the remaining compatibility boundary explicit, and moves the next migration to Wave 12; Wave 11 cont-QA closure is not claimed here because that final gate still belongs to `A0`.
+- Wave 9's repo-local self-host dogfood loop and durable evidence remain baseline proof surfaces; Wave 11 does not reopen that proof slice.
+- Wave 5's direct shell control remains baseline behavior without changing closure sequencing or planning-status semantics.
+- Dark-factory remains an enforced execution profile at launch, so later queue and dogfood waves must be authored with complete preflightable contract data before they are considered ready.
+- Wave 7's autonomous queue selection and dependency-aware gating remain baseline assumptions, so later waves should assume queue claimability is computed from typed control-plane state rather than operator guesswork.
 
 ## Skills And Context7
 
@@ -80,13 +86,13 @@
 ## Safe Assumptions For Later Waves
 
 - Later waves may rely on typed parsing of frontmatter, shared wave sections, skills, components, capabilities, exit contracts, closure agents, prompt-owned-path restatements, and final markers from markdown.
+- Later waves may rely on the authority-core crates and canonical state roots already existing in the repo config, even while queue and replay still consume compatibility run records and trace bundles.
+- Later waves may rely on Wave 10 having already moved the project contract onto typed authority roots and shared authority-domain types before the reducer cutover begins.
 - Later waves may rely on fail-closed lint to require non-empty skills on both implementation and closure agents, keep deliverables inside owned paths, preserve role-section boundaries, and enforce plain-line final-marker instructions before runtime work begins.
-- Later waves may rely on `wave doctor` and `wave control status` sharing one typed planning projection for queue readiness, blocker-wave reporting, per-wave agent counts, closure coverage, queue visibility, and skill-catalog health.
-- Later waves may rely on the Codex launcher, the right-side TUI panel, direct queue selection, rerun intents, autonomous queueing, dependency-aware gating, and replay validation being live in the repo-local runtime.
+- Later waves may rely on `wave doctor` and `wave control status` sharing one reducer-backed planning projection for queue readiness, blocker-wave reporting, per-wave agent counts, closure coverage, queue visibility, and skill-catalog health, while still treating compatibility run records as adapter inputs until structured result envelopes and canonical attempt state land.
+- Later waves may rely on the Codex launcher, the right-side TUI panel, direct queue selection, rerun intents, autonomous queueing, dependency-aware gating, and replay validation being live in the repo-local runtime, while still treating proof lifecycle and replay ratification as compatibility-backed until the later cutover waves land.
 - Later waves may rely on autonomous queue claimability being computed from typed dependencies, run state, and rerun intents rather than manual operator arbitration.
 - Later waves may rely on trace bundles, replay validation, and the wave 9 dogfood evidence as durable local evidence for recorded outcomes.
 - Later queue and dogfood waves should assume the shell already exposes direct queue selection and rerun-intent control, so they do not need a separate operator surface to reason about those actions.
 - Later queue and dogfood waves should also assume dark-factory launch refusal is fail-closed: if the authored contract is incomplete, the wave is malformed and should not be framed as launch-time fixup work.
 - Later waves must not assume `wave adhoc`, `wave dep`, or live-host deployment proof until those slices are explicitly landed.
-- cont-QA: closed; wave 7 added autonomous queue selection and dependency-aware gating, so later waves should treat queue claimability as a typed runtime decision in repo-local execution.
-- cont-QA: closed; wave 8 added trace bundles and replay validation, so later closure waves can use durable local artifacts to prove recorded behavior before dogfood evidence exists.

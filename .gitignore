@@ -7,4 +7,5 @@ target/
 .wave/state/
 .wave/traces/
 .wave/codex/
+.vscode/terminals.json
 .tmp/
