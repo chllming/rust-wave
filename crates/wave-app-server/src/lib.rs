@@ -33,6 +33,7 @@ use wave_spec::load_wave_documents;
 use wave_trace::ReplayReport;
 use wave_trace::WaveRunRecord;
 use wave_trace::WaveRunStatus;
+use wave_trace::load_effective_result_envelope;
 use wave_trace::now_epoch_ms;
 use wave_trace::validate_replay;
 
@@ -64,6 +65,7 @@ pub struct OperatorSnapshot {
     pub control_status: ControlStatusReadModel,
     pub panels: OperatorPanelsSnapshot,
     pub launcher: LauncherStatus,
+    pub latest_run_details: Vec<ActiveRunDetail>,
     pub active_run_details: Vec<ActiveRunDetail>,
     pub rerun_intents: Vec<RerunIntentRecord>,
     pub control_actions: Vec<ControlAction>,
@@ -163,6 +165,7 @@ pub struct AgentPanelItem {
     pub status: WaveRunStatus,
     pub current_task: String,
     pub proof_complete: bool,
+    pub proof_source: String,
     pub expected_markers: Vec<String>,
     pub observed_markers: Vec<String>,
     pub missing_markers: Vec<String>,
@@ -174,7 +177,10 @@ pub struct AgentPanelItem {
 pub struct ProofSnapshot {
     pub declared_artifacts: Vec<ProofArtifactStatus>,
     pub complete: bool,
+    pub proof_source: String,
     pub completed_agents: usize,
+    pub envelope_backed_agents: usize,
+    pub compatibility_backed_agents: usize,
     pub total_agents: usize,
 }
 
@@ -217,15 +223,16 @@ pub fn load_operator_snapshot(root: &Path, config: &ProjectConfig) -> Result<Ope
     let rerun_intents = list_rerun_intents(root, config)?
         .into_values()
         .collect::<Vec<_>>();
-    let mut active_run_details = latest_runs
-        .values()
+    let latest_run_details = latest_relevant_run_details(root, &waves, &latest_runs);
+    let active_run_details = latest_run_details
+        .iter()
         .filter(|run| matches!(run.status, WaveRunStatus::Planned | WaveRunStatus::Running))
-        .filter_map(|run| build_run_detail(root, &waves, run))
+        .cloned()
         .collect::<Vec<_>>();
-    active_run_details.sort_by_key(|detail| detail.wave_id);
     Ok(build_operator_snapshot(
         &spine,
         rerun_intents,
+        latest_run_details,
         active_run_details,
     )?)
 }
@@ -233,6 +240,7 @@ pub fn load_operator_snapshot(root: &Path, config: &ProjectConfig) -> Result<Ope
 pub fn build_operator_snapshot(
     spine: &ProjectionSpine,
     mut rerun_intents: Vec<RerunIntentRecord>,
+    latest_run_details: Vec<ActiveRunDetail>,
     active_run_details: Vec<ActiveRunDetail>,
 ) -> Result<OperatorSnapshot> {
     rerun_intents.sort_by_key(|intent| intent.wave_id);
@@ -255,6 +263,7 @@ pub fn build_operator_snapshot(
         control_status,
         panels,
         launcher,
+        latest_run_details,
         active_run_details,
         rerun_intents,
         control_actions,
@@ -377,6 +386,30 @@ pub fn build_dashboard_snapshot(dashboard: &DashboardReadModel) -> DashboardSnap
     }
 }
 
+pub fn latest_relevant_run_details(
+    root: &Path,
+    waves: &[WaveDocument],
+    latest_runs: &std::collections::HashMap<u32, WaveRunRecord>,
+) -> Vec<ActiveRunDetail> {
+    let mut details = latest_runs
+        .values()
+        .filter_map(|run| build_run_detail(root, waves, run))
+        .collect::<Vec<_>>();
+    details.sort_by_key(|detail| detail.wave_id);
+    details
+}
+
+pub fn latest_relevant_run_detail(
+    root: &Path,
+    waves: &[WaveDocument],
+    latest_runs: &std::collections::HashMap<u32, WaveRunRecord>,
+    wave_id: u32,
+) -> Option<ActiveRunDetail> {
+    latest_runs
+        .get(&wave_id)
+        .and_then(|run| build_run_detail(root, waves, run))
+}
+
 pub fn build_run_detail(
     root: &Path,
     waves: &[WaveDocument],
@@ -416,22 +449,35 @@ pub fn build_run_detail(
                     .agents
                     .iter()
                     .find(|candidate| candidate.id == agent.id);
-                build_agent_panel_item(agent, declared)
+                build_agent_panel_item(run, agent, declared)
             })
             .collect(),
     })
 }
 
 fn build_agent_panel_item(
+    run: &WaveRunRecord,
     agent: &wave_trace::AgentRunRecord,
     declared: Option<&WaveAgent>,
 ) -> AgentPanelItem {
-    let missing_markers = agent
-        .expected_markers
-        .iter()
-        .filter(|marker| !agent.observed_markers.iter().any(|seen| seen == *marker))
-        .cloned()
-        .collect::<Vec<_>>();
+    let effective = load_effective_result_envelope(run, agent).ok();
+    let final_markers = effective
+        .as_ref()
+        .map(|result| result.envelope.final_markers.clone())
+        .unwrap_or_else(|| {
+            wave_trace::FinalMarkerEnvelope::from_contract(
+                agent.expected_markers.clone(),
+                agent.observed_markers.clone(),
+            )
+        });
+    let attempt_state = effective
+        .as_ref()
+        .map(|result| result.envelope.attempt_state)
+        .unwrap_or_else(|| wave_trace::AttemptState::from_run_status(agent.status, run.dry_run));
+    let proof_source = effective
+        .as_ref()
+        .map(|result| result.envelope.proof_source_label().to_string())
+        .unwrap_or_else(|| "compatibility-run-record".to_string());
 
     AgentPanelItem {
         id: agent.id.clone(),
@@ -440,10 +486,12 @@ fn build_agent_panel_item(
         current_task: declared
             .map(|declared| declared.title.clone())
             .unwrap_or_else(|| agent.title.clone()),
-        proof_complete: missing_markers.is_empty() && agent.status == WaveRunStatus::Succeeded,
-        expected_markers: agent.expected_markers.clone(),
-        observed_markers: agent.observed_markers.clone(),
-        missing_markers,
+        proof_complete: final_markers.missing.is_empty()
+            && matches!(attempt_state, wave_trace::AttemptState::Succeeded),
+        proof_source,
+        expected_markers: final_markers.required.clone(),
+        observed_markers: final_markers.observed.clone(),
+        missing_markers: final_markers.missing.clone(),
         deliverables: declared
             .map(|declared| declared.deliverables.clone())
             .unwrap_or_default(),
@@ -461,24 +509,66 @@ fn build_proof_snapshot(root: &Path, wave: &WaveDocument, run: &WaveRunRecord) -
             exists: root.join(path).exists(),
         })
         .collect::<Vec<_>>();
-    let completed_agents = run
-        .agents
-        .iter()
-        .filter(|agent| agent.status == WaveRunStatus::Succeeded)
-        .count();
-    let agent_proof_complete = run.agents.iter().all(|agent| {
-        let missing = agent
-            .expected_markers
-            .iter()
-            .filter(|marker| !agent.observed_markers.iter().any(|seen| seen == *marker))
-            .count();
-        missing == 0 && agent.status == WaveRunStatus::Succeeded
-    });
+    let mut completed_agents = 0;
+    let mut envelope_backed_agents = 0;
+    let mut compatibility_backed_agents = 0;
+    let mut agent_proof_complete = true;
+
+    for agent in &run.agents {
+        match load_effective_result_envelope(run, agent) {
+            Ok(result) => {
+                if matches!(
+                    result.envelope.source,
+                    wave_trace::ResultEnvelopeSource::Structured
+                ) {
+                    envelope_backed_agents += 1;
+                } else {
+                    compatibility_backed_agents += 1;
+                }
+                if matches!(
+                    result.envelope.attempt_state,
+                    wave_trace::AttemptState::Succeeded
+                ) {
+                    completed_agents += 1;
+                }
+                if !matches!(
+                    result.envelope.attempt_state,
+                    wave_trace::AttemptState::Succeeded
+                ) || !result.envelope.final_markers.missing.is_empty()
+                {
+                    agent_proof_complete = false;
+                }
+            }
+            Err(_) => {
+                compatibility_backed_agents += 1;
+                if agent.status == WaveRunStatus::Succeeded {
+                    completed_agents += 1;
+                }
+                let missing = agent
+                    .expected_markers
+                    .iter()
+                    .filter(|marker| !agent.observed_markers.iter().any(|seen| seen == *marker))
+                    .count();
+                if missing > 0 || agent.status != WaveRunStatus::Succeeded {
+                    agent_proof_complete = false;
+                }
+            }
+        }
+    }
 
     ProofSnapshot {
         complete: declared_artifacts.iter().all(|artifact| artifact.exists) && agent_proof_complete,
+        proof_source: if compatibility_backed_agents == 0 {
+            "structured-envelope".to_string()
+        } else if envelope_backed_agents == 0 {
+            "compatibility-adapter".to_string()
+        } else {
+            "mixed-envelope-and-compatibility".to_string()
+        },
         declared_artifacts,
         completed_agents,
+        envelope_backed_agents,
+        compatibility_backed_agents,
         total_agents: run.agents.len(),
     }
 }
@@ -528,6 +618,15 @@ mod tests {
     use wave_control_plane::WaveReadinessReadModel;
     use wave_control_plane::WaveStatusReadModel;
     use wave_control_plane::build_dashboard_read_model;
+    use wave_spec::CompletionLevel;
+    use wave_spec::ComponentPromotion;
+    use wave_spec::Context7Defaults;
+    use wave_spec::DeployEnvironment;
+    use wave_spec::DocImpact;
+    use wave_spec::DurabilityLevel;
+    use wave_spec::ExitContract;
+    use wave_spec::ProofLevel;
+    use wave_spec::WaveMetadata;
 
     #[test]
     fn dashboard_snapshot_counts_completed_waves() {
@@ -750,7 +849,7 @@ mod tests {
         let operator =
             wave_control_plane::build_operator_snapshot_inputs(&planning, &HashMap::new(), false);
         let spine = ProjectionSpine { planning, operator };
-        let snapshot = build_operator_snapshot(&spine, Vec::new(), Vec::new()).unwrap();
+        let snapshot = build_operator_snapshot(&spine, Vec::new(), Vec::new(), Vec::new()).unwrap();
 
         assert_eq!(
             snapshot.control_status,
@@ -794,5 +893,372 @@ mod tests {
             snapshot.panels.queue.waves[0].queue_state,
             spine.operator.queue.waves[0].queue_state
         );
+    }
+
+    #[test]
+    fn operator_snapshot_preserves_projection_owned_queue_states() {
+        let status = PlanningStatusReadModel {
+            project_name: "Test".to_string(),
+            default_mode: wave_config::ExecutionMode::DarkFactory,
+            summary: PlanningStatusSummary {
+                total_waves: 3,
+                ready_waves: 0,
+                blocked_waves: 1,
+                active_waves: 1,
+                completed_waves: 1,
+                total_agents: 9,
+                implementation_agents: 3,
+                closure_agents: 6,
+                waves_with_complete_closure: 3,
+                waves_missing_closure: 0,
+                total_missing_closure_agents: 0,
+                lint_error_waves: 0,
+                skill_catalog_issue_count: 0,
+            },
+            skill_catalog: SkillCatalogHealth {
+                ok: true,
+                issue_count: 0,
+                issues: Vec::new(),
+            },
+            queue: QueueReadinessReadModel {
+                next_ready_wave_ids: Vec::new(),
+                next_ready_wave_id: None,
+                claimable_wave_ids: Vec::new(),
+                ready_wave_count: 0,
+                blocked_wave_count: 1,
+                active_wave_count: 1,
+                completed_wave_count: 1,
+                queue_ready: false,
+                queue_ready_reason: "no waves are ready to claim".to_string(),
+            },
+            next_ready_wave_ids: Vec::new(),
+            waves: vec![
+                WaveStatusReadModel {
+                    id: 5,
+                    slug: "active".to_string(),
+                    title: "Active".to_string(),
+                    depends_on: Vec::new(),
+                    blocked_by: vec!["active-run:running".to_string()],
+                    blocker_state: vec![QueueBlockerReadModel {
+                        kind: QueueBlockerKindReadModel::ActiveRun,
+                        raw: "active-run:running".to_string(),
+                        detail: Some("wave is already active".to_string()),
+                    }],
+                    lint_errors: 0,
+                    ready: false,
+                    agent_count: 3,
+                    implementation_agent_count: 1,
+                    closure_agent_count: 2,
+                    closure_complete: true,
+                    required_closure_agents: vec![
+                        "A0".to_string(),
+                        "A8".to_string(),
+                        "A9".to_string(),
+                    ],
+                    present_closure_agents: vec![
+                        "A0".to_string(),
+                        "A8".to_string(),
+                        "A9".to_string(),
+                    ],
+                    missing_closure_agents: Vec::new(),
+                    readiness: WaveReadinessReadModel {
+                        state: QueueReadinessStateReadModel::Active,
+                        claimable: false,
+                        reasons: vec![QueueBlockerReadModel {
+                            kind: QueueBlockerKindReadModel::ActiveRun,
+                            raw: "active-run:running".to_string(),
+                            detail: Some("wave is already active".to_string()),
+                        }],
+                        primary_reason: Some(QueueBlockerReadModel {
+                            kind: QueueBlockerKindReadModel::ActiveRun,
+                            raw: "active-run:running".to_string(),
+                            detail: Some("wave is already active".to_string()),
+                        }),
+                    },
+                    rerun_requested: false,
+                    completed: false,
+                    last_run_status: Some(WaveRunStatus::Running),
+                },
+                WaveStatusReadModel {
+                    id: 6,
+                    slug: "blocked".to_string(),
+                    title: "Blocked".to_string(),
+                    depends_on: vec![5],
+                    blocked_by: vec!["wave:5".to_string()],
+                    blocker_state: vec![QueueBlockerReadModel {
+                        kind: QueueBlockerKindReadModel::Dependency,
+                        raw: "wave:5".to_string(),
+                        detail: Some("5".to_string()),
+                    }],
+                    lint_errors: 0,
+                    ready: false,
+                    agent_count: 3,
+                    implementation_agent_count: 1,
+                    closure_agent_count: 2,
+                    closure_complete: true,
+                    required_closure_agents: vec![
+                        "A0".to_string(),
+                        "A8".to_string(),
+                        "A9".to_string(),
+                    ],
+                    present_closure_agents: vec![
+                        "A0".to_string(),
+                        "A8".to_string(),
+                        "A9".to_string(),
+                    ],
+                    missing_closure_agents: Vec::new(),
+                    readiness: WaveReadinessReadModel {
+                        state: QueueReadinessStateReadModel::Blocked,
+                        claimable: false,
+                        reasons: vec![QueueBlockerReadModel {
+                            kind: QueueBlockerKindReadModel::Dependency,
+                            raw: "wave:5".to_string(),
+                            detail: Some("5".to_string()),
+                        }],
+                        primary_reason: Some(QueueBlockerReadModel {
+                            kind: QueueBlockerKindReadModel::Dependency,
+                            raw: "wave:5".to_string(),
+                            detail: Some("5".to_string()),
+                        }),
+                    },
+                    rerun_requested: false,
+                    completed: false,
+                    last_run_status: None,
+                },
+                WaveStatusReadModel {
+                    id: 7,
+                    slug: "completed".to_string(),
+                    title: "Completed".to_string(),
+                    depends_on: Vec::new(),
+                    blocked_by: vec!["already-completed".to_string()],
+                    blocker_state: vec![QueueBlockerReadModel {
+                        kind: QueueBlockerKindReadModel::AlreadyCompleted,
+                        raw: "already-completed".to_string(),
+                        detail: None,
+                    }],
+                    lint_errors: 0,
+                    ready: false,
+                    agent_count: 3,
+                    implementation_agent_count: 1,
+                    closure_agent_count: 2,
+                    closure_complete: true,
+                    required_closure_agents: vec![
+                        "A0".to_string(),
+                        "A8".to_string(),
+                        "A9".to_string(),
+                    ],
+                    present_closure_agents: vec![
+                        "A0".to_string(),
+                        "A8".to_string(),
+                        "A9".to_string(),
+                    ],
+                    missing_closure_agents: Vec::new(),
+                    readiness: WaveReadinessReadModel {
+                        state: QueueReadinessStateReadModel::Completed,
+                        claimable: false,
+                        reasons: vec![QueueBlockerReadModel {
+                            kind: QueueBlockerKindReadModel::AlreadyCompleted,
+                            raw: "already-completed".to_string(),
+                            detail: None,
+                        }],
+                        primary_reason: Some(QueueBlockerReadModel {
+                            kind: QueueBlockerKindReadModel::AlreadyCompleted,
+                            raw: "already-completed".to_string(),
+                            detail: None,
+                        }),
+                    },
+                    rerun_requested: false,
+                    completed: true,
+                    last_run_status: Some(WaveRunStatus::Succeeded),
+                },
+            ],
+            has_errors: false,
+        };
+        let projection = wave_control_plane::build_planning_status_projection(&status);
+        let planning = PlanningProjectionBundle { status, projection };
+        let operator =
+            wave_control_plane::build_operator_snapshot_inputs(&planning, &HashMap::new(), true);
+        let spine = ProjectionSpine { planning, operator };
+        let snapshot = build_operator_snapshot(&spine, Vec::new(), Vec::new(), Vec::new()).unwrap();
+
+        let queue_states = snapshot
+            .panels
+            .queue
+            .waves
+            .iter()
+            .map(|wave| wave.queue_state.clone())
+            .collect::<Vec<_>>();
+        let spine_queue_states = spine
+            .operator
+            .queue
+            .waves
+            .iter()
+            .map(|wave| wave.queue_state.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(queue_states, vec!["active", "blocked: wave:5", "completed"]);
+        assert_eq!(queue_states, spine_queue_states);
+        assert_eq!(
+            snapshot.control_status.queue_decision.blocker_summary,
+            spine.operator.queue.blocker_summary
+        );
+    }
+
+    #[test]
+    fn build_run_detail_prefers_structured_result_envelope_for_proof() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-app-server-proof-{}-{}",
+            std::process::id(),
+            wave_trace::now_epoch_ms().expect("timestamp")
+        ));
+        let bundle_dir = root.join(".wave/state/build/specs/wave-12-1");
+        let agent_dir = bundle_dir.join("agents/A1");
+        let trace_path = root.join(".wave/traces/runs/wave-12-1.json");
+        let envelope_path =
+            root.join(".wave/state/results/wave-12/attempt-a1/agent_result_envelope.json");
+        std::fs::create_dir_all(&agent_dir).expect("agent dir");
+        std::fs::create_dir_all(trace_path.parent().expect("trace parent")).expect("trace dir");
+        std::fs::create_dir_all(envelope_path.parent().expect("envelope parent"))
+            .expect("envelope dir");
+        std::fs::create_dir_all(root.join(".wave/codex")).expect("codex dir");
+        std::fs::write(root.join("README.md"), "proof\n").expect("write proof");
+        std::fs::write(agent_dir.join("prompt.md"), "# prompt\n").expect("write prompt");
+        std::fs::write(agent_dir.join("last-message.txt"), "[wave-proof]\n")
+            .expect("write message");
+        std::fs::write(agent_dir.join("events.jsonl"), "{}\n").expect("write events");
+        std::fs::write(agent_dir.join("stderr.txt"), "").expect("write stderr");
+
+        wave_trace::write_result_envelope(
+            &envelope_path,
+            &wave_trace::ResultEnvelopeRecord {
+                result_envelope_id: "result:wave-12-1:a1".to_string(),
+                wave_id: 12,
+                task_id: "wave-12:agent-a1".to_string(),
+                attempt_id: "attempt-a1".to_string(),
+                agent_id: "A1".to_string(),
+                task_role: "implementation".to_string(),
+                closure_role: None,
+                source: wave_trace::ResultEnvelopeSource::Structured,
+                attempt_state: wave_trace::AttemptState::Succeeded,
+                disposition: wave_trace::ResultDisposition::Completed,
+                summary: Some("structured".to_string()),
+                output_text: Some("[wave-proof]".to_string()),
+                final_markers: wave_trace::FinalMarkerEnvelope::from_contract(
+                    vec!["[wave-proof]".to_string()],
+                    vec!["[wave-proof]".to_string()],
+                ),
+                proof_bundle_ids: Vec::new(),
+                fact_ids: Vec::new(),
+                contradiction_ids: Vec::new(),
+                artifacts: Vec::new(),
+                doc_delta: wave_trace::DocDeltaEnvelope::default(),
+                marker_evidence: Vec::new(),
+                closure: wave_trace::ClosureState {
+                    disposition: wave_trace::ClosureDisposition::Ready,
+                    required_final_markers: vec!["[wave-proof]".to_string()],
+                    observed_final_markers: vec!["[wave-proof]".to_string()],
+                    blocking_reasons: Vec::new(),
+                    satisfied_fact_ids: Vec::new(),
+                    contradiction_ids: Vec::new(),
+                    verdict: wave_trace::ClosureVerdictPayload::None,
+                },
+                created_at_ms: 3,
+            },
+        )
+        .expect("write envelope");
+
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/12.md"),
+            metadata: WaveMetadata {
+                id: 12,
+                slug: "result-envelope".to_string(),
+                title: "Result Envelope".to_string(),
+                mode: wave_config::ExecutionMode::DarkFactory,
+                owners: vec!["A0".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: vec!["README.md".to_string()],
+            },
+            heading_title: Some("Wave 12".to_string()),
+            commit_message: Some("Feat: result envelope".to_string()),
+            component_promotions: vec![ComponentPromotion {
+                component: "result-envelope".to_string(),
+                target: "repo-landed".to_string(),
+            }],
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "custom default".to_string(),
+            }],
+            context7_defaults: Some(Context7Defaults {
+                bundle: "rust-control-plane".to_string(),
+                query: Some("Structured results".to_string()),
+            }),
+            agents: vec![WaveAgent {
+                id: "A1".to_string(),
+                title: "Implementation".to_string(),
+                role_prompts: Vec::new(),
+                executor: std::collections::BTreeMap::new(),
+                context7: Some(Context7Defaults {
+                    bundle: "none".to_string(),
+                    query: Some("noop".to_string()),
+                }),
+                skills: Vec::new(),
+                components: Vec::new(),
+                capabilities: Vec::new(),
+                exit_contract: Some(ExitContract {
+                    completion: CompletionLevel::Contract,
+                    durability: DurabilityLevel::Durable,
+                    proof: ProofLevel::Unit,
+                    doc_impact: DocImpact::Owned,
+                }),
+                deliverables: vec!["README.md".to_string()],
+                file_ownership: vec!["README.md".to_string()],
+                final_markers: vec!["[wave-proof]".to_string()],
+                prompt: "Primary goal:\n- noop".to_string(),
+            }],
+        };
+        let run = WaveRunRecord {
+            run_id: "wave-12-1".to_string(),
+            wave_id: 12,
+            slug: "result-envelope".to_string(),
+            title: "Result Envelope".to_string(),
+            status: WaveRunStatus::Succeeded,
+            dry_run: false,
+            bundle_dir: bundle_dir.clone(),
+            trace_path: trace_path.clone(),
+            codex_home: root.join(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            launcher_pid: None,
+            completed_at_ms: Some(3),
+            agents: vec![wave_trace::AgentRunRecord {
+                id: "A1".to_string(),
+                title: "Implementation".to_string(),
+                status: WaveRunStatus::Succeeded,
+                prompt_path: agent_dir.join("prompt.md"),
+                last_message_path: agent_dir.join("last-message.txt"),
+                events_path: agent_dir.join("events.jsonl"),
+                stderr_path: agent_dir.join("stderr.txt"),
+                result_envelope_path: Some(envelope_path),
+                expected_markers: vec!["[wave-proof]".to_string()],
+                observed_markers: Vec::new(),
+                exit_code: Some(0),
+                error: None,
+            }],
+            error: None,
+        };
+        wave_trace::write_trace_bundle(&trace_path, &run).expect("write trace");
+
+        let detail = build_run_detail(&root, &[wave], &run).expect("run detail");
+
+        assert!(detail.proof.complete);
+        assert_eq!(detail.proof.proof_source, "structured-envelope");
+        assert_eq!(detail.proof.envelope_backed_agents, 1);
+        assert_eq!(detail.proof.compatibility_backed_agents, 0);
+        assert_eq!(detail.agents[0].proof_source, "structured-envelope");
+        assert!(detail.agents[0].proof_complete);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

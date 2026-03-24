@@ -47,7 +47,7 @@ This matrix is the canonical place to record the authored-wave rewrite component
 
 The dogfood-evidence components are now `repo-landed`: the repo has the executable runtime/operator surface plus the self-host evidence to describe it honestly.
 Wave `10` makes the authority-core components `repo-landed`, and Wave `11` raises the reducer/projection slice to `baseline-proved`: planning status, queue/control JSON, and operator-facing status truth are now reducer-backed over compatibility run records, while structured result envelopes remain later work and proof lifecycle plus replay ratification remain compatibility-backed.
-The next executable cutover is Wave `12`: land structured result envelopes and proof lifecycle while keeping legacy compatibility adapters explicit.
+The next executable cutover is Wave `12`: land structured result envelopes and proof lifecycle, route new-run persistence through `wave-results`, keep legacy compatibility adapters explicit, and make replay mismatches semantic rather than raw path-format drift.
 Wave `11` only promotes the four reducer/projection components listed above. TUI, launcher, scheduler, and trace components may consume those projections, but they keep their existing levels until their own waves promote them.
 Wave `11` is recorded here for shared-plan parity, but final cont-QA closure still belongs to `A0` and is not claimed by this matrix.
 

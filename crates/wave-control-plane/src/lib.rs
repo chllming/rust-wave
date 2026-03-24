@@ -4,6 +4,8 @@
 //! read models, operator status helpers, and the operator snapshot input
 //! spine. Prefer depending on `wave-projections` directly for new work; this
 //! crate remains a forwarding layer so existing runtime and CLI callers keep
-//! compiling while the workspace finishes the manifest cutover.
+//! compiling while the workspace finishes the manifest cutover. It does not
+//! contain separate reducer or projection authority under the older crate
+//! name.
 
 pub use wave_projections::*;

@@ -32,7 +32,7 @@ The `Queue` view is the operator planning surface. It reflects the same control-
 
 The panel should keep consuming that same queue truth. The UI may change, but it should not invent a second source of status state.
 In the current Rust implementation, that queue/control truth is reducer-backed: `wave-reducer` computes the planning state and `wave-projections` turns it into the `ProjectionSpine`, operator snapshot input read models, and queue/control status helper read models that `wave control status --json`, `wave-app-server`, and the TUI consume. `wave-app-server` now carries that control-status read model through the operator snapshot so the TUI can render the queue decision story and control attention lines without rebuilding them locally. `wave-control-plane` is now only a forwarding shim over that contract. Compatibility run records still enter as adapter inputs for active-run and replay facts in this stage.
-Parity is covered by repo-local fixtures: `cargo test -p wave-cli`, `cargo test -p wave-app-server`, and `cargo test -p wave-tui` all exercise the same reducer-backed queue/control payload from different consumer edges.
+Parity is covered by repo-local fixtures: `cargo test -p wave-cli`, `cargo test -p wave-app-server`, and `cargo test -p wave-tui` all exercise the same reducer-backed queue/control payload from different consumer edges, and the queue-row fixtures explicitly preserve `active`, `blocked`, and `completed` labels from reducer readiness state rather than inferring them from blocker strings alone.
 When multiple waves are active, the `Run`, `Agents`, and `Control` tabs follow the currently selected wave instead of whichever run happens to appear first in the snapshot.
 
 ## Keybindings
@@ -84,6 +84,7 @@ The shell is backed by the same repo-local inputs and projection contract as the
 - `.wave/traces/runs/`
 
 Planning, queue, and control tabs are reducer-backed projections assembled from those inputs, rather than UI-local readiness logic. `wave-app-server` now maps reducer-backed operator snapshot inputs plus the projection-owned control-status read model into the transport snapshot the TUI reads, and the TUI queue/control tabs render that snapshot payload so the closure-blocked story, closure-attention lines, and skill-issue lines stay aligned with `wave control status`. `.wave/state/projections/` remains the canonical root for persisted projection material once later waves start writing those read models out durably.
+Dry-run launch and preflight refusal remain non-mutating from the queue's point of view: they may write draft/preflight material under `.wave/state/build/specs/`, but they do not clear rerun intents or write durable compatibility run/trace records into `.wave/state/runs/` or `.wave/traces/runs/`.
 
 The trace surface is evidence, not debug logging. `wave trace latest` reports the recorded run, replay result, and trace path for each wave, while `wave trace replay` rechecks the stored record or v1 trace bundle against the current run state and emits replay issues when something diverges.
 

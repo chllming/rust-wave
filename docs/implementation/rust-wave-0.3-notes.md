@@ -68,6 +68,12 @@ Examples:
 - Require A8 and A0 to review against the architecture doc and component matrix, not just the authored wave file.
 - Record explicit "still compatibility-backed" versus "now authoritative" statements in closure artifacts.
 
+### Ownership-Aligned Seams
+
+- Require implementation ownership to include the manifests and dependency edges needed to close the architectural seam the agent owns.
+- Treat “the seam is correct but the manifest is out of ownership” as a wave-authoring failure, not an implementation excuse.
+- Prefer ownership slices that map to crate or subsystem boundaries instead of splitting one architectural cutover across incompatible owners.
+
 ### Local-First Control Service Boundary
 
 - Keep remote control or telemetry services append and query only.

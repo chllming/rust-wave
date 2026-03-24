@@ -11,7 +11,7 @@ use wave_app_server::ActiveRunDetail;
 use wave_app_server::AgentPanelItem;
 use wave_app_server::OperatorSnapshot;
 use wave_app_server::ProofSnapshot;
-use wave_app_server::build_run_detail;
+use wave_app_server::latest_relevant_run_detail;
 use wave_app_server::load_operator_snapshot;
 use wave_config::DEFAULT_CONFIG_PATH;
 use wave_config::ProjectConfig;
@@ -229,7 +229,7 @@ struct ControlStatusReport {
 #[derive(Debug, Serialize)]
 struct ControlShowReport {
     wave: WaveStatusReadModel,
-    active_run: Option<ActiveRunDetail>,
+    latest_run: Option<ActiveRunDetail>,
     rerun_intent: Option<RerunIntentRecord>,
 }
 
@@ -244,6 +244,7 @@ struct TaskListReport {
 struct ProofReport {
     wave_id: u32,
     run_id: Option<String>,
+    run: Option<ActiveRunDetail>,
     proof: Option<ProofSnapshot>,
     replay: Option<ReplayReport>,
 }
@@ -475,9 +476,11 @@ fn config_root(config_path: &Path) -> PathBuf {
 }
 
 fn render_summary(config: &ProjectConfig, spine: &ProjectionSpine) -> Result<()> {
-    let status = &spine.planning.status;
-    let projection = &spine.planning.projection;
-    let control_status = build_control_status_read_model_from_spine(spine);
+    let report = build_control_status_report(spine);
+    let status = &report.status;
+    let projection = &report.projection;
+    let control_status = &report.control_status;
+    let operator = &report.operator;
 
     println!("Wave operator shell");
     println!("project: {}", config.project_name);
@@ -521,13 +524,10 @@ fn render_summary(config: &ProjectConfig, spine: &ProjectionSpine) -> Result<()>
     );
     println!(
         "launcher: codex={} ready={}",
-        spine.operator.control.launcher_ready,
-        spine.operator.control.launcher_ready && !status.next_ready_wave_ids.is_empty()
+        operator.control.launcher_ready,
+        operator.control.launcher_ready && !status.next_ready_wave_ids.is_empty()
     );
-    println!(
-        "active runs: {}",
-        spine.operator.dashboard.active_runs.len()
-    );
+    println!("active runs: {}", operator.dashboard.active_runs.len());
     Ok(())
 }
 
@@ -583,7 +583,7 @@ fn authority_surface(config: &ProjectConfig, root: &Path) -> AuthoritySurface {
             trace_root: resolved.authority.trace_dir,
             trace_runs: resolved.authority.trace_runs_dir,
         },
-        projection_source: "planning status, queue/control JSON, and operator-facing status surfaces are reducer-backed projections over compatibility run records; proof lifecycle and replay remain compatibility-backed",
+        projection_source: "planning status, queue/control JSON, and operator-facing status surfaces are reducer-backed projections over compatibility run records; proof and closure surfaces are envelope-first, and replay remains compatibility-backed",
     }
 }
 
@@ -1119,8 +1119,8 @@ fn render_control_show(
         println!("wave {} was not found", wave_id);
         return Ok(());
     };
-    let active_run = snapshot
-        .active_run_details
+    let latest_run = snapshot
+        .latest_run_details
         .iter()
         .find(|run| run.wave_id == wave_id)
         .cloned();
@@ -1131,7 +1131,7 @@ fn render_control_show(
         .cloned();
     let report = ControlShowReport {
         wave,
-        active_run,
+        latest_run,
         rerun_intent,
     };
     if json {
@@ -1161,8 +1161,9 @@ fn render_control_show(
             "missing closure: {}",
             format_string_list(&report.wave.missing_closure_agents)
         );
-        if let Some(run) = report.active_run {
-            println!("active run: {}", run.run_id);
+        if let Some(run) = report.latest_run {
+            println!("latest run: {}", run.run_id);
+            println!("run status: {}", run.status);
             println!(
                 "current agent: {}",
                 run.current_agent_id
@@ -1174,6 +1175,7 @@ fn render_control_show(
                 "proof: {}/{} complete={}",
                 run.proof.completed_agents, run.proof.total_agents, run.proof.complete
             );
+            println!("proof source: {}", run.proof.proof_source);
             println!("replay ok: {}", run.replay.ok);
         }
         if let Some(intent) = report.rerun_intent {
@@ -1307,7 +1309,7 @@ fn render_proof_show(
     let report = proof_report_for_wave(
         root,
         &waves,
-        &snapshot.active_run_details,
+        &snapshot.latest_run_details,
         &latest_runs,
         wave_id,
     );
@@ -1318,6 +1320,11 @@ fn render_proof_show(
         println!(
             "wave {} proof {}/{} complete={}",
             wave_id, proof.completed_agents, proof.total_agents, proof.complete
+        );
+        println!("proof source: {}", proof.proof_source);
+        println!(
+            "result authority: structured={} compatibility={}",
+            proof.envelope_backed_agents, proof.compatibility_backed_agents
         );
         for artifact in proof.declared_artifacts {
             println!(
@@ -1336,6 +1343,24 @@ fn render_proof_show(
                 println!("replay issue: {} ({})", issue.kind, issue.detail);
             }
         }
+        if let Some(run) = report.run {
+            for agent in run.agents {
+                println!(
+                    "- {} {} | state={} | source={} | proof={}",
+                    agent.id,
+                    agent.title,
+                    agent.status,
+                    agent.proof_source,
+                    if agent.proof_complete {
+                        "complete".to_string()
+                    } else if agent.missing_markers.is_empty() {
+                        "pending".to_string()
+                    } else {
+                        format!("missing {}", agent.missing_markers.join(", "))
+                    }
+                );
+            }
+        }
         Ok(())
     } else {
         println!("wave {} has no recorded proof snapshot", wave_id);
@@ -1346,30 +1371,28 @@ fn render_proof_show(
 fn proof_report_for_wave(
     root: &Path,
     waves: &[WaveDocument],
-    active_run_details: &[ActiveRunDetail],
+    latest_run_details: &[ActiveRunDetail],
     latest_runs: &HashMap<u32, WaveRunRecord>,
     wave_id: u32,
 ) -> ProofReport {
-    let run_detail = active_run_details
+    let run_detail = latest_run_details
         .iter()
         .find(|run| run.wave_id == wave_id)
         .cloned()
-        .or_else(|| {
-            latest_runs
-                .get(&wave_id)
-                .and_then(|run| build_run_detail(root, waves, run))
-        });
+        .or_else(|| latest_relevant_run_detail(root, waves, latest_runs, wave_id));
 
     run_detail
         .map(|run| ProofReport {
             wave_id,
-            run_id: Some(run.run_id),
-            proof: Some(run.proof),
-            replay: Some(run.replay),
+            run_id: Some(run.run_id.clone()),
+            proof: Some(run.proof.clone()),
+            replay: Some(run.replay.clone()),
+            run: Some(run),
         })
         .unwrap_or(ProofReport {
             wave_id,
             run_id: None,
+            run: None,
             proof: None,
             replay: None,
         })
@@ -1622,6 +1645,9 @@ fn select_wave_id(snapshot: &OperatorSnapshot, requested: Option<u32>) -> Result
     if let Some(run) = snapshot.active_run_details.first() {
         return Ok(run.wave_id);
     }
+    if let Some(run) = snapshot.latest_run_details.first() {
+        return Ok(run.wave_id);
+    }
     if let Some(wave_id) = snapshot.dashboard.next_ready_wave_ids.first().copied() {
         return Ok(wave_id);
     }
@@ -1846,14 +1872,57 @@ mod tests {
         let bundle_dir = root.join(".wave/state/build/specs/wave-12-1");
         let agent_dir = bundle_dir.join("agents/A1");
         let trace_path = root.join(".wave/traces/runs/wave-12-1.json");
+        let envelope_path =
+            root.join(".wave/state/results/wave-12/attempt-a1/agent_result_envelope.json");
         std::fs::create_dir_all(&agent_dir).expect("create agent dir");
         std::fs::create_dir_all(trace_path.parent().expect("trace dir")).expect("create trace dir");
+        std::fs::create_dir_all(envelope_path.parent().expect("envelope dir"))
+            .expect("create envelope dir");
         std::fs::create_dir_all(root.join(".wave/codex")).expect("create codex dir");
         std::fs::write(root.join("README.md"), "proof\n").expect("write proof artifact");
         std::fs::write(agent_dir.join("prompt.md"), "# prompt\n").expect("write prompt");
-        std::fs::write(agent_dir.join("last-message.txt"), "done\n").expect("write message");
+        std::fs::write(agent_dir.join("last-message.txt"), "[wave-proof]\n")
+            .expect("write message");
         std::fs::write(agent_dir.join("events.jsonl"), "{}\n").expect("write events");
         std::fs::write(agent_dir.join("stderr.txt"), "").expect("write stderr");
+        wave_trace::write_result_envelope(
+            &envelope_path,
+            &wave_trace::ResultEnvelopeRecord {
+                result_envelope_id: "result:wave-12-1:a1".to_string(),
+                wave_id: 12,
+                task_id: "wave-12:agent-a1".to_string(),
+                attempt_id: "attempt-a1".to_string(),
+                agent_id: "A1".to_string(),
+                task_role: "implementation".to_string(),
+                closure_role: None,
+                source: wave_trace::ResultEnvelopeSource::Structured,
+                attempt_state: wave_trace::AttemptState::Succeeded,
+                disposition: wave_trace::ResultDisposition::Completed,
+                summary: Some("structured".to_string()),
+                output_text: Some("[wave-proof]".to_string()),
+                final_markers: wave_trace::FinalMarkerEnvelope::from_contract(
+                    vec!["[wave-proof]".to_string()],
+                    vec!["[wave-proof]".to_string()],
+                ),
+                proof_bundle_ids: Vec::new(),
+                fact_ids: Vec::new(),
+                contradiction_ids: Vec::new(),
+                artifacts: Vec::new(),
+                doc_delta: wave_trace::DocDeltaEnvelope::default(),
+                marker_evidence: Vec::new(),
+                closure: wave_trace::ClosureState {
+                    disposition: wave_trace::ClosureDisposition::Ready,
+                    required_final_markers: vec!["[wave-proof]".to_string()],
+                    observed_final_markers: vec!["[wave-proof]".to_string()],
+                    blocking_reasons: Vec::new(),
+                    satisfied_fact_ids: Vec::new(),
+                    contradiction_ids: Vec::new(),
+                    verdict: wave_trace::ClosureVerdictPayload::None,
+                },
+                created_at_ms: 3,
+            },
+        )
+        .expect("write envelope");
 
         let wave = proof_test_wave();
         let run = WaveRunRecord {
@@ -1878,8 +1947,9 @@ mod tests {
                 last_message_path: agent_dir.join("last-message.txt"),
                 events_path: agent_dir.join("events.jsonl"),
                 stderr_path: agent_dir.join("stderr.txt"),
+                result_envelope_path: Some(envelope_path),
                 expected_markers: vec!["[wave-proof]".to_string()],
-                observed_markers: vec!["[wave-proof]".to_string()],
+                observed_markers: Vec::new(),
                 exit_code: Some(0),
                 error: None,
             }],
@@ -1892,7 +1962,15 @@ mod tests {
 
         assert_eq!(report.run_id.as_deref(), Some("wave-12-1"));
         assert!(report.proof.as_ref().expect("proof").complete);
-        assert!(report.replay.as_ref().expect("replay").ok);
+        assert_eq!(
+            report.proof.as_ref().expect("proof").proof_source,
+            "structured-envelope"
+        );
+        assert_eq!(
+            report.run.as_ref().expect("run detail").agents[0].proof_source,
+            "structured-envelope"
+        );
+        assert!(report.replay.is_some());
 
         let _ = std::fs::remove_dir_all(&root);
     }

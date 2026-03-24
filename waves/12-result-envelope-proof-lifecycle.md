@@ -5,7 +5,7 @@ title = "Land result envelopes and proof lifecycle"
 mode = "dark-factory"
 owners = ["architecture", "control"]
 depends_on = [11]
-validation = ["cargo test -p wave-results -p wave-gates -p wave-runtime --locked", "cargo test -p wave-app-server -p wave-cli -p wave-trace --locked", "cargo run -p wave-cli -- doctor --json", "cargo run -p wave-cli -- control proof show --wave 12 --json", "cargo run -p wave-cli -- trace latest --wave 12 --json"]
+validation = ["cargo test -p wave-results -p wave-gates -p wave-runtime --locked", "cargo test -p wave-app-server -p wave-cli -p wave-trace --locked", "cargo run -p wave-cli -- doctor --json", "cargo run -p wave-cli -- control proof show --wave 12 --json", "cargo run -p wave-cli -- trace latest --wave 12 --json", "cargo run -p wave-cli -- trace replay --wave 12 --json"]
 rollback = ["Route proof lifecycle and closure input back through the current marker-first compatibility path until structured envelopes reach parity, while keeping any newly written envelope artifacts as derived compatibility data only."]
 proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-results/Cargo.toml", "crates/wave-results/src/lib.rs", "crates/wave-gates/src/lib.rs", "crates/wave-runtime/src/lib.rs", "crates/wave-trace/src/lib.rs", "crates/wave-app-server/src/lib.rs", "crates/wave-cli/src/main.rs", "docs/implementation/rust-codex-refactor.md", "docs/reference/runtime-config/README.md", "docs/plans/master-plan.md", "docs/plans/current-state.md", "docs/plans/migration.md", "docs/plans/component-cutover-matrix.md", "docs/plans/component-cutover-matrix.json"]
 +++
@@ -24,6 +24,13 @@ proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-results/Car
 ## Context7 defaults
 - bundle: rust-control-plane
 - query: "Structured result envelopes, proof lifecycle cutover, legacy marker adapters, and closure gates over typed results"
+
+## Wave contract
+- For new runs, structured result envelopes written through `wave-results` are the semantic source for proof, doc-delta, and closure state.
+- For old runs, only explicit compatibility-adapter output inside `wave-results` may stand in for structured envelopes.
+- Replay may remain compatibility-backed in this wave, but mismatches must be about normalized or semantic envelope divergence, not raw path-format drift.
+- Any implementation slice that requires dependency or manifest edits must own those manifest paths in the same agent section; ownership gaps are authored-wave defects, not acceptable handoff notes.
+- Implementation markers may only be emitted once the architectural seam in scope is actually closed inside the owned slice.
 
 ## Agent A0: Running cont-QA
 
@@ -69,8 +76,10 @@ Specific expectations:
 - require tests for envelope serialization, legacy compatibility adaptation, and closure parity over the same proof semantics
 - do not PASS unless operator-facing proof surfaces work for the latest completed or failed wave as well as active runs; active-run-only proof is a blocking regression
 - require persisted envelope, run, and trace artifact paths to reload correctly from repo-local state; relative-path readback failures are blocking defects, not follow-up cleanup
+- treat ownership or manifest-boundary blocks on an architecture-required seam as authored-wave failure, not as acceptable implementation handoff language
 - map every PASS or BLOCKED claim to exact envelope fixtures, adapter artifacts, or validation commands; stale earlier readiness claims do not survive contrary later evidence
 - keep the compatibility boundary honest: replay can remain compatibility-backed in this wave, but proof lifecycle and closure input must no longer depend directly on ad hoc text parsing
+- require replay mismatches to be semantic: raw `result_envelope_path` formatting drift still blocks until the runtime and trace layers normalize or compare canonical envelope references
 - require live proof and evidence surfaces to recompute from current stored envelope or explicit compatibility-adapter state rather than trusting stale embedded snapshots alone
 - emit the final [wave-gate] marker as a plain last line before Verdict: ...
 
@@ -122,6 +131,9 @@ Specific expectations:
 - decide ready-for-doc-closure only when structured envelopes are the primary machine contract and the legacy marker path is visibly demoted to compatibility adapter behavior
 - require proof consumers to resolve the latest relevant attempt for completed and failed waves, not only active-run details
 - require repo-root-stable artifact readback across envelopes, compatibility runs, and traces; path normalization bugs that break proof or replay visibility still block this wave
+- treat a wave slice that cannot land an architecture-required dependency edge because of manifest ownership as a wave-contract defect; do not downgrade that into a narrative follow-up
+- require proof source for new-run implementation agents to close as `structured-envelope`; `compatibility-adapter` is acceptable only for legacy attempts or explicit fallback views
+- require replay mismatches to be semantic: raw path-format-only divergence still blocks until the trace contract normalizes or compares canonical envelope identity
 - require the docs to keep the next control-discipline work explicit: Wave 13 owns post-agent gates, Wave 14 owns targeted mid-wave checkpoints, and Wave 19 owns planner-emitted invariants and staged gate plans
 - name the exact proof surface, owner, and resolution condition for every blocker; summary-level parity is not enough if a single proof consumer still relies on raw marker scans
 - emit the final [wave-integration] state=<ready-for-doc-closure|needs-more-work> claims=<n> conflicts=<n> blockers=<n> detail=<text> marker as a plain last line
@@ -305,6 +317,11 @@ File ownership (only touch these paths):
 - doc-impact: owned
 
 ### Deliverables
+- crates/wave-gates/Cargo.toml
+- crates/wave-runtime/Cargo.toml
+- crates/wave-trace/Cargo.toml
+- crates/wave-app-server/Cargo.toml
+- crates/wave-cli/Cargo.toml
 - crates/wave-gates/src/lib.rs
 - crates/wave-runtime/src/lib.rs
 - crates/wave-trace/src/lib.rs
@@ -314,6 +331,11 @@ File ownership (only touch these paths):
 - docs/reference/runtime-config/README.md
 
 ### File ownership
+- crates/wave-gates/Cargo.toml
+- crates/wave-runtime/Cargo.toml
+- crates/wave-trace/Cargo.toml
+- crates/wave-app-server/Cargo.toml
+- crates/wave-cli/Cargo.toml
 - crates/wave-gates/src/lib.rs
 - crates/wave-runtime/src/lib.rs
 - crates/wave-trace/src/lib.rs
@@ -340,18 +362,26 @@ Required context before coding:
 - Read crates/wave-app-server/src/lib.rs.
 
 Specific expectations:
-- route runtime result persistence through `wave-results` so launched agents write structured envelopes alongside the existing compatibility artifacts
+- route runtime result persistence through the `wave-results` crate boundary so launched agents write structured envelopes through the same result-layer API that owns legacy adaptation
 - cut gate and closure evaluation over to envelope-backed input and isolate any remaining text parsing behind the explicit compatibility adapter
 - update CLI proof surfaces and app-server snapshots so operator-facing proof state reflects typed envelopes rather than inferred marker completeness alone
 - make proof surfaces resolve the latest relevant run for completed and failed waves as well as active ones; do not leave `wave control proof show` or app-server proof views active-run-only
 - normalize persisted envelope, run, and trace artifact paths on write or load so repo-local proof and replay consumers remain stable when re-reading stored state
 - keep replay and trace compatibility boundaries honest in this wave: replay may still depend on compatibility run and trace artifacts even after proof lifecycle moves to envelopes
+- make replay compare normalized or canonical envelope references rather than raw `result_envelope_path` string formatting when validating current versus stored artifacts
 - recompute operator-facing proof and evidence from current stored envelope or compatibility-adapter state rather than trusting stale embedded trace snapshots alone
+- if this seam requires crate-manifest or dependency-edge edits, land them in the owned manifest slice during this agent instead of handing the requirement off as prose
+- do not emit final implementation markers while new-run proof still closes as mixed envelope and compatibility state for the owned consumers
 - prove parity across `wave control proof show`, app-server proof snapshots, and closure-gate input from the same envelope truth, then cite the exact commands or fixtures in the final proof
 - update the live Rust implementation and runtime-reference docs to explain the new envelope-first proof boundary and the upcoming Wave 13 post-agent gate work
 - emit the final [wave-proof], [wave-doc-delta], and [wave-component] markers as plain lines by themselves at the end of the output
 
 File ownership (only touch these paths):
+- crates/wave-gates/Cargo.toml
+- crates/wave-runtime/Cargo.toml
+- crates/wave-trace/Cargo.toml
+- crates/wave-app-server/Cargo.toml
+- crates/wave-cli/Cargo.toml
 - crates/wave-gates/src/lib.rs
 - crates/wave-runtime/src/lib.rs
 - crates/wave-trace/src/lib.rs

@@ -2,6 +2,7 @@ use anyhow::Context;
 use anyhow::Result;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
@@ -11,6 +12,7 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 const TRACE_SCHEMA_VERSION: &str = "wave-trace/v1";
+pub const RESULT_ENVELOPE_FILE_NAME: &str = "agent_result_envelope.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,6 +36,269 @@ impl fmt::Display for WaveRunStatus {
         };
         write!(f, "{label}")
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptState {
+    Planned,
+    Running,
+    Succeeded,
+    Failed,
+    Aborted,
+    Refused,
+}
+
+impl AttemptState {
+    pub fn from_run_status(status: WaveRunStatus, dry_run: bool) -> Self {
+        if dry_run {
+            return Self::Refused;
+        }
+
+        match status {
+            WaveRunStatus::Planned => Self::Planned,
+            WaveRunStatus::Running => Self::Running,
+            WaveRunStatus::Succeeded => Self::Succeeded,
+            WaveRunStatus::Failed => Self::Failed,
+            WaveRunStatus::DryRun => Self::Refused,
+        }
+    }
+
+    pub fn to_run_status(self) -> WaveRunStatus {
+        match self {
+            Self::Planned => WaveRunStatus::Planned,
+            Self::Running => WaveRunStatus::Running,
+            Self::Succeeded => WaveRunStatus::Succeeded,
+            Self::Failed | Self::Aborted => WaveRunStatus::Failed,
+            Self::Refused => WaveRunStatus::DryRun,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultEnvelopeSource {
+    #[default]
+    Structured,
+    LegacyMarkerAdapter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultDisposition {
+    Completed,
+    Partial,
+    Failed,
+    Aborted,
+    Refused,
+}
+
+impl ResultDisposition {
+    pub fn from_attempt_state(state: AttemptState, missing_final_markers: usize) -> Self {
+        match state {
+            AttemptState::Succeeded if missing_final_markers == 0 => Self::Completed,
+            AttemptState::Succeeded | AttemptState::Planned | AttemptState::Running => {
+                Self::Partial
+            }
+            AttemptState::Failed => Self::Failed,
+            AttemptState::Aborted => Self::Aborted,
+            AttemptState::Refused => Self::Refused,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultPayloadStatus {
+    #[default]
+    Missing,
+    EvidenceOnly,
+    Recorded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClosureDisposition {
+    Pending,
+    Ready,
+    Blocked,
+    Closed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactKind {
+    Patch,
+    TestLog,
+    DocDelta,
+    Trace,
+    Review,
+    ResultEnvelope,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct FinalMarkerEnvelope {
+    #[serde(default)]
+    pub required: Vec<String>,
+    #[serde(default)]
+    pub observed: Vec<String>,
+    #[serde(default)]
+    pub missing: Vec<String>,
+}
+
+impl FinalMarkerEnvelope {
+    pub fn from_contract(
+        required: impl IntoIterator<Item = String>,
+        observed: impl IntoIterator<Item = String>,
+    ) -> Self {
+        let required = dedup_strings(required);
+        let observed = dedup_strings(observed);
+        let missing = required
+            .iter()
+            .filter(|marker| !observed.iter().any(|seen| seen == *marker))
+            .cloned()
+            .collect();
+        Self {
+            required,
+            observed,
+            missing,
+        }
+    }
+
+    pub fn is_satisfied(&self) -> bool {
+        self.missing.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DocDeltaEnvelope {
+    #[serde(default)]
+    pub status: ResultPayloadStatus,
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkerEvidence {
+    pub marker: String,
+    pub line: String,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ClosureVerdictPayload {
+    #[default]
+    None,
+    ContQa(ContQaClosureVerdict),
+    Integration(IntegrationClosureVerdict),
+    Documentation(DocumentationClosureVerdict),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ContQaClosureVerdict {
+    pub verdict: Option<String>,
+    pub gate_state: Option<String>,
+    pub gate_line: Option<String>,
+    #[serde(default)]
+    pub gate_dimensions: BTreeMap<String, String>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct IntegrationClosureVerdict {
+    pub state: Option<String>,
+    pub claims: Option<u32>,
+    pub conflicts: Option<u32>,
+    pub blockers: Option<u32>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DocumentationClosureVerdict {
+    pub state: Option<String>,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofArtifact {
+    pub path: String,
+    pub kind: ArtifactKind,
+    pub digest: Option<String>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClosureState {
+    pub disposition: ClosureDisposition,
+    pub required_final_markers: Vec<String>,
+    pub observed_final_markers: Vec<String>,
+    pub blocking_reasons: Vec<String>,
+    pub satisfied_fact_ids: Vec<String>,
+    pub contradiction_ids: Vec<String>,
+    #[serde(default)]
+    pub verdict: ClosureVerdictPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResultEnvelopeRecord {
+    pub result_envelope_id: String,
+    pub wave_id: u32,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub agent_id: String,
+    pub task_role: String,
+    pub closure_role: Option<String>,
+    #[serde(default)]
+    pub source: ResultEnvelopeSource,
+    pub attempt_state: AttemptState,
+    pub disposition: ResultDisposition,
+    pub summary: Option<String>,
+    pub output_text: Option<String>,
+    pub final_markers: FinalMarkerEnvelope,
+    #[serde(default)]
+    pub proof_bundle_ids: Vec<String>,
+    #[serde(default)]
+    pub fact_ids: Vec<String>,
+    #[serde(default)]
+    pub contradiction_ids: Vec<String>,
+    #[serde(default)]
+    pub artifacts: Vec<ProofArtifact>,
+    #[serde(default)]
+    pub doc_delta: DocDeltaEnvelope,
+    #[serde(default)]
+    pub marker_evidence: Vec<MarkerEvidence>,
+    pub closure: ClosureState,
+    pub created_at_ms: u128,
+}
+
+impl ResultEnvelopeRecord {
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self.attempt_state,
+            AttemptState::Succeeded
+                | AttemptState::Failed
+                | AttemptState::Aborted
+                | AttemptState::Refused
+        )
+    }
+
+    pub fn proof_source_label(&self) -> &'static str {
+        match self.source {
+            ResultEnvelopeSource::Structured => "structured-envelope",
+            ResultEnvelopeSource::LegacyMarkerAdapter => "compatibility-adapter",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveResultEnvelope {
+    pub envelope: ResultEnvelopeRecord,
+    pub path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +328,8 @@ pub struct AgentRunRecord {
     pub last_message_path: PathBuf,
     pub events_path: PathBuf,
     pub stderr_path: PathBuf,
+    #[serde(default)]
+    pub result_envelope_path: Option<PathBuf>,
     pub expected_markers: Vec<String>,
     pub observed_markers: Vec<String>,
     pub exit_code: Option<i32>,
@@ -181,7 +448,11 @@ pub fn now_epoch_ms() -> Result<u128> {
 }
 
 pub fn write_run_record(path: &Path, record: &WaveRunRecord) -> Result<()> {
-    write_json(path, record)
+    let mut normalized = record.clone();
+    if let Some(repo_root) = repo_root_from_authority_path(path) {
+        normalize_run_record_paths_for_storage(&mut normalized, &repo_root);
+    }
+    write_json(path, &normalized)
 }
 
 pub fn load_run_record(path: &Path) -> Result<WaveRunRecord> {
@@ -220,7 +491,7 @@ pub fn load_latest_run_records_by_wave(dir: &Path) -> Result<HashMap<u32, WaveRu
 }
 
 pub fn write_trace_bundle(path: &Path, record: &WaveRunRecord) -> Result<()> {
-    let bundle = TraceBundleV1 {
+    let mut bundle = TraceBundleV1 {
         schema_version: TRACE_SCHEMA_VERSION.to_string(),
         recorded_at_ms: now_epoch_ms()?,
         run: record.clone(),
@@ -228,7 +499,50 @@ pub fn write_trace_bundle(path: &Path, record: &WaveRunRecord) -> Result<()> {
         agent_artifacts: record.agents.iter().map(snapshot_agent_artifacts).collect(),
         run_artifacts: snapshot_run_artifacts(record),
     };
+    if let Some(repo_root) = repo_root_from_authority_path(path) {
+        normalize_trace_bundle_paths_for_storage(&mut bundle, &repo_root);
+    }
     write_json(path, &bundle)
+}
+
+pub fn write_result_envelope(path: &Path, envelope: &ResultEnvelopeRecord) -> Result<()> {
+    let mut normalized = envelope.clone();
+    if let Some(repo_root) = repo_root_from_authority_path(path) {
+        normalize_result_envelope_for_storage(&mut normalized, &repo_root);
+    }
+    write_json(path, &normalized)
+}
+
+pub fn load_result_envelope(path: &Path) -> Result<ResultEnvelopeRecord> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read result envelope {}", path.display()))?;
+    let mut envelope = serde_json::from_str::<ResultEnvelopeRecord>(&raw)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    if let Some(repo_root) = repo_root_from_authority_path(path) {
+        normalize_result_envelope_paths(&mut envelope, &repo_root);
+    }
+    Ok(envelope)
+}
+
+pub fn load_effective_result_envelope(
+    run: &WaveRunRecord,
+    agent: &AgentRunRecord,
+) -> Result<EffectiveResultEnvelope> {
+    if let Some(path) = agent
+        .result_envelope_path
+        .as_ref()
+        .filter(|path| path.exists())
+    {
+        return Ok(EffectiveResultEnvelope {
+            envelope: load_result_envelope(path)?,
+            path: Some(path.clone()),
+        });
+    }
+
+    Ok(EffectiveResultEnvelope {
+        envelope: adapt_legacy_result_envelope(run, agent)?,
+        path: agent.result_envelope_path.clone(),
+    })
 }
 
 pub fn load_trace_bundle(path: &Path) -> Result<Option<TraceBundleV1>> {
@@ -353,6 +667,13 @@ pub fn self_host_evidence(record: &WaveRunRecord) -> SelfHostEvidenceReport {
                 agent.stderr_path.display()
             ),
         });
+        if let Some(result_envelope_path) = &agent.result_envelope_path {
+            help_items.push(SelfHostEvidenceItem {
+                name: format!("agent-{}-result-envelope", agent.id),
+                ok: result_envelope_path.exists(),
+                detail: format!("result envelope {}", result_envelope_path.display()),
+            });
+        }
     }
 
     if !record.completed_successfully() {
@@ -394,6 +715,18 @@ fn repo_root_from_authority_path(path: &Path) -> Option<PathBuf> {
     None
 }
 
+fn normalize_trace_bundle_paths_for_storage(bundle: &mut TraceBundleV1, repo_root: &Path) {
+    normalize_run_record_paths_for_storage(&mut bundle.run, repo_root);
+    for agent in &mut bundle.agent_artifacts {
+        for artifact in &mut agent.artifacts {
+            normalize_repo_path_for_storage(&mut artifact.path, repo_root);
+        }
+    }
+    for artifact in &mut bundle.run_artifacts {
+        normalize_repo_path_for_storage(&mut artifact.path, repo_root);
+    }
+}
+
 fn normalize_trace_bundle_paths(bundle: &mut TraceBundleV1, repo_root: &Path) {
     normalize_run_record_paths(&mut bundle.run, repo_root);
     for agent in &mut bundle.agent_artifacts {
@@ -406,6 +739,21 @@ fn normalize_trace_bundle_paths(bundle: &mut TraceBundleV1, repo_root: &Path) {
     }
 }
 
+fn normalize_run_record_paths_for_storage(record: &mut WaveRunRecord, repo_root: &Path) {
+    normalize_repo_path_for_storage(&mut record.bundle_dir, repo_root);
+    normalize_repo_path_for_storage(&mut record.trace_path, repo_root);
+    normalize_repo_path_for_storage(&mut record.codex_home, repo_root);
+    for agent in &mut record.agents {
+        normalize_repo_path_for_storage(&mut agent.prompt_path, repo_root);
+        normalize_repo_path_for_storage(&mut agent.last_message_path, repo_root);
+        normalize_repo_path_for_storage(&mut agent.events_path, repo_root);
+        normalize_repo_path_for_storage(&mut agent.stderr_path, repo_root);
+        if let Some(path) = &mut agent.result_envelope_path {
+            normalize_repo_path_for_storage(path, repo_root);
+        }
+    }
+}
+
 fn normalize_run_record_paths(record: &mut WaveRunRecord, repo_root: &Path) {
     normalize_repo_relative_path(&mut record.bundle_dir, repo_root);
     normalize_repo_relative_path(&mut record.trace_path, repo_root);
@@ -415,12 +763,52 @@ fn normalize_run_record_paths(record: &mut WaveRunRecord, repo_root: &Path) {
         normalize_repo_relative_path(&mut agent.last_message_path, repo_root);
         normalize_repo_relative_path(&mut agent.events_path, repo_root);
         normalize_repo_relative_path(&mut agent.stderr_path, repo_root);
+        if let Some(path) = &mut agent.result_envelope_path {
+            normalize_repo_relative_path(path, repo_root);
+        }
     }
 }
 
 fn normalize_repo_relative_path(path: &mut PathBuf, repo_root: &Path) {
     if path.is_relative() {
         *path = repo_root.join(path.as_path());
+    }
+}
+
+fn normalize_repo_path_for_storage(path: &mut PathBuf, repo_root: &Path) {
+    if path.is_absolute() {
+        *path = path
+            .strip_prefix(repo_root)
+            .unwrap_or(path.as_path())
+            .to_path_buf();
+    }
+}
+
+fn normalize_result_envelope_for_storage(envelope: &mut ResultEnvelopeRecord, repo_root: &Path) {
+    for artifact in &mut envelope.artifacts {
+        normalize_string_path_for_storage(&mut artifact.path, repo_root);
+    }
+    for path in &mut envelope.doc_delta.paths {
+        normalize_string_path_for_storage(path, repo_root);
+    }
+    for evidence in &mut envelope.marker_evidence {
+        if let Some(source) = &mut evidence.source {
+            normalize_string_path_for_storage(source, repo_root);
+        }
+    }
+}
+
+fn normalize_result_envelope_paths(envelope: &mut ResultEnvelopeRecord, repo_root: &Path) {
+    for artifact in &mut envelope.artifacts {
+        normalize_string_path_to_absolute(&mut artifact.path, repo_root);
+    }
+    for path in &mut envelope.doc_delta.paths {
+        normalize_string_path_to_absolute(path, repo_root);
+    }
+    for evidence in &mut envelope.marker_evidence {
+        if let Some(source) = &mut evidence.source {
+            normalize_string_path_to_absolute(source, repo_root);
+        }
     }
 }
 
@@ -436,19 +824,400 @@ fn parse_stored_trace_bundle(raw: &str) -> Result<StoredTraceBundle> {
         .and_then(|_| anyhow::bail!("trace JSON did not match v1 or legacy formats"))
 }
 
+fn adapt_legacy_result_envelope(
+    run: &WaveRunRecord,
+    agent: &AgentRunRecord,
+) -> Result<ResultEnvelopeRecord> {
+    let attempt_state = AttemptState::from_run_status(agent.status, run.dry_run);
+    let final_markers = FinalMarkerEnvelope::from_contract(
+        agent.expected_markers.clone(),
+        agent.observed_markers.clone(),
+    );
+    let output_text = read_optional_text(&agent.last_message_path)?;
+    let marker_evidence = collect_marker_evidence(
+        output_text.as_deref(),
+        &final_markers.observed,
+        &agent.last_message_path,
+        &run.run_id,
+    );
+    let closure = ClosureState {
+        disposition: legacy_closure_disposition(attempt_state, &final_markers),
+        required_final_markers: final_markers.required.clone(),
+        observed_final_markers: final_markers.observed.clone(),
+        blocking_reasons: legacy_blocking_reasons(attempt_state, &final_markers, agent),
+        satisfied_fact_ids: Vec::new(),
+        contradiction_ids: Vec::new(),
+        verdict: derive_closure_verdict_payload(agent.id.as_str(), output_text.as_deref()),
+    };
+
+    Ok(ResultEnvelopeRecord {
+        result_envelope_id: format!("legacy:{}:{}", run.run_id, agent.id.to_ascii_lowercase()),
+        wave_id: run.wave_id,
+        task_id: task_id_for_agent(run.wave_id, &agent.id),
+        attempt_id: format!("legacy-{}-{}", run.run_id, agent.id.to_ascii_lowercase()),
+        agent_id: agent.id.clone(),
+        task_role: inferred_task_role_for_agent(&agent.id),
+        closure_role: inferred_closure_role_for_agent(&agent.id),
+        source: ResultEnvelopeSource::LegacyMarkerAdapter,
+        attempt_state,
+        disposition: ResultDisposition::from_attempt_state(
+            attempt_state,
+            final_markers.missing.len(),
+        ),
+        summary: agent
+            .error
+            .clone()
+            .or_else(|| Some(format!("adapted from legacy run {}", run.run_id))),
+        output_text,
+        final_markers,
+        proof_bundle_ids: Vec::new(),
+        fact_ids: Vec::new(),
+        contradiction_ids: Vec::new(),
+        artifacts: Vec::new(),
+        doc_delta: legacy_doc_delta_payload(agent),
+        marker_evidence,
+        closure,
+        created_at_ms: run
+            .completed_at_ms
+            .or(run.started_at_ms)
+            .unwrap_or(run.created_at_ms),
+    })
+}
+
+fn legacy_closure_disposition(
+    attempt_state: AttemptState,
+    final_markers: &FinalMarkerEnvelope,
+) -> ClosureDisposition {
+    match attempt_state {
+        AttemptState::Succeeded if final_markers.is_satisfied() => ClosureDisposition::Ready,
+        AttemptState::Planned | AttemptState::Running => ClosureDisposition::Pending,
+        _ => ClosureDisposition::Blocked,
+    }
+}
+
+fn derive_closure_verdict_payload(
+    agent_id: &str,
+    output_text: Option<&str>,
+) -> ClosureVerdictPayload {
+    let Some(output_text) = output_text else {
+        return ClosureVerdictPayload::None;
+    };
+
+    match agent_id {
+        "A0" => ClosureVerdictPayload::ContQa(parse_cont_qa_verdict(output_text)),
+        "A8" => ClosureVerdictPayload::Integration(parse_integration_verdict(output_text)),
+        "A9" => ClosureVerdictPayload::Documentation(parse_documentation_verdict(output_text)),
+        _ => ClosureVerdictPayload::None,
+    }
+}
+
+fn parse_cont_qa_verdict(output_text: &str) -> ContQaClosureVerdict {
+    let verdict = output_text
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix("Verdict:"))
+        .map(str::trim)
+        .map(|value| value.to_ascii_uppercase())
+        .last();
+    let (gate_line, gate_fields) = find_marker_fields(output_text, "[wave-gate]")
+        .map(|(line, fields)| (Some(line), fields))
+        .unwrap_or_else(|| (None, BTreeMap::new()));
+    let detail = gate_fields.get("detail").cloned();
+    let gate_dimensions = gate_fields
+        .iter()
+        .filter(|(key, _)| key.as_str() != "detail")
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let gate_state = cont_qa_gate_state(gate_line.as_deref(), &gate_dimensions);
+
+    ContQaClosureVerdict {
+        verdict,
+        gate_state,
+        gate_line,
+        gate_dimensions,
+        detail,
+    }
+}
+
+fn parse_integration_verdict(output_text: &str) -> IntegrationClosureVerdict {
+    let (_, fields) = find_marker_fields(output_text, "[wave-integration]")
+        .map(|(line, fields)| (Some(line), fields))
+        .unwrap_or_else(|| (None, BTreeMap::new()));
+    IntegrationClosureVerdict {
+        state: fields.get("state").cloned(),
+        claims: parse_marker_u32(&fields, "claims"),
+        conflicts: parse_marker_u32(&fields, "conflicts"),
+        blockers: parse_marker_u32(&fields, "blockers"),
+        detail: fields.get("detail").cloned(),
+    }
+}
+
+fn parse_documentation_verdict(output_text: &str) -> DocumentationClosureVerdict {
+    let (_, fields) = find_marker_fields(output_text, "[wave-doc-closure]")
+        .map(|(line, fields)| (Some(line), fields))
+        .unwrap_or_else(|| (None, BTreeMap::new()));
+    DocumentationClosureVerdict {
+        state: fields.get("state").cloned(),
+        paths: fields
+            .get("paths")
+            .map(|value| split_csv(value))
+            .unwrap_or_default(),
+        detail: fields.get("detail").cloned(),
+    }
+}
+
+fn find_marker_fields(text: &str, marker: &str) -> Option<(String, BTreeMap<String, String>)> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| *line == marker || line.starts_with(&(marker.to_string() + " ")))
+        .map(|line| (line.to_string(), parse_marker_fields(line, marker)))
+        .last()
+}
+
+fn parse_marker_fields(line: &str, marker: &str) -> BTreeMap<String, String> {
+    line.strip_prefix(marker)
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|token| token.split_once('='))
+        .map(|(key, value)| {
+            (
+                key.to_string(),
+                value.trim().trim_end_matches(',').to_string(),
+            )
+        })
+        .collect()
+}
+
+fn parse_marker_u32(fields: &BTreeMap<String, String>, key: &str) -> Option<u32> {
+    fields.get(key).and_then(|value| value.parse::<u32>().ok())
+}
+
+fn split_csv(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn cont_qa_gate_state(
+    gate_line: Option<&str>,
+    gate_dimensions: &BTreeMap<String, String>,
+) -> Option<String> {
+    if gate_dimensions.values().any(|value| value == "blocked") {
+        return Some("blocked".to_string());
+    }
+    if gate_dimensions.values().any(|value| value == "concerns") {
+        return Some("concerns".to_string());
+    }
+    gate_line.map(|line| {
+        let lowered = line.to_ascii_lowercase();
+        if lowered.contains("blocked") {
+            "blocked".to_string()
+        } else if lowered.contains("concerns") {
+            "concerns".to_string()
+        } else {
+            "pass".to_string()
+        }
+    })
+}
+
+fn legacy_blocking_reasons(
+    attempt_state: AttemptState,
+    final_markers: &FinalMarkerEnvelope,
+    agent: &AgentRunRecord,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if !final_markers.missing.is_empty() {
+        reasons.push(format!(
+            "missing final markers: {}",
+            final_markers.missing.join(", ")
+        ));
+    }
+    match attempt_state {
+        AttemptState::Failed => reasons.push("legacy attempt failed".to_string()),
+        AttemptState::Aborted => reasons.push("legacy attempt aborted".to_string()),
+        AttemptState::Refused => reasons.push("legacy attempt was refused".to_string()),
+        AttemptState::Running => reasons.push("legacy attempt is still running".to_string()),
+        AttemptState::Planned => reasons.push("legacy attempt did not start".to_string()),
+        AttemptState::Succeeded => {}
+    }
+    if let Some(error) = &agent.error {
+        reasons.push(error.clone());
+    }
+    reasons
+}
+
+fn legacy_doc_delta_payload(agent: &AgentRunRecord) -> DocDeltaEnvelope {
+    let observed = agent
+        .observed_markers
+        .iter()
+        .any(|marker| marker == "[wave-doc-delta]");
+    let required = agent
+        .expected_markers
+        .iter()
+        .any(|marker| marker == "[wave-doc-delta]");
+    let status = if observed {
+        ResultPayloadStatus::EvidenceOnly
+    } else if required {
+        ResultPayloadStatus::Missing
+    } else {
+        ResultPayloadStatus::Missing
+    };
+
+    DocDeltaEnvelope {
+        status,
+        summary: None,
+        paths: Vec::new(),
+    }
+}
+
+fn collect_marker_evidence(
+    output_text: Option<&str>,
+    observed_markers: &[String],
+    source_path: &Path,
+    run_id: &str,
+) -> Vec<MarkerEvidence> {
+    let source = Some(source_path.to_string_lossy().replace('\\', "/"));
+    let mut evidence = Vec::new();
+
+    if let Some(text) = output_text {
+        for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            for marker in observed_markers {
+                if line == marker || line.starts_with(&(marker.clone() + " ")) {
+                    evidence.push(MarkerEvidence {
+                        marker: marker.clone(),
+                        line: line.to_string(),
+                        source: source.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    for marker in observed_markers {
+        if !evidence.iter().any(|item| item.marker == *marker) {
+            evidence.push(MarkerEvidence {
+                marker: marker.clone(),
+                line: marker.clone(),
+                source: Some(format!("legacy-run-record:{run_id}")),
+            });
+        }
+    }
+
+    normalize_marker_evidence(evidence)
+}
+
+fn normalize_marker_evidence(mut evidence: Vec<MarkerEvidence>) -> Vec<MarkerEvidence> {
+    evidence.sort_by(|left, right| {
+        (
+            left.marker.as_str(),
+            left.line.as_str(),
+            left.source.as_deref().unwrap_or(""),
+        )
+            .cmp(&(
+                right.marker.as_str(),
+                right.line.as_str(),
+                right.source.as_deref().unwrap_or(""),
+            ))
+    });
+    evidence.dedup_by(|left, right| {
+        left.marker == right.marker && left.line == right.line && left.source == right.source
+    });
+    evidence
+}
+
+fn read_optional_text(path: &Path) -> Result<Option<String>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))
+        .map(Some)
+}
+
+fn task_id_for_agent(wave_id: u32, agent_id: &str) -> String {
+    format!("wave-{wave_id:02}:agent-{}", agent_id.to_ascii_lowercase())
+}
+
+fn inferred_closure_role_for_agent(agent_id: &str) -> Option<String> {
+    match agent_id {
+        "E0" => Some("cont_eval".to_string()),
+        "A8" => Some("integration".to_string()),
+        "A9" => Some("documentation".to_string()),
+        "A0" => Some("cont_qa".to_string()),
+        _ => None,
+    }
+}
+
+fn inferred_task_role_for_agent(agent_id: &str) -> String {
+    match agent_id {
+        "A8" => "integration",
+        "A9" => "documentation",
+        "A0" => "cont_qa",
+        "E0" => "cont_eval",
+        _ => "implementation",
+    }
+    .to_string()
+}
+
+fn normalize_string_path_for_storage(path: &mut String, repo_root: &Path) {
+    let path_buf = PathBuf::from(path.as_str());
+    if path_buf.is_absolute() {
+        *path = path_buf
+            .strip_prefix(repo_root)
+            .unwrap_or(path_buf.as_path())
+            .to_string_lossy()
+            .replace('\\', "/");
+    } else {
+        *path = path_buf.to_string_lossy().replace('\\', "/");
+    }
+}
+
+fn normalize_string_path_to_absolute(path: &mut String, repo_root: &Path) {
+    let path_buf = PathBuf::from(path.as_str());
+    if path_buf.is_relative()
+        && !path.starts_with("legacy-run-record:")
+        && !path.starts_with("inline:")
+    {
+        *path = repo_root
+            .join(path_buf)
+            .to_string_lossy()
+            .replace('\\', "/");
+    } else {
+        *path = path_buf.to_string_lossy().replace('\\', "/");
+    }
+}
+
+fn dedup_strings(values: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut unique = Vec::new();
+    for value in values {
+        if !unique.iter().any(|existing| existing == &value) {
+            unique.push(value);
+        }
+    }
+    unique
+}
+
 fn snapshot_agent_artifacts(agent: &AgentRunRecord) -> TraceAgentArtifactRecord {
+    let mut artifacts = vec![
+        snapshot_artifact("prompt", &agent.prompt_path),
+        snapshot_artifact("last_message", &agent.last_message_path),
+        snapshot_artifact("events", &agent.events_path),
+        snapshot_artifact("stderr", &agent.stderr_path),
+    ];
+    if let Some(result_envelope_path) = &agent.result_envelope_path {
+        artifacts.push(snapshot_artifact("result_envelope", result_envelope_path));
+    }
+
     TraceAgentArtifactRecord {
         id: agent.id.clone(),
         prompt_exists: agent.prompt_path.exists(),
         last_message_exists: agent.last_message_path.exists(),
         events_exists: agent.events_path.exists(),
         stderr_exists: agent.stderr_path.exists(),
-        artifacts: vec![
-            snapshot_artifact("prompt", &agent.prompt_path),
-            snapshot_artifact("last_message", &agent.last_message_path),
-            snapshot_artifact("events", &agent.events_path),
-            snapshot_artifact("stderr", &agent.stderr_path),
-        ],
+        artifacts,
     }
 }
 
@@ -538,6 +1307,12 @@ fn compare_run_records(
                     "agent={} current={:?} stored={:?}",
                     current_agent.id, current_agent.exit_code, stored_agent.exit_code
                 ),
+            });
+        }
+        if current_agent.result_envelope_path != stored_agent.result_envelope_path {
+            issues.push(ReplayIssue {
+                kind: "trace_agent_result_envelope_mismatch".to_string(),
+                detail: format!("agent={} result envelope path diverged", current_agent.id),
             });
         }
     }
@@ -737,6 +1512,7 @@ mod tests {
             last_message_path: agent_dir.join("last-message.txt"),
             events_path: agent_dir.join("events.jsonl"),
             stderr_path: agent_dir.join("stderr.txt"),
+            result_envelope_path: None,
             expected_markers: vec!["[wave-proof]".to_string()],
             observed_markers: vec!["[wave-proof]".to_string()],
             exit_code: Some(0),
@@ -935,6 +1711,96 @@ mod tests {
         assert_eq!(
             loaded.run_artifacts[0].path,
             repo.path().join(".wave/state/build/specs/wave-8-1")
+        );
+    }
+
+    #[test]
+    fn result_envelope_round_trip_normalizes_paths() {
+        let repo = tempdir().expect("tempdir");
+        let envelope_path = repo
+            .path()
+            .join(".wave/state/results/wave-08/attempt-a1/agent_result_envelope.json");
+        let absolute_doc = repo.path().join("docs/runtime.md");
+        let absolute_log = repo.path().join("artifacts/proof.log");
+        let absolute_marker = repo
+            .path()
+            .join(".wave/state/build/specs/wave-8-1/agents/A1/last-message.txt");
+
+        let envelope = ResultEnvelopeRecord {
+            result_envelope_id: "result:wave-8-1:a1".to_string(),
+            wave_id: 8,
+            task_id: "wave-08:agent-a1".to_string(),
+            attempt_id: "attempt-a1".to_string(),
+            agent_id: "A1".to_string(),
+            task_role: "implementation".to_string(),
+            closure_role: None,
+            source: ResultEnvelopeSource::Structured,
+            attempt_state: AttemptState::Succeeded,
+            disposition: ResultDisposition::Completed,
+            summary: Some("structured".to_string()),
+            output_text: Some("[wave-proof]".to_string()),
+            final_markers: FinalMarkerEnvelope::from_contract(
+                vec!["[wave-proof]".to_string()],
+                vec!["[wave-proof]".to_string()],
+            ),
+            proof_bundle_ids: Vec::new(),
+            fact_ids: Vec::new(),
+            contradiction_ids: Vec::new(),
+            artifacts: vec![ProofArtifact {
+                path: absolute_log.to_string_lossy().into_owned(),
+                kind: ArtifactKind::TestLog,
+                digest: None,
+                note: Some("test".to_string()),
+            }],
+            doc_delta: DocDeltaEnvelope {
+                status: ResultPayloadStatus::Recorded,
+                summary: Some("docs".to_string()),
+                paths: vec![absolute_doc.to_string_lossy().into_owned()],
+            },
+            marker_evidence: vec![MarkerEvidence {
+                marker: "[wave-proof]".to_string(),
+                line: "[wave-proof]".to_string(),
+                source: Some(absolute_marker.to_string_lossy().into_owned()),
+            }],
+            closure: ClosureState {
+                disposition: ClosureDisposition::Ready,
+                required_final_markers: vec!["[wave-proof]".to_string()],
+                observed_final_markers: vec!["[wave-proof]".to_string()],
+                blocking_reasons: Vec::new(),
+                satisfied_fact_ids: Vec::new(),
+                contradiction_ids: Vec::new(),
+                verdict: ClosureVerdictPayload::None,
+            },
+            created_at_ms: 3,
+        };
+        write_result_envelope(&envelope_path, &envelope).expect("write result envelope");
+
+        let stored = fs::read_to_string(&envelope_path).expect("read raw envelope");
+        assert!(stored.contains("\"artifacts/proof.log\""));
+        assert!(stored.contains("\"docs/runtime.md\""));
+
+        let loaded = load_result_envelope(&envelope_path).expect("load envelope");
+        assert_eq!(
+            loaded.artifacts[0].path,
+            repo.path().join("artifacts/proof.log").to_string_lossy()
+        );
+        assert_eq!(
+            loaded.doc_delta.paths,
+            vec![
+                repo.path()
+                    .join("docs/runtime.md")
+                    .to_string_lossy()
+                    .into_owned()
+            ]
+        );
+        assert_eq!(
+            loaded.marker_evidence[0].source.as_deref(),
+            Some(
+                repo.path()
+                    .join(".wave/state/build/specs/wave-8-1/agents/A1/last-message.txt")
+                    .to_string_lossy()
+                    .as_ref()
+            )
         );
     }
 

@@ -49,8 +49,10 @@
 - Implementation agents may not declare closure-only `### Role prompts`, and closure agents may not declare implementation-only sections such as deliverables, components, capabilities, or exit contracts.
 - The `### Prompt` must include `Primary goal`, `Required context before coding`, `Specific expectations`, and `File ownership (only touch these paths)`.
 - The owned-path list inside the prompt must restate the same paths declared in `### File ownership`.
+- If an architectural seam requires manifest or dependency-edge edits, those manifest files must be in the same implementation agent's ownership slice.
 - Deliverables must stay inside the owned-path slice, and duplicate owned paths, deliverables, or skill ids are rejected.
 - The `Specific expectations` block must explicitly instruct the agent to emit its final markers as plain last-line output.
+- Marker success is only valid when the owned architectural seam is actually closed; ownership handoff notes do not substitute for landed proof.
 - Closure agents must point at the correct role prompt files and only emit the marker set they own.
 
 ## Validation And Status Surfaces

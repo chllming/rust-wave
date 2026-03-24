@@ -8,8 +8,10 @@ use wave_domain::GateDisposition;
 use wave_domain::GateId;
 use wave_domain::GateVerdict;
 use wave_spec::WaveDocument;
+use wave_trace::AttemptState;
 use wave_trace::WaveRunRecord;
 use wave_trace::WaveRunStatus;
+use wave_trace::load_effective_result_envelope;
 
 pub const REQUIRED_CLOSURE_AGENT_IDS: [&str; 3] = ["A0", "A8", "A9"];
 pub type PlanningGateVerdict = GateVerdict;
@@ -40,6 +42,22 @@ impl CompatibilityRunInput {
     pub fn agent(&self, agent_id: &str) -> Option<&CompatibilityAgentRunInput> {
         self.agents.iter().find(|agent| agent.agent_id == agent_id)
     }
+
+    pub fn is_active(&self) -> bool {
+        matches!(self.status, WaveRunStatus::Running | WaveRunStatus::Planned)
+    }
+
+    pub fn is_authoritative_completion(&self) -> bool {
+        self.completed_successfully
+    }
+
+    pub fn satisfies_dependency_gate(&self) -> bool {
+        self.is_authoritative_completion() || matches!(self.status, WaveRunStatus::DryRun)
+    }
+
+    pub fn supports_closure_completion(&self) -> bool {
+        self.is_authoritative_completion() || matches!(self.status, WaveRunStatus::DryRun)
+    }
 }
 
 impl From<&WaveRunRecord> for CompatibilityRunInput {
@@ -55,14 +73,46 @@ impl From<&WaveRunRecord> for CompatibilityRunInput {
             agents: record
                 .agents
                 .iter()
-                .map(|agent| CompatibilityAgentRunInput {
-                    agent_id: agent.id.clone(),
-                    status: agent.status,
-                    expected_final_markers: agent.expected_markers.clone(),
-                    observed_final_markers: agent.observed_markers.clone(),
-                    error: agent.error.clone(),
-                })
+                .map(|agent| compatibility_agent_run_input(record, agent))
                 .collect(),
+        }
+    }
+}
+
+fn compatibility_agent_run_input(
+    record: &WaveRunRecord,
+    agent: &wave_trace::AgentRunRecord,
+) -> CompatibilityAgentRunInput {
+    match load_effective_result_envelope(record, agent) {
+        Ok(result) => CompatibilityAgentRunInput {
+            agent_id: agent.id.clone(),
+            status: attempt_state_status(result.envelope.attempt_state, agent.status),
+            expected_final_markers: result.envelope.final_markers.required,
+            observed_final_markers: result.envelope.final_markers.observed,
+            error: agent.error.clone().or(result.envelope.summary),
+        },
+        Err(_) => CompatibilityAgentRunInput {
+            agent_id: agent.id.clone(),
+            status: agent.status,
+            expected_final_markers: agent.expected_markers.clone(),
+            observed_final_markers: agent.observed_markers.clone(),
+            error: agent.error.clone(),
+        },
+    }
+}
+
+fn attempt_state_status(state: AttemptState, fallback: WaveRunStatus) -> WaveRunStatus {
+    match state {
+        AttemptState::Planned => WaveRunStatus::Planned,
+        AttemptState::Running => WaveRunStatus::Running,
+        AttemptState::Succeeded => WaveRunStatus::Succeeded,
+        AttemptState::Failed | AttemptState::Aborted => WaveRunStatus::Failed,
+        AttemptState::Refused => {
+            if matches!(fallback, WaveRunStatus::DryRun) {
+                WaveRunStatus::DryRun
+            } else {
+                WaveRunStatus::DryRun
+            }
         }
     }
 }
@@ -125,23 +175,33 @@ pub fn compatibility_run_facts(
     rerun_requested: bool,
 ) -> CompatibilityRunFacts {
     let latest_run = latest_run.cloned();
-    let actively_running = matches!(
-        latest_run.as_ref().map(|run| run.status),
-        Some(WaveRunStatus::Running | WaveRunStatus::Planned)
-    );
+    let actively_running = latest_run
+        .as_ref()
+        .map(CompatibilityRunInput::is_active)
+        .unwrap_or(false);
     let completed = latest_run
         .as_ref()
-        .map(|run| run.completed_successfully)
+        .map(CompatibilityRunInput::is_authoritative_completion)
         .unwrap_or(false)
         && !rerun_requested;
 
-    let disposition = if completed {
-        GateDisposition::Pass
-    } else if matches!(
-        latest_run.as_ref().map(|run| run.status),
-        Some(WaveRunStatus::Failed)
-    ) {
-        GateDisposition::Failed
+    let disposition = if actively_running {
+        GateDisposition::Blocked
+    } else if rerun_requested
+        && latest_run
+            .as_ref()
+            .map(CompatibilityRunInput::is_authoritative_completion)
+            .unwrap_or(false)
+    {
+        GateDisposition::Blocked
+    } else if let Some(run) = latest_run.as_ref() {
+        if run.supports_closure_completion() {
+            GateDisposition::Pass
+        } else if matches!(run.status, WaveRunStatus::Failed) {
+            GateDisposition::Failed
+        } else {
+            GateDisposition::Blocked
+        }
     } else {
         GateDisposition::Blocked
     };
@@ -157,12 +217,12 @@ pub fn compatibility_run_facts(
     } else if rerun_requested
         && latest_run
             .as_ref()
-            .map(|run| run.completed_successfully)
+            .map(CompatibilityRunInput::is_authoritative_completion)
             .unwrap_or(false)
     {
         vec!["rerun:requested".to_string()]
     } else if let Some(run) = latest_run.as_ref() {
-        if run.completed_successfully {
+        if run.supports_closure_completion() {
             Vec::new()
         } else {
             vec![format!("run:{}", run.status)]
@@ -255,7 +315,7 @@ pub fn dependency_gate_verdict_for_wave(
 ) -> DependencyGateVerdict {
     let latest_run = latest_run.cloned();
     let blocker_token = match latest_run.as_ref() {
-        Some(run) if run.completed_successfully => None,
+        Some(run) if run.satisfies_dependency_gate() => None,
         Some(run) => Some(format!("wave:{dependency_wave_id}:{}", run.status)),
         None => Some(format!("wave:{dependency_wave_id}:pending")),
     };
@@ -363,7 +423,7 @@ pub fn wave_closure_facts_with_run(
     let closed = complete
         && missing_final_markers.is_empty()
         && latest_run
-            .map(|run| run.completed_successfully)
+            .map(CompatibilityRunInput::is_authoritative_completion)
             .unwrap_or(false);
     let blocking_reasons = missing_agent_ids
         .iter()
@@ -388,6 +448,7 @@ pub fn wave_closure_facts_with_run(
         blocking_reasons: blocking_reasons.clone(),
         satisfied_fact_ids: Vec::new(),
         contradiction_ids: Vec::new(),
+        verdict: wave_domain::ClosureVerdictPayload::None,
     };
 
     WaveClosureFacts {
@@ -495,12 +556,13 @@ fn closure_completion_blocking_reasons(
         .map(|agent_id| format!("closure:{agent_id}:missing"))
         .collect::<Vec<_>>();
 
-    match latest_run.map(|run| run.status) {
+    match latest_run {
         None => reasons.push("closure:run:pending".to_string()),
-        Some(WaveRunStatus::Planned) => reasons.push("closure:run:planned".to_string()),
-        Some(WaveRunStatus::Running) => reasons.push("closure:run:running".to_string()),
-        Some(WaveRunStatus::Failed) => reasons.push("closure:run:failed".to_string()),
-        Some(WaveRunStatus::Succeeded | WaveRunStatus::DryRun) => {
+        Some(run) if run.is_active() => reasons.push(format!("closure:run:{}", run.status)),
+        Some(run) if matches!(run.status, WaveRunStatus::Failed) => {
+            reasons.push("closure:run:failed".to_string())
+        }
+        Some(run) if run.supports_closure_completion() => {
             if missing_agent_ids.is_empty() {
                 reasons.extend(
                     missing_final_markers
@@ -509,6 +571,7 @@ fn closure_completion_blocking_reasons(
                 );
             }
         }
+        Some(run) => reasons.push(format!("closure:run:{}", run.status)),
     }
 
     reasons
@@ -528,6 +591,7 @@ fn unique_markers(markers: Vec<String>) -> Vec<String> {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::fs;
     use std::path::PathBuf;
     use wave_config::ExecutionMode;
     use wave_spec::ComponentPromotion;
@@ -735,6 +799,17 @@ mod tests {
     }
 
     #[test]
+    fn compatibility_run_facts_treat_dry_runs_as_non_authoritative_but_non_blocking() {
+        let dry_run =
+            compatibility_run_facts(11, Some(&run_input(11, WaveRunStatus::DryRun)), false);
+
+        assert!(!dry_run.completed);
+        assert!(!dry_run.actively_running);
+        assert_eq!(dry_run.gate.disposition, GateDisposition::Pass);
+        assert!(dry_run.gate.blocking_reasons.is_empty());
+    }
+
+    #[test]
     fn planning_gate_preserves_queue_blocker_order_and_failure_semantics() {
         let dependency_gates = vec![dependency_gate_verdict_for_wave(
             11,
@@ -770,6 +845,118 @@ mod tests {
         assert_eq!(verdict.blocker_token, None);
     }
 
+    #[test]
+    fn closure_completion_accepts_dry_run_markers_without_marking_wave_closed() {
+        let wave = test_wave(11);
+        let closure = wave_closure_facts_with_run(
+            &wave,
+            Some(&run_input_with_agents(
+                11,
+                WaveRunStatus::DryRun,
+                vec![
+                    agent_run("A0", WaveRunStatus::DryRun, &["[wave-gate]"]),
+                    agent_run("A8", WaveRunStatus::DryRun, &["[wave-integration]"]),
+                    agent_run("A9", WaveRunStatus::DryRun, &["[wave-doc-closure]"]),
+                ],
+            )),
+        );
+
+        assert!(closure.complete);
+        assert!(!closure.closed);
+        assert_eq!(closure.closure.disposition, ClosureDisposition::Ready);
+        assert_eq!(closure.completion_gate.disposition, GateDisposition::Pass);
+        assert!(closure.completion_gate.blocking_reasons.is_empty());
+    }
+
+    #[test]
+    fn compatibility_run_input_prefers_structured_result_envelope_markers() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-gates-envelope-{}-{}",
+            std::process::id(),
+            wave_trace::now_epoch_ms().expect("timestamp")
+        ));
+        let envelope_path =
+            root.join(".wave/state/results/wave-11/attempt-a0/agent_result_envelope.json");
+        fs::create_dir_all(envelope_path.parent().expect("envelope parent")).expect("mkdir");
+
+        wave_trace::write_result_envelope(
+            &envelope_path,
+            &wave_trace::ResultEnvelopeRecord {
+                result_envelope_id: "result:wave-11-1:a0".to_string(),
+                wave_id: 11,
+                task_id: "wave-11:agent-a0".to_string(),
+                attempt_id: "attempt-a0".to_string(),
+                agent_id: "A0".to_string(),
+                task_role: "cont_qa".to_string(),
+                closure_role: Some("cont_qa".to_string()),
+                source: wave_trace::ResultEnvelopeSource::Structured,
+                attempt_state: wave_trace::AttemptState::Succeeded,
+                disposition: wave_trace::ResultDisposition::Completed,
+                summary: Some("structured".to_string()),
+                output_text: Some("[wave-gate] pass".to_string()),
+                final_markers: wave_trace::FinalMarkerEnvelope::from_contract(
+                    vec!["[wave-gate]".to_string()],
+                    vec!["[wave-gate]".to_string()],
+                ),
+                proof_bundle_ids: Vec::new(),
+                fact_ids: Vec::new(),
+                contradiction_ids: Vec::new(),
+                artifacts: Vec::new(),
+                doc_delta: wave_trace::DocDeltaEnvelope::default(),
+                marker_evidence: Vec::new(),
+                closure: wave_trace::ClosureState {
+                    disposition: wave_trace::ClosureDisposition::Ready,
+                    required_final_markers: vec!["[wave-gate]".to_string()],
+                    observed_final_markers: vec!["[wave-gate]".to_string()],
+                    blocking_reasons: Vec::new(),
+                    satisfied_fact_ids: Vec::new(),
+                    contradiction_ids: Vec::new(),
+                    verdict: wave_trace::ClosureVerdictPayload::None,
+                },
+                created_at_ms: 2,
+            },
+        )
+        .expect("write envelope");
+
+        let input = CompatibilityRunInput::from(&WaveRunRecord {
+            run_id: "wave-11-1".to_string(),
+            wave_id: 11,
+            slug: "wave-11".to_string(),
+            title: "Wave 11".to_string(),
+            status: WaveRunStatus::Succeeded,
+            dry_run: false,
+            bundle_dir: root.join(".wave/state/build/specs/wave-11-1"),
+            trace_path: root.join(".wave/traces/runs/wave-11-1.json"),
+            codex_home: root.join(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(1),
+            launcher_pid: None,
+            completed_at_ms: Some(2),
+            agents: vec![wave_trace::AgentRunRecord {
+                id: "A0".to_string(),
+                title: "Closure".to_string(),
+                status: WaveRunStatus::Succeeded,
+                prompt_path: root.join(".wave/state/build/specs/prompt.md"),
+                last_message_path: root.join(".wave/state/build/specs/last-message.txt"),
+                events_path: root.join(".wave/state/build/specs/events.jsonl"),
+                stderr_path: root.join(".wave/state/build/specs/stderr.txt"),
+                result_envelope_path: Some(envelope_path.clone()),
+                expected_markers: vec!["[wave-gate]".to_string()],
+                observed_markers: Vec::new(),
+                exit_code: Some(0),
+                error: None,
+            }],
+            error: None,
+        });
+
+        assert_eq!(
+            input.agents[0].observed_final_markers,
+            vec!["[wave-gate]".to_string()]
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
     fn run_input(wave_id: u32, status: WaveRunStatus) -> CompatibilityRunInput {
         run_input_with_agents(wave_id, status, Vec::new())
     }
@@ -803,6 +990,7 @@ mod tests {
                     last_message_path: PathBuf::from(".wave/state/runs/last-message.txt"),
                     events_path: PathBuf::from(".wave/state/runs/events.jsonl"),
                     stderr_path: PathBuf::from(".wave/state/runs/stderr.txt"),
+                    result_envelope_path: None,
                     expected_markers: agent.expected_final_markers,
                     observed_markers: agent.observed_final_markers,
                     exit_code: Some(0),

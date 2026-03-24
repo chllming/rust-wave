@@ -9,6 +9,7 @@ use anyhow::Result;
 use anyhow::bail;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::env;
@@ -24,13 +25,31 @@ use wave_control_plane::PlanningStatus;
 use wave_spec::WaveAgent;
 use wave_spec::WaveDocument;
 use wave_trace::AgentRunRecord;
+use wave_trace::ArtifactKind;
+use wave_trace::AttemptState;
+use wave_trace::ClosureDisposition;
+use wave_trace::ClosureState;
+use wave_trace::ClosureVerdictPayload;
 use wave_trace::CompiledAgentPrompt;
+use wave_trace::ContQaClosureVerdict;
+use wave_trace::DocDeltaEnvelope;
+use wave_trace::DocumentationClosureVerdict;
 use wave_trace::DraftBundle;
+use wave_trace::FinalMarkerEnvelope;
+use wave_trace::IntegrationClosureVerdict;
+use wave_trace::MarkerEvidence;
+use wave_trace::ProofArtifact;
+use wave_trace::RESULT_ENVELOPE_FILE_NAME;
+use wave_trace::ResultDisposition;
+use wave_trace::ResultEnvelopeRecord;
+use wave_trace::ResultEnvelopeSource;
+use wave_trace::ResultPayloadStatus;
 use wave_trace::WaveRunRecord;
 use wave_trace::WaveRunStatus;
 use wave_trace::load_latest_run_records_by_wave;
 use wave_trace::load_run_record;
 use wave_trace::now_epoch_ms;
+use wave_trace::write_result_envelope;
 use wave_trace::write_run_record;
 use wave_trace::write_trace_bundle;
 
@@ -463,6 +482,7 @@ pub fn launch_wave(
                 last_message_path: agent.prompt_path.parent().unwrap().join("last-message.txt"),
                 events_path: agent.prompt_path.parent().unwrap().join("events.jsonl"),
                 stderr_path: agent.prompt_path.parent().unwrap().join("stderr.txt"),
+                result_envelope_path: None,
                 expected_markers: agent.expected_markers.clone(),
                 observed_markers: Vec::new(),
                 exit_code: None,
@@ -491,6 +511,8 @@ pub fn launch_wave(
             )
         })?;
         let agent_record = execute_agent(root, agent, &record.agents[index], &prompt, &codex_home)?;
+        let agent_record =
+            persist_agent_result_envelope(root, config, &record, agent, &agent_record)?;
         record.agents[index] = agent_record.clone();
         if agent_record.status == WaveRunStatus::Failed {
             record.status = WaveRunStatus::Failed;
@@ -776,6 +798,241 @@ fn process_is_alive(pid: u32) -> bool {
     }
 }
 
+fn persist_agent_result_envelope(
+    root: &Path,
+    config: &ProjectConfig,
+    run: &WaveRunRecord,
+    declared_agent: &WaveAgent,
+    agent_record: &AgentRunRecord,
+) -> Result<AgentRunRecord> {
+    let envelope = build_result_envelope(root, run, declared_agent, agent_record)?;
+    let resolved = config.resolved_paths(root);
+    let attempt_dir = resolved.wave_attempt_results_dir(run.wave_id, &envelope.attempt_id);
+    let envelope_path = attempt_dir.join(RESULT_ENVELOPE_FILE_NAME);
+    write_result_envelope(&envelope_path, &envelope)?;
+
+    let mut updated = agent_record.clone();
+    updated.result_envelope_path = Some(envelope_path);
+    Ok(updated)
+}
+
+fn build_result_envelope(
+    root: &Path,
+    run: &WaveRunRecord,
+    declared_agent: &WaveAgent,
+    agent_record: &AgentRunRecord,
+) -> Result<ResultEnvelopeRecord> {
+    let attempt_state = AttemptState::from_run_status(agent_record.status, run.dry_run);
+    let final_markers = FinalMarkerEnvelope::from_contract(
+        agent_record.expected_markers.clone(),
+        agent_record.observed_markers.clone(),
+    );
+    let output_text = fs::read_to_string(&agent_record.last_message_path).ok();
+    let text_artifacts = collect_text_artifacts(
+        root,
+        declared_agent,
+        output_text.as_deref().unwrap_or_default(),
+    );
+    let marker_evidence = collect_marker_evidence_for_envelope(
+        &text_artifacts,
+        &final_markers.observed,
+        &agent_record.last_message_path,
+    );
+    let doc_delta_paths = declared_agent
+        .file_ownership
+        .iter()
+        .filter(|path| looks_like_doc_path(path))
+        .cloned()
+        .collect::<Vec<_>>();
+    let doc_delta_status = if final_markers
+        .observed
+        .iter()
+        .any(|marker| marker == "[wave-doc-delta]")
+    {
+        if doc_delta_paths.is_empty() {
+            ResultPayloadStatus::EvidenceOnly
+        } else {
+            ResultPayloadStatus::Recorded
+        }
+    } else if declared_agent
+        .expected_final_markers()
+        .iter()
+        .any(|marker| *marker == "[wave-doc-delta]")
+    {
+        ResultPayloadStatus::Missing
+    } else {
+        ResultPayloadStatus::Missing
+    };
+    let closure = build_closure_state(
+        declared_agent,
+        attempt_state,
+        &final_markers,
+        agent_record.error.as_deref(),
+        &text_artifacts,
+    );
+
+    Ok(ResultEnvelopeRecord {
+        result_envelope_id: format!(
+            "result:{}:{}",
+            run.run_id,
+            declared_agent.id.to_ascii_lowercase()
+        ),
+        wave_id: run.wave_id,
+        task_id: task_id_for_agent(run.wave_id, &declared_agent.id),
+        attempt_id: structured_attempt_id(run, declared_agent),
+        agent_id: declared_agent.id.clone(),
+        task_role: inferred_task_role_for_agent(declared_agent),
+        closure_role: inferred_closure_role_for_agent(declared_agent),
+        source: ResultEnvelopeSource::Structured,
+        attempt_state,
+        disposition: ResultDisposition::from_attempt_state(
+            attempt_state,
+            final_markers.missing.len(),
+        ),
+        summary: agent_record.error.clone().or_else(|| {
+            Some(format!(
+                "structured result envelope for {}",
+                declared_agent.id
+            ))
+        }),
+        output_text,
+        final_markers: final_markers.clone(),
+        proof_bundle_ids: Vec::new(),
+        fact_ids: Vec::new(),
+        contradiction_ids: Vec::new(),
+        artifacts: build_result_artifacts(run, agent_record),
+        doc_delta: DocDeltaEnvelope {
+            status: doc_delta_status,
+            summary: if doc_delta_paths.is_empty() {
+                None
+            } else {
+                Some(format!("doc delta paths: {}", doc_delta_paths.join(", ")))
+            },
+            paths: doc_delta_paths,
+        },
+        marker_evidence,
+        closure,
+        created_at_ms: now_epoch_ms()?,
+    })
+}
+
+fn build_result_artifacts(
+    run: &WaveRunRecord,
+    agent_record: &AgentRunRecord,
+) -> Vec<ProofArtifact> {
+    vec![
+        ProofArtifact {
+            path: agent_record
+                .last_message_path
+                .to_string_lossy()
+                .into_owned(),
+            kind: ArtifactKind::Other,
+            digest: None,
+            note: Some("last-message".to_string()),
+        },
+        ProofArtifact {
+            path: agent_record.events_path.to_string_lossy().into_owned(),
+            kind: ArtifactKind::Other,
+            digest: None,
+            note: Some("events".to_string()),
+        },
+        ProofArtifact {
+            path: agent_record.stderr_path.to_string_lossy().into_owned(),
+            kind: ArtifactKind::Other,
+            digest: None,
+            note: Some("stderr".to_string()),
+        },
+        ProofArtifact {
+            path: run.trace_path.to_string_lossy().into_owned(),
+            kind: ArtifactKind::Trace,
+            digest: None,
+            note: Some(run.run_id.clone()),
+        },
+    ]
+}
+
+fn collect_marker_evidence_for_envelope(
+    text_artifacts: &[String],
+    observed_markers: &[String],
+    last_message_path: &Path,
+) -> Vec<MarkerEvidence> {
+    let mut evidence = Vec::new();
+    for text in text_artifacts {
+        for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            for marker in observed_markers {
+                if line == marker || line.starts_with(&(marker.clone() + " ")) {
+                    evidence.push(MarkerEvidence {
+                        marker: marker.clone(),
+                        line: line.to_string(),
+                        source: Some(last_message_path.to_string_lossy().replace('\\', "/")),
+                    });
+                }
+            }
+        }
+    }
+    for marker in observed_markers {
+        if !evidence.iter().any(|item| item.marker == *marker) {
+            evidence.push(MarkerEvidence {
+                marker: marker.clone(),
+                line: marker.clone(),
+                source: Some(last_message_path.to_string_lossy().replace('\\', "/")),
+            });
+        }
+    }
+    evidence.sort_by(|left, right| {
+        (
+            left.marker.as_str(),
+            left.line.as_str(),
+            left.source.as_deref().unwrap_or(""),
+        )
+            .cmp(&(
+                right.marker.as_str(),
+                right.line.as_str(),
+                right.source.as_deref().unwrap_or(""),
+            ))
+    });
+    evidence.dedup_by(|left, right| {
+        left.marker == right.marker && left.line == right.line && left.source == right.source
+    });
+    evidence
+}
+
+fn structured_attempt_id(run: &WaveRunRecord, agent: &WaveAgent) -> String {
+    format!("{}-{}", run.run_id, agent.id.to_ascii_lowercase())
+}
+
+fn task_id_for_agent(wave_id: u32, agent_id: &str) -> String {
+    format!("wave-{wave_id:02}:agent-{}", agent_id.to_ascii_lowercase())
+}
+
+fn inferred_task_role_for_agent(agent: &WaveAgent) -> String {
+    match agent.id.as_str() {
+        "A8" => "integration",
+        "A9" => "documentation",
+        "A0" => "cont_qa",
+        "E0" => "cont_eval",
+        _ => "implementation",
+    }
+    .to_string()
+}
+
+fn inferred_closure_role_for_agent(agent: &WaveAgent) -> Option<String> {
+    match agent.id.as_str() {
+        "E0" => Some("cont_eval".to_string()),
+        "A8" => Some("integration".to_string()),
+        "A9" => Some("documentation".to_string()),
+        "A0" => Some("cont_qa".to_string()),
+        _ => None,
+    }
+}
+
+fn looks_like_doc_path(path: &str) -> bool {
+    path == "README.md"
+        || path.starts_with("docs/")
+        || path.ends_with(".md")
+            && (path.contains("/docs/") || path.starts_with("docs/") || !path.contains('/'))
+}
+
 fn execute_agent(
     root: &Path,
     agent: &WaveAgent,
@@ -874,7 +1131,18 @@ fn execute_agent(
         });
     }
 
-    if let Some(error) = closure_contract_error(agent, &text_artifacts) {
+    let closure = build_closure_state(
+        agent,
+        AttemptState::Succeeded,
+        &FinalMarkerEnvelope::from_contract(
+            base_record.expected_markers.clone(),
+            observed_markers.clone(),
+        ),
+        None,
+        &text_artifacts,
+    );
+
+    if let Some(error) = closure_contract_error(agent, &closure) {
         return Ok(AgentRunRecord {
             status: WaveRunStatus::Failed,
             exit_code: output.status.code(),
@@ -1103,69 +1371,221 @@ fn observed_markers_in_text(text: &str, expected_markers: &[String]) -> Vec<Stri
     observed
 }
 
-fn closure_contract_error(agent: &WaveAgent, texts: &[String]) -> Option<String> {
-    match agent.id.as_str() {
-        "A0" => {
-            let Some(verdict) = find_last_verdict(texts) else {
+fn build_closure_state(
+    agent: &WaveAgent,
+    attempt_state: AttemptState,
+    final_markers: &FinalMarkerEnvelope,
+    agent_error: Option<&str>,
+    texts: &[String],
+) -> ClosureState {
+    let verdict = derive_closure_verdict_payload(agent.id.as_str(), texts);
+    let mut blocking_reasons = Vec::new();
+    if !final_markers.missing.is_empty() {
+        blocking_reasons.push(format!(
+            "missing final markers: {}",
+            final_markers.missing.join(", ")
+        ));
+    }
+    if let Some(error) = agent_error {
+        blocking_reasons.push(error.to_string());
+    }
+    if let Some(error) = closure_contract_error(
+        agent,
+        &ClosureState {
+            disposition: ClosureDisposition::Pending,
+            required_final_markers: final_markers.required.clone(),
+            observed_final_markers: final_markers.observed.clone(),
+            blocking_reasons: Vec::new(),
+            satisfied_fact_ids: Vec::new(),
+            contradiction_ids: Vec::new(),
+            verdict: verdict.clone(),
+        },
+    ) {
+        blocking_reasons.push(error);
+    }
+
+    let disposition = match attempt_state {
+        AttemptState::Succeeded if final_markers.is_satisfied() && blocking_reasons.is_empty() => {
+            ClosureDisposition::Ready
+        }
+        AttemptState::Planned | AttemptState::Running => ClosureDisposition::Pending,
+        _ => ClosureDisposition::Blocked,
+    };
+
+    ClosureState {
+        disposition,
+        required_final_markers: final_markers.required.clone(),
+        observed_final_markers: final_markers.observed.clone(),
+        blocking_reasons,
+        satisfied_fact_ids: Vec::new(),
+        contradiction_ids: Vec::new(),
+        verdict,
+    }
+}
+
+fn closure_contract_error(agent: &WaveAgent, closure: &ClosureState) -> Option<String> {
+    match (agent.id.as_str(), &closure.verdict) {
+        ("A0", ClosureVerdictPayload::ContQa(verdict)) => {
+            let Some(result) = verdict.verdict.as_deref() else {
                 return Some("cont-QA report is missing final Verdict line".to_string());
             };
-            if verdict != "PASS" {
-                return Some(format!("cont-QA verdict is {verdict}, not PASS"));
+            if result != "PASS" {
+                return Some(format!("cont-QA verdict is {result}, not PASS"));
             }
-
-            let Some(gate_line) = find_last_marker_line(texts, "[wave-gate]") else {
+            let Some(gate_state) = verdict.gate_state.as_deref() else {
                 return Some("cont-QA report is missing final [wave-gate] line".to_string());
             };
-            let lowered = gate_line.to_ascii_lowercase();
-            if lowered.contains("concerns") || lowered.contains("blocked") {
+            if gate_state != "pass" {
                 return Some("cont-QA gate marker is not fully pass".to_string());
             }
             None
         }
-        "A8" => match find_marker_state(texts, "[wave-integration]").as_deref() {
+        ("A0", _) => Some("cont-QA report is missing structured closure verdict".to_string()),
+        ("A8", ClosureVerdictPayload::Integration(verdict)) => match verdict.state.as_deref() {
             Some("ready-for-doc-closure") => None,
             Some(state) => Some(format!(
                 "integration state is {state}, not ready-for-doc-closure"
             )),
             None => Some("integration report is missing state=<...>".to_string()),
         },
-        "A9" => match find_marker_state(texts, "[wave-doc-closure]").as_deref() {
+        ("A8", _) => Some("integration report is missing structured closure verdict".to_string()),
+        ("A9", ClosureVerdictPayload::Documentation(verdict)) => match verdict.state.as_deref() {
             Some("closed") | Some("no-change") => None,
             Some(state) => Some(format!(
                 "documentation closure state is {state}, not closed or no-change"
             )),
             None => Some("documentation closure report is missing state=<...>".to_string()),
         },
+        ("A9", _) => Some("documentation report is missing structured closure verdict".to_string()),
         _ => None,
     }
 }
 
-fn find_last_verdict(texts: &[String]) -> Option<String> {
-    texts
+fn derive_closure_verdict_payload(agent_id: &str, texts: &[String]) -> ClosureVerdictPayload {
+    match agent_id {
+        "A0" => ClosureVerdictPayload::ContQa(parse_cont_qa_verdict(texts)),
+        "A8" => ClosureVerdictPayload::Integration(parse_integration_verdict(texts)),
+        "A9" => ClosureVerdictPayload::Documentation(parse_documentation_verdict(texts)),
+        _ => ClosureVerdictPayload::None,
+    }
+}
+
+fn parse_cont_qa_verdict(texts: &[String]) -> ContQaClosureVerdict {
+    let verdict = texts
         .iter()
         .flat_map(|text| text.lines())
         .map(str::trim)
         .filter_map(|line| line.strip_prefix("Verdict:"))
         .map(str::trim)
         .map(|value| value.to_ascii_uppercase())
-        .last()
+        .last();
+    let (gate_line, gate_fields) = find_marker_fields(texts, "[wave-gate]")
+        .map(|(line, fields)| (Some(line), fields))
+        .unwrap_or_else(|| (None, BTreeMap::new()));
+    let detail = gate_fields.get("detail").cloned();
+    let gate_dimensions = gate_fields
+        .iter()
+        .filter(|(key, _)| key.as_str() != "detail")
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let gate_state = cont_qa_gate_state(gate_line.as_deref(), &gate_dimensions);
+
+    ContQaClosureVerdict {
+        verdict,
+        gate_state,
+        gate_line,
+        gate_dimensions,
+        detail,
+    }
 }
 
-fn find_last_marker_line(texts: &[String], marker: &str) -> Option<String> {
+fn parse_integration_verdict(texts: &[String]) -> IntegrationClosureVerdict {
+    let fields = find_marker_fields(texts, "[wave-integration]")
+        .map(|(_, fields)| fields)
+        .unwrap_or_default();
+    IntegrationClosureVerdict {
+        state: fields.get("state").cloned(),
+        claims: parse_marker_u32(&fields, "claims"),
+        conflicts: parse_marker_u32(&fields, "conflicts"),
+        blockers: parse_marker_u32(&fields, "blockers"),
+        detail: fields.get("detail").cloned(),
+    }
+}
+
+fn parse_documentation_verdict(texts: &[String]) -> DocumentationClosureVerdict {
+    let fields = find_marker_fields(texts, "[wave-doc-closure]")
+        .map(|(_, fields)| fields)
+        .unwrap_or_default();
+    DocumentationClosureVerdict {
+        state: fields.get("state").cloned(),
+        paths: fields
+            .get("paths")
+            .map(|value| split_csv(value))
+            .unwrap_or_default(),
+        detail: fields.get("detail").cloned(),
+    }
+}
+
+fn find_marker_fields(
+    texts: &[String],
+    marker: &str,
+) -> Option<(String, BTreeMap<String, String>)> {
     texts
         .iter()
         .flat_map(|text| text.lines())
         .map(str::trim)
         .filter(|line| *line == marker || line.starts_with(&(marker.to_string() + " ")))
-        .map(ToString::to_string)
+        .map(|line| (line.to_string(), parse_marker_fields(line, marker)))
         .last()
 }
 
-fn find_marker_state(texts: &[String], marker: &str) -> Option<String> {
-    let line = find_last_marker_line(texts, marker)?;
-    line.split_whitespace()
-        .find_map(|segment| segment.strip_prefix("state="))
-        .map(|state| state.trim_end_matches(',').to_string())
+fn parse_marker_fields(line: &str, marker: &str) -> BTreeMap<String, String> {
+    line.strip_prefix(marker)
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|token| token.split_once('='))
+        .map(|(key, value)| {
+            (
+                key.to_string(),
+                value.trim().trim_end_matches(',').to_string(),
+            )
+        })
+        .collect()
+}
+
+fn parse_marker_u32(fields: &BTreeMap<String, String>, key: &str) -> Option<u32> {
+    fields.get(key).and_then(|value| value.parse::<u32>().ok())
+}
+
+fn split_csv(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn cont_qa_gate_state(
+    gate_line: Option<&str>,
+    gate_dimensions: &BTreeMap<String, String>,
+) -> Option<String> {
+    if gate_dimensions.values().any(|value| value == "blocked") {
+        return Some("blocked".to_string());
+    }
+    if gate_dimensions.values().any(|value| value == "concerns") {
+        return Some("concerns".to_string());
+    }
+    gate_line.map(|line| {
+        let lowered = line.to_ascii_lowercase();
+        if lowered.contains("blocked") {
+            "blocked".to_string()
+        } else if lowered.contains("concerns") {
+            "concerns".to_string()
+        } else {
+            "pass".to_string()
+        }
+    })
 }
 
 fn is_marker_fallback_path(path: &Path) -> bool {
@@ -1461,15 +1881,120 @@ mod tests {
     }
 
     #[test]
+    fn persist_agent_result_envelope_writes_canonical_result_path() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-envelope-test-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        let bundle_dir = root.join(".wave/state/build/specs/wave-12-1");
+        let agent_dir = bundle_dir.join("agents/A2");
+        fs::create_dir_all(&agent_dir).expect("create agent dir");
+        fs::create_dir_all(root.join(".wave/traces/runs")).expect("create trace dir");
+        fs::create_dir_all(root.join(".wave/codex")).expect("create codex dir");
+        fs::write(agent_dir.join("prompt.md"), "# prompt\n").expect("write prompt");
+        fs::write(
+            agent_dir.join("last-message.txt"),
+            "[wave-proof]\n[wave-doc-delta]\n[wave-component]\n",
+        )
+        .expect("write message");
+        fs::write(agent_dir.join("events.jsonl"), "{}\n").expect("write events");
+        fs::write(agent_dir.join("stderr.txt"), "").expect("write stderr");
+
+        let run = WaveRunRecord {
+            run_id: "wave-12-1".to_string(),
+            wave_id: 12,
+            slug: "result-envelope-proof-lifecycle".to_string(),
+            title: "Result Envelope Proof Lifecycle".to_string(),
+            status: WaveRunStatus::Running,
+            dry_run: false,
+            bundle_dir: bundle_dir.clone(),
+            trace_path: root.join(".wave/traces/runs/wave-12-1.json"),
+            codex_home: root.join(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            launcher_pid: None,
+            completed_at_ms: None,
+            agents: Vec::new(),
+            error: None,
+        };
+        let mut declared_agent = test_agent("A2");
+        declared_agent.file_ownership = vec![
+            "docs/reference/runtime-config/README.md".to_string(),
+            "crates/wave-runtime/src/lib.rs".to_string(),
+        ];
+        declared_agent.final_markers = vec![
+            "[wave-proof]".to_string(),
+            "[wave-doc-delta]".to_string(),
+            "[wave-component]".to_string(),
+        ];
+        let agent_record = AgentRunRecord {
+            id: "A2".to_string(),
+            title: "Implementation".to_string(),
+            status: WaveRunStatus::Succeeded,
+            prompt_path: agent_dir.join("prompt.md"),
+            last_message_path: agent_dir.join("last-message.txt"),
+            events_path: agent_dir.join("events.jsonl"),
+            stderr_path: agent_dir.join("stderr.txt"),
+            result_envelope_path: None,
+            expected_markers: declared_agent.final_markers.clone(),
+            observed_markers: declared_agent.final_markers.clone(),
+            exit_code: Some(0),
+            error: None,
+        };
+
+        let updated =
+            persist_agent_result_envelope(&root, &config, &run, &declared_agent, &agent_record)
+                .expect("persist result envelope");
+        let envelope_path = updated
+            .result_envelope_path
+            .as_ref()
+            .expect("envelope path")
+            .clone();
+        let envelope =
+            wave_trace::load_result_envelope(&envelope_path).expect("load result envelope");
+
+        assert_eq!(
+            envelope_path,
+            root.join(".wave/state/results/wave-12/wave-12-1-a2/agent_result_envelope.json")
+        );
+        assert_eq!(envelope.source, ResultEnvelopeSource::Structured);
+        assert_eq!(envelope.final_markers.missing, Vec::<String>::new());
+        assert_eq!(envelope.doc_delta.status, ResultPayloadStatus::Recorded);
+        assert_eq!(
+            envelope.doc_delta.paths,
+            vec![
+                root.join("docs/reference/runtime-config/README.md")
+                    .to_string_lossy()
+                    .into_owned()
+            ]
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn blocks_non_pass_cont_qa_verdicts() {
         let agent = test_agent("A0");
         let texts = vec![
             "[wave-gate] architecture=blocked integration=pass durability=pass live=pass docs=pass detail=test\nVerdict: BLOCKED\n"
                 .to_string(),
         ];
+        let closure = build_closure_state(
+            &agent,
+            AttemptState::Succeeded,
+            &FinalMarkerEnvelope::default(),
+            None,
+            &texts,
+        );
 
         assert_eq!(
-            closure_contract_error(&agent, &texts),
+            closure_contract_error(&agent, &closure),
             Some("cont-QA verdict is BLOCKED, not PASS".to_string())
         );
     }
@@ -1481,9 +2006,16 @@ mod tests {
             "[wave-integration] state=needs-more-work claims=0 conflicts=1 blockers=1 detail=test\n"
                 .to_string(),
         ];
+        let closure = build_closure_state(
+            &agent,
+            AttemptState::Succeeded,
+            &FinalMarkerEnvelope::default(),
+            None,
+            &texts,
+        );
 
         assert_eq!(
-            closure_contract_error(&agent, &texts),
+            closure_contract_error(&agent, &closure),
             Some("integration state is needs-more-work, not ready-for-doc-closure".to_string())
         );
     }
@@ -1493,11 +2025,50 @@ mod tests {
         let agent = test_agent("A9");
         let texts =
             vec!["[wave-doc-closure] state=delta paths=README.md detail=test\n".to_string()];
+        let closure = build_closure_state(
+            &agent,
+            AttemptState::Succeeded,
+            &FinalMarkerEnvelope::default(),
+            None,
+            &texts,
+        );
 
         assert_eq!(
-            closure_contract_error(&agent, &texts),
+            closure_contract_error(&agent, &closure),
             Some("documentation closure state is delta, not closed or no-change".to_string())
         );
+    }
+
+    #[test]
+    fn build_closure_state_records_structured_integration_verdict() {
+        let agent = test_agent("A8");
+        let texts = vec![
+            "[wave-integration] state=ready-for-doc-closure claims=2 conflicts=0 blockers=0 detail=ok\n"
+                .to_string(),
+        ];
+        let final_markers = FinalMarkerEnvelope::from_contract(
+            vec!["[wave-integration]".to_string()],
+            vec!["[wave-integration]".to_string()],
+        );
+
+        let closure = build_closure_state(
+            &agent,
+            AttemptState::Succeeded,
+            &final_markers,
+            None,
+            &texts,
+        );
+
+        assert_eq!(closure.disposition, ClosureDisposition::Ready);
+        match closure.verdict {
+            ClosureVerdictPayload::Integration(verdict) => {
+                assert_eq!(verdict.state.as_deref(), Some("ready-for-doc-closure"));
+                assert_eq!(verdict.claims, Some(2));
+                assert_eq!(verdict.conflicts, Some(0));
+                assert_eq!(verdict.blockers, Some(0));
+            }
+            other => panic!("expected integration verdict, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1546,6 +2117,80 @@ mod tests {
     }
 
     #[test]
+    fn preflight_refusal_keeps_rerun_intent_and_skips_run_state() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-preflight-refusal-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        let mut wave = launchable_test_wave(0);
+        wave.metadata.validation.clear();
+        let waves = vec![wave];
+        let status = build_planning_status_with_state(
+            &config,
+            &waves,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+
+        request_rerun(&root, &config, 0, "retry after failed preflight").expect("request rerun");
+        let error = launch_wave(
+            &root,
+            &config,
+            &waves,
+            &status,
+            LaunchOptions {
+                wave_id: Some(0),
+                dry_run: false,
+            },
+        )
+        .expect_err("preflight should fail");
+        let report = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<LaunchPreflightError>())
+            .expect("launch preflight error")
+            .report();
+
+        assert!(!report.ok);
+        assert!(
+            report
+                .refusal
+                .as_ref()
+                .expect("refusal")
+                .failed_contracts
+                .iter()
+                .any(|contract| contract == "validation-contract")
+        );
+        assert!(
+            pending_rerun_wave_ids(&root, &config)
+                .expect("pending reruns")
+                .contains(&0)
+        );
+        assert!(
+            load_latest_runs(&root, &config)
+                .expect("latest runs")
+                .is_empty()
+        );
+        assert!(!state_runs_dir(&root, &config).exists());
+        assert!(!trace_runs_dir(&root, &config).exists());
+        let build_entries = fs::read_dir(build_specs_dir(&root, &config))
+            .expect("build specs dir")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("build entries");
+        assert_eq!(build_entries.len(), 1);
+        assert!(build_entries[0].path().join("preflight.json").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn orphaned_runs_fail_closed_when_launcher_process_is_gone() {
         let root = std::env::temp_dir().join(format!(
             "wave-runtime-orphan-test-{}-{}",
@@ -1576,6 +2221,7 @@ mod tests {
                 last_message_path: root.join("bundle/agents/A1/last-message.txt"),
                 events_path: root.join("bundle/agents/A1/events.jsonl"),
                 stderr_path: root.join("bundle/agents/A1/stderr.txt"),
+                result_envelope_path: None,
                 expected_markers: vec!["[wave-proof]".to_string()],
                 observed_markers: Vec::new(),
                 exit_code: None,
@@ -1637,6 +2283,7 @@ mod tests {
                 last_message_path: root.join("bundle/agents/A1/last-message.txt"),
                 events_path: root.join("bundle/agents/A1/events.jsonl"),
                 stderr_path: root.join("bundle/agents/A1/stderr.txt"),
+                result_envelope_path: None,
                 expected_markers: vec!["[wave-proof]".to_string()],
                 observed_markers: Vec::new(),
                 exit_code: None,

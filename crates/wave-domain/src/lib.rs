@@ -167,6 +167,177 @@ pub enum ArtifactKind {
     Other,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultEnvelopeSource {
+    #[default]
+    Structured,
+    LegacyMarkerAdapter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultDisposition {
+    Completed,
+    Partial,
+    Failed,
+    Aborted,
+    Refused,
+}
+
+impl ResultDisposition {
+    pub fn from_attempt_state(state: AttemptState, missing_final_markers: usize) -> Self {
+        match state {
+            AttemptState::Succeeded if missing_final_markers == 0 => Self::Completed,
+            AttemptState::Succeeded | AttemptState::Planned | AttemptState::Running => {
+                Self::Partial
+            }
+            AttemptState::Failed => Self::Failed,
+            AttemptState::Aborted => Self::Aborted,
+            AttemptState::Refused => Self::Refused,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultPayloadStatus {
+    #[default]
+    Missing,
+    EvidenceOnly,
+    Recorded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct FinalMarkerEnvelope {
+    #[serde(default)]
+    pub required: Vec<String>,
+    #[serde(default)]
+    pub observed: Vec<String>,
+    #[serde(default)]
+    pub missing: Vec<String>,
+}
+
+impl FinalMarkerEnvelope {
+    pub fn from_contract(
+        required: impl IntoIterator<Item = String>,
+        observed: impl IntoIterator<Item = String>,
+    ) -> Self {
+        let required = dedup_strings(required);
+        let observed = dedup_strings(observed);
+        let missing = required
+            .iter()
+            .filter(|marker| !observed.iter().any(|seen| seen == *marker))
+            .cloned()
+            .collect();
+        Self {
+            required,
+            observed,
+            missing,
+        }
+    }
+
+    pub fn is_satisfied(&self) -> bool {
+        self.missing.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DocDeltaEnvelope {
+    #[serde(default)]
+    pub status: ResultPayloadStatus,
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkerEvidence {
+    pub marker: String,
+    pub line: String,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ProofEnvelope {
+    #[serde(default)]
+    pub status: ResultPayloadStatus,
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub proof_bundle_ids: Vec<ProofBundleId>,
+    #[serde(default)]
+    pub fact_ids: Vec<FactId>,
+    #[serde(default)]
+    pub contradiction_ids: Vec<ContradictionId>,
+    #[serde(default)]
+    pub artifacts: Vec<ProofArtifact>,
+}
+
+impl ProofEnvelope {
+    pub fn has_recorded_payload(&self) -> bool {
+        self.summary.is_some()
+            || !self.proof_bundle_ids.is_empty()
+            || !self.fact_ids.is_empty()
+            || !self.contradiction_ids.is_empty()
+            || !self.artifacts.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ClosureInputEnvelope {
+    #[serde(default)]
+    pub status: ResultPayloadStatus,
+    #[serde(default)]
+    pub final_markers: FinalMarkerEnvelope,
+    #[serde(default)]
+    pub marker_evidence: Vec<MarkerEvidence>,
+}
+
+impl ClosureInputEnvelope {
+    pub fn has_evidence(&self) -> bool {
+        !self.final_markers.required.is_empty()
+            || !self.final_markers.observed.is_empty()
+            || !self.marker_evidence.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ClosureVerdictPayload {
+    #[default]
+    None,
+    ContQa(ContQaClosureVerdict),
+    Integration(IntegrationClosureVerdict),
+    Documentation(DocumentationClosureVerdict),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ContQaClosureVerdict {
+    pub verdict: Option<String>,
+    pub gate_state: Option<String>,
+    pub gate_line: Option<String>,
+    #[serde(default)]
+    pub gate_dimensions: BTreeMap<String, String>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct IntegrationClosureVerdict {
+    pub state: Option<String>,
+    pub claims: Option<u32>,
+    pub conflicts: Option<u32>,
+    pub blockers: Option<u32>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DocumentationClosureVerdict {
+    pub state: Option<String>,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    pub detail: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskExecutor {
     pub profile: Option<String>,
@@ -320,6 +491,8 @@ pub struct ClosureState {
     pub blocking_reasons: Vec<String>,
     pub satisfied_fact_ids: Vec<FactId>,
     pub contradiction_ids: Vec<ContradictionId>,
+    #[serde(default)]
+    pub verdict: ClosureVerdictPayload,
 }
 
 impl ClosureState {
@@ -331,6 +504,7 @@ impl ClosureState {
             blocking_reasons: Vec::new(),
             satisfied_fact_ids: Vec::new(),
             contradiction_ids: Vec::new(),
+            verdict: ClosureVerdictPayload::None,
         }
     }
 }
@@ -475,16 +649,32 @@ pub struct ResultEnvelope {
     pub agent_id: String,
     pub task_role: TaskRole,
     pub closure_role: Option<ClosureRole>,
+    #[serde(default)]
+    pub source: ResultEnvelopeSource,
     pub attempt_state: AttemptState,
+    pub disposition: ResultDisposition,
     pub summary: Option<String>,
     pub output_text: Option<String>,
-    pub final_markers: Vec<String>,
-    pub proof_bundle_ids: Vec<ProofBundleId>,
-    pub fact_ids: Vec<FactId>,
-    pub contradiction_ids: Vec<ContradictionId>,
-    pub artifacts: Vec<ProofArtifact>,
+    #[serde(default)]
+    pub proof: ProofEnvelope,
+    #[serde(default)]
+    pub doc_delta: DocDeltaEnvelope,
+    #[serde(default)]
+    pub closure_input: ClosureInputEnvelope,
     pub closure: ClosureState,
     pub created_at_ms: u128,
+}
+
+impl ResultEnvelope {
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self.attempt_state,
+            AttemptState::Succeeded
+                | AttemptState::Failed
+                | AttemptState::Aborted
+                | AttemptState::Refused
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -617,8 +807,8 @@ pub fn task_id_for_agent(wave_id: u32, agent_id: &str) -> TaskId {
     ))
 }
 
-fn closure_role(agent: &WaveAgent) -> Option<ClosureRole> {
-    match agent.id.as_str() {
+pub fn inferred_closure_role_for_agent(agent_id: &str) -> Option<ClosureRole> {
+    match agent_id {
         "E0" => Some(ClosureRole::ContEval),
         "A8" => Some(ClosureRole::Integration),
         "A9" => Some(ClosureRole::Documentation),
@@ -627,18 +817,36 @@ fn closure_role(agent: &WaveAgent) -> Option<ClosureRole> {
     }
 }
 
-fn task_role(agent: &WaveAgent) -> TaskRole {
-    match agent.id.as_str() {
+fn closure_role(agent: &WaveAgent) -> Option<ClosureRole> {
+    inferred_closure_role_for_agent(agent.id.as_str())
+}
+
+pub fn inferred_task_role_for_agent(agent_id: &str, skills: &[String]) -> TaskRole {
+    match agent_id {
         "A8" => TaskRole::Integration,
         "A9" => TaskRole::Documentation,
         "A0" => TaskRole::ContQa,
         "E0" => TaskRole::ContEval,
-        _ if agent.skills.iter().any(|skill| skill == "role-security") => TaskRole::Security,
-        _ if agent.skills.iter().any(|skill| skill == "role-infra") => TaskRole::Infra,
-        _ if agent.skills.iter().any(|skill| skill == "role-deploy") => TaskRole::Deploy,
-        _ if agent.skills.iter().any(|skill| skill == "role-research") => TaskRole::Research,
+        _ if skills.iter().any(|skill| skill == "role-security") => TaskRole::Security,
+        _ if skills.iter().any(|skill| skill == "role-infra") => TaskRole::Infra,
+        _ if skills.iter().any(|skill| skill == "role-deploy") => TaskRole::Deploy,
+        _ if skills.iter().any(|skill| skill == "role-research") => TaskRole::Research,
         _ => TaskRole::Implementation,
     }
+}
+
+fn task_role(agent: &WaveAgent) -> TaskRole {
+    inferred_task_role_for_agent(agent.id.as_str(), &agent.skills)
+}
+
+fn dedup_strings(values: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut deduped = Vec::new();
+    for value in values {
+        if !deduped.iter().any(|existing| existing == &value) {
+            deduped.push(value);
+        }
+    }
+    deduped
 }
 
 fn task_dependencies(
@@ -1064,6 +1272,93 @@ mod tests {
             )),
             TaskRole::Implementation
         );
+    }
+
+    #[test]
+    fn result_disposition_tracks_attempt_state_and_marker_completeness() {
+        assert_eq!(
+            ResultDisposition::from_attempt_state(AttemptState::Succeeded, 0),
+            ResultDisposition::Completed
+        );
+        assert_eq!(
+            ResultDisposition::from_attempt_state(AttemptState::Succeeded, 1),
+            ResultDisposition::Partial
+        );
+        assert_eq!(
+            ResultDisposition::from_attempt_state(AttemptState::Running, 0),
+            ResultDisposition::Partial
+        );
+        assert_eq!(
+            ResultDisposition::from_attempt_state(AttemptState::Failed, 0),
+            ResultDisposition::Failed
+        );
+        assert_eq!(
+            ResultDisposition::from_attempt_state(AttemptState::Aborted, 0),
+            ResultDisposition::Aborted
+        );
+        assert_eq!(
+            ResultDisposition::from_attempt_state(AttemptState::Refused, 0),
+            ResultDisposition::Refused
+        );
+    }
+
+    #[test]
+    fn final_marker_envelope_deduplicates_and_tracks_missing_markers() {
+        let final_markers = FinalMarkerEnvelope::from_contract(
+            vec![
+                "[wave-proof]".to_string(),
+                "[wave-doc-delta]".to_string(),
+                "[wave-proof]".to_string(),
+            ],
+            vec![
+                "[wave-proof]".to_string(),
+                "[wave-proof]".to_string(),
+                "[wave-component]".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            final_markers.required,
+            vec!["[wave-proof]".to_string(), "[wave-doc-delta]".to_string()]
+        );
+        assert_eq!(
+            final_markers.observed,
+            vec!["[wave-proof]".to_string(), "[wave-component]".to_string()]
+        );
+        assert_eq!(final_markers.missing, vec!["[wave-doc-delta]".to_string()]);
+        assert!(!final_markers.is_satisfied());
+    }
+
+    #[test]
+    fn proof_and_closure_input_payloads_track_machine_readable_content() {
+        let proof = ProofEnvelope {
+            status: ResultPayloadStatus::Recorded,
+            summary: Some("cargo test -p wave-results".to_string()),
+            proof_bundle_ids: vec![ProofBundleId::new("proof-12-a1")],
+            fact_ids: vec![FactId::new("fact-12-a1")],
+            contradiction_ids: Vec::new(),
+            artifacts: vec![ProofArtifact {
+                path: "artifacts/proof.log".to_string(),
+                kind: ArtifactKind::TestLog,
+                digest: Some("abc123".to_string()),
+                note: None,
+            }],
+        };
+        assert!(proof.has_recorded_payload());
+
+        let closure_input = ClosureInputEnvelope {
+            status: ResultPayloadStatus::EvidenceOnly,
+            final_markers: FinalMarkerEnvelope::from_contract(
+                vec!["[wave-proof]".to_string()],
+                vec!["[wave-proof]".to_string()],
+            ),
+            marker_evidence: vec![MarkerEvidence {
+                marker: "[wave-proof]".to_string(),
+                line: "[wave-proof]".to_string(),
+                source: Some("last-message.txt".to_string()),
+            }],
+        };
+        assert!(closure_input.has_evidence());
     }
 
     fn agent(id: &str, title: &str, skills: Vec<&str>, file_ownership: Vec<&str>) -> WaveAgent {

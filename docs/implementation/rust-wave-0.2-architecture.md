@@ -869,9 +869,13 @@ Primary goal:
 Must be true at closure:
 
 - new runs produce structured envelopes
+- new-run envelope persistence flows through the `wave-results` boundary instead of `wave-trace` becoming the de facto result store
 - old runs still replay through the adapter
 - closure logic no longer depends directly on scanning free-form text files
 - machine-readable proof, doc-delta, and closure inputs exist at the result-envelope layer even if human-readable markers remain as evidence
+- proof surfaces for new runs close as structured-envelope truth; compatibility adapters remain explicit only for legacy attempts or fallback views
+- replay may remain compatibility-backed in this wave, but replay mismatches must compare normalized or semantic envelope references rather than raw path-string drift
+- any manifest or dependency-edge changes required to complete the seam belong to the same wave slice that owns that architectural cutover
 
 ### Wave 13: Runtime Breakup And Executor Boundary
 
@@ -885,6 +889,7 @@ Must be true at closure:
 - Codex-specific behavior is isolated to the Codex adapter
 - launcher code coordinates engines instead of owning all semantics itself
 - launcher flow can stop after implementation slices, run post-agent verification gates, and refuse to advance on a broken source workspace
+- ownership or dependency-edge blockers discovered during a slice are surfaced as typed wave blockers, not reduced to generic missing-marker failures
 
 ### Wave 14: Task Graph And Targeted Retry
 
@@ -900,6 +905,7 @@ Must be true at closure:
 - reruns do not require whole-wave restarts by default
 - `owned_slice_proven` is distinct from final wave closure
 - mid-wave checkpoints can fail only the implicated owners and feed targeted retry scope
+- ownership-blocked architectural seams can target the exact owner or manifest slice that must rerun
 
 ### Wave 15: Contradictions, Clarifications, And Human Input
 
@@ -929,6 +935,7 @@ Must be true at closure:
 
 - replay compares stored outcomes against recomputed reducer and gate state
 - artifact presence alone is not considered sufficient replay proof
+- replay mismatches distinguish semantic divergence from storage-format-only path drift
 - regression fixtures cover success, failure, rerun, and contradiction paths
 - replay evidence can explain mismatches in projection state and gate outcomes, not just missing artifacts
 

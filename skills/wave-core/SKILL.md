@@ -14,6 +14,7 @@
 - Silence is not evidence. If a deliverable is not mentioned in landed artifacts, it is not done.
 - When two sources conflict, prefer the one backed by landed code or durable proof over the one backed by prose.
 - Later durable evidence supersedes earlier claims only when it addresses the same scope explicitly. Do not treat stale markers as current truth.
+- If an architectural seam needs manifest or dependency-edge edits, those files must be owned in the same slice. Otherwise the wave contract is wrong.
 
 ## Authored-Wave Expectations
 
@@ -42,6 +43,7 @@
 
 - Only modify files you own. File ownership is declared in the wave definition under each agent.
 - If you need a change in a file you do not own, open a follow-up request naming the owning agent, the exact file, and the exact change needed.
+- If the missing file is a manifest or dependency edge required to close your architectural seam, treat that as a wave-authoring blocker, not a normal handoff.
 - Shared-plan docs (current-state.md, component matrix, roadmap) are owned by the documentation steward, not implementation agents.
 - Implementation-specific docs (inline comments, subsystem READMEs) stay with the implementation owner.
 - When ownership is ambiguous, post a coordination record requesting clarification before editing.
@@ -58,6 +60,7 @@
 - Proof must be durable. Transient output (terminal scrollback, ephemeral logs) is not proof unless captured into a file.
 - When a wave changes operator or proof surfaces, parity proof must name the authoritative producer and every touched consumer surface.
 - When proof cannot be produced within the wave, record the gap explicitly with the reason and the follow-up owner.
+- Do not emit success markers when the owned seam is still open because a required manifest or dependency edge was out of scope.
 
 ## Closure Checklist
 

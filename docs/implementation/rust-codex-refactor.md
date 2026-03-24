@@ -84,8 +84,10 @@ More specifically, the bootstrap contract already assumes:
 - `waves/*.md` is the canonical authored surface that Rust code parses directly
 - implementation prompts must contain the required structured sections instead of informal instructions
 - the owned-path list inside `### Prompt` must restate the `### File ownership` list
+- implementation ownership must include any manifest or dependency-edge files required to complete the architectural seam the agent owns
 - non-closure agents must declare skills, components, capabilities, deliverables, exit contracts, and the implementation marker set
 - closure agents must include the correct role-prompt files and only the markers they own
+- compatibility boundaries must be named explicitly: each wave should say what is already authoritative, what remains adapter-backed, and what cannot regress into hidden truth
 - authored waves are expected to be strong enough that `wave draft`, `wave lint`, `wave doctor`, and queue status all describe the same task model
 
 The practical authoring shape for future waves is:
@@ -95,8 +97,11 @@ The practical authoring shape for future waves is:
 3. closure-agent sections that declare role prompts, owned closure artifacts, and exactly one closure marker family
 4. implementation-agent sections that declare executor, skills, subsystem identity, exit contract, owned files, and the implementation marker set
 5. a prompt block that restates owned paths and gives coding instructions in the required headings the linter knows how to read
+6. ownership aligned to architectural seams so an agent can land the dependency edges, manifests, and runtime code its seam requires without late handoff
 
 Treat that shape as an executable schema, not a docs convention. Future waves should be authored as if the parser, linter, and operator shell are all first-order consumers of the same markdown.
+
+An authored-wave success marker is only meaningful when the owned architectural seam is actually closed. “The code landed but the dependency edge or manifest change belongs to another owner” is a wave-contract defect, not acceptable proof.
 
 ## Wave Lifecycle Through The Toolchain
 
@@ -166,11 +171,29 @@ The current cutover is covered in-tree by projection-parity fixtures:
 - `cargo test -p wave-projections`
   proves the reducer-backed planning bundle, operator snapshot inputs, and control-status helpers come from one `ProjectionSpine`
 - `cargo test -p wave-app-server`
-  proves the transport snapshot carries the projection-owned queue rows and control-status payload without re-deriving them
+  proves the transport snapshot carries the projection-owned queue rows and control-status payload without re-deriving them, including active/blocked/completed row labels from the same readiness state the reducer emitted
 - `cargo test -p wave-tui`
-  proves queue rows and control status items render from the app-server snapshot payload
+  proves queue rows and control status items render from the app-server snapshot payload, including the active-row case where blocker strings exist but the projection-owned readiness state still says `active`
 - `cargo test -p wave-cli`
   proves `wave control status` assembles its JSON report directly from the same projection spine contract
+
+Compatibility-backed launcher inputs are still allowed to feed those reducers in this stage, but dry-run and preflight refusal paths stay read-only with respect to durable run truth:
+
+- `cargo test -p wave-runtime`
+  proves dry-run launch and preflight refusal keep rerun intents intact and do not write durable run or trace records that would perturb queue truth
+- `cargo test -p wave-trace`
+  proves stored compatibility run/trace paths normalize back to the same repo-local state during replay and readback
+
+The proof-lifecycle parity fixtures for Wave 12 are intentionally narrow and shared across surfaces:
+
+- `cargo test -p wave-runtime persist_agent_result_envelope_writes_canonical_result_path`
+  proves runtime persistence writes the normalized canonical envelope path under `.wave/state/results/`
+- `cargo test -p wave-gates compatibility_run_input_prefers_structured_result_envelope_markers`
+  proves closure-gate input resolves final-marker truth from the stored envelope before falling back to the compatibility adapter
+- `cargo test -p wave-app-server build_run_detail_prefers_structured_result_envelope_for_proof`
+  proves app-server proof snapshots recompute from the stored envelope instead of inferring proof only from compatibility run markers
+- `cargo test -p wave-cli proof_report_falls_back_to_latest_completed_run`
+  proves `wave control proof show` resolves the latest relevant run for a wave and preserves the same structured-envelope proof source the app-server snapshot exposes
 
 This is especially relevant for the future TUI dependency: the UI should consume the same structured queue/status truth, not re-derive planning state from ad hoc terminal-specific logic.
 
@@ -305,7 +328,7 @@ The current Rust runtime writes durable local state here:
 - `.wave/state/events/coordination/`
   Canonical append-only coordination records for contradictions, facts, citations, and human-input state.
 - `.wave/state/results/`
-  Canonical authority root for result-envelope storage and attempt-scoped structured outputs as the result layer lands.
+  Canonical authority root for result-envelope storage and attempt-scoped structured outputs. The live runtime now writes one normalized agent result envelope per attempted agent here and keeps the compatibility run record as an explicit adapter path.
 - `.wave/state/derived/`
   Canonical authority root reserved for reducer-backed derived state once later cutover waves stop emitting compatibility-only queue outputs.
 - `.wave/state/projections/`
@@ -313,11 +336,11 @@ The current Rust runtime writes durable local state here:
 - `.wave/state/traces/`
   Canonical authority root reserved for canonical trace state, replay v2, and attempt-scoped provenance after the compatibility trace path is retired.
 - `.wave/state/runs/`
-  Compatibility recorded run output for live and dry-run launches until later cutover waves replace it.
+  Compatibility recorded run output for live and dry-run launches. Proof surfaces and closure gates now treat this as an adapter input when a structured result envelope is missing, but replay still depends on it.
 - `.wave/state/control/reruns/`
   Operator-written rerun intents.
 - `.wave/traces/runs/`
-  Compatibility trace bundles and replay inputs for completed runs until later cutover waves replace them with canonical trace-state readers. These bundles capture the recorded run, agent artifact presence, and replay inputs that `wave trace replay` checks without mutating runtime state.
+  Compatibility trace bundles and replay inputs for completed runs until later cutover waves replace them with canonical trace-state readers. These bundles capture the recorded run, normalized artifact paths, and replay inputs that `wave trace replay` checks without mutating runtime state.
 - `.wave/codex/`
   Project-scoped Codex auth, config, sqlite state, and session logs. The launcher must not write into the user's global Codex home.
 
@@ -329,11 +352,12 @@ The Codex-backed launcher slice depends on a few concrete assumptions that shoul
 - the launcher reads its runtime roots from `wave.toml`
 - `CODEX_HOME` and `CODEX_SQLITE_HOME` are both pinned to `.wave/codex/`
 - `last-message.txt` is the per-agent terminal artifact for the final assistant message
+- the launcher writes a structured result envelope under `.wave/state/results/` for each completed agent attempt and also writes the compatibility run and trace artifacts needed by replay
 - launcher execution is a runtime substrate only; it is not a claim that autonomous queue behavior or any future TUI scheduling logic has shipped in this wave
 - preflight refusal is part of the shipped launch contract, so missing requirements should surface before any live mutation begins
 - the self-host flow is repo-local dogfood, not live-host mutation or fleet orchestration
 - the shipped self-host loop is `project show`, `doctor`, `lint`, `draft`, `launch`, `control`, `trace`, and the built-in TUI on the same repo-scoped state roots
-- planning, queue, and control-status projections are reducer-backed read models over compatibility inputs in this wave, while trace and replay remain compatibility-backed evidence surfaces rather than a promise that every future orchestration feature has shipped
+- planning, queue, and control-status projections are reducer-backed read models over compatibility inputs in this wave, while proof and closure surfaces are now envelope-first and replay remains compatibility-backed evidence rather than a promise that every future orchestration feature has shipped
 
 Keep these assumptions aligned with the launcher code. If one changes, update the config and the reference docs in the same wave.
 
@@ -345,9 +369,9 @@ This panel is the shipped operator surface, not a future affordance.
 The live right-side panel contract is intentionally narrow:
 
 - `Run`
-  active wave, run id, elapsed time, proof counts, and declared proof artifacts
+  active wave, run id, elapsed time, envelope-backed proof counts, and declared proof artifacts
 - `Agents`
-  per-agent state, marker completeness, and deliverables
+  per-agent state, typed proof source, final-marker completeness, and deliverables
 - `Queue`
   readiness, blockers, dependency state, and claimability
 - `Control`
@@ -355,7 +379,7 @@ The live right-side panel contract is intentionally narrow:
 
 Only the tab-switching, wave-navigation, rerun-intent, and quit bindings are live today. Other dashboard affordances mentioned in older docs should be treated as planned until the TUI actually ships them.
 
-The TUI is a consumer of control-plane truth, not an independent planner. Any future terminal-surface changes should preserve that dependency so the queue view, `wave control status`, and replay/proof surfaces remain consistent. The current app-server snapshot now carries the projection-owned control-status read model directly so the TUI does not have to rebuild the queue decision story from planning status in its own process.
+The TUI is a consumer of control-plane truth, not an independent planner. Any future terminal-surface changes should preserve that dependency so the queue view, `wave control status`, and replay/proof surfaces remain consistent. The current app-server snapshot now carries the projection-owned control-status read model directly so the TUI does not have to rebuild the queue decision story from planning status in its own process, and proof views now resolve the latest relevant run for a wave instead of only currently active runs.
 When there are multiple active runs, the `Run`, `Agents`, and `Control` tabs should bind to the currently selected wave rather than drifting to an unrelated first-active-run snapshot.
 
 Only these actions are shipped today:
@@ -377,10 +401,10 @@ The intended self-host loop for this repository is the same one the code already
 3. `wave draft` compiles the active wave into runtime prompts under `.wave/state/build/specs/`.
 4. `wave launch --wave <id> --dry-run --json` writes the preflight report before mutation.
 5. `wave launch --wave <id> --json` runs the local operator slice when the dry run is clean.
-6. `wave control show --wave <id> --json`, `wave control task list --wave <id> --json`, `wave trace latest --json`, and `wave trace replay --json` expose the queue and trace evidence for that run from the current compatibility outputs.
+6. `wave control show --wave <id> --json`, `wave control proof show --wave <id> --json`, `wave control task list --wave <id> --json`, `wave trace latest --json`, and `wave trace replay --json` expose queue, proof, and trace evidence for the latest relevant run. Proof state is recomputed from the current stored result envelopes first, with compatibility run records used only as the explicit legacy adapter.
 7. `wave` on an interactive terminal shows the same state in the built-in TUI.
 
-This is dogfood evidence, not a claim that live-host deployment, remote fleet control, or a separate dashboard product has landed.
+This is dogfood evidence, not a claim that live-host deployment, remote fleet control, or a separate dashboard product has landed. Wave 13 is still the planned home for mandatory post-agent gates and the launcher-side stop-and-check discipline that should run after each implementation slice.
 
 ## Narrow-Terminal Fallback
 

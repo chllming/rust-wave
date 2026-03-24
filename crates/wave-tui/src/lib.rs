@@ -1101,7 +1101,10 @@ mod tests {
                     exists: true,
                 }],
                 complete: false,
+                proof_source: "compatibility-adapter".to_string(),
                 completed_agents: 0,
+                envelope_backed_agents: 0,
+                compatibility_backed_agents: 6,
                 total_agents: 6,
             },
             replay: wave_trace::ReplayReport {
@@ -1218,6 +1221,20 @@ mod tests {
     }
 
     #[test]
+    fn queue_rows_preserve_projection_owned_active_label() {
+        let snapshot = test_snapshot();
+
+        assert_eq!(
+            queue_table_rows(&snapshot),
+            vec![(
+                "5".to_string(),
+                "Build the right-side operator panel in the TUI".to_string(),
+                "active".to_string()
+            )]
+        );
+    }
+
+    #[test]
     fn control_items_come_from_snapshot_control_payload() {
         let mut snapshot = test_snapshot();
         snapshot.control_status.closure_attention_lines = vec!["closure gap: custom".to_string()];
@@ -1281,7 +1298,10 @@ mod tests {
                     exists: true,
                 }],
                 complete: false,
+                proof_source: "compatibility-adapter".to_string(),
                 completed_agents: 1,
+                envelope_backed_agents: 0,
+                compatibility_backed_agents: 6,
                 total_agents: 6,
             },
             replay: wave_trace::ReplayReport {
@@ -1297,6 +1317,7 @@ mod tests {
                     status: WaveRunStatus::Running,
                     current_task: "TUI Shell And Layout Scaffold".to_string(),
                     proof_complete: false,
+                    proof_source: "compatibility-adapter".to_string(),
                     expected_markers: vec!["[wave-proof]".to_string()],
                     observed_markers: Vec::new(),
                     missing_markers: vec!["[wave-proof]".to_string()],
@@ -1309,6 +1330,7 @@ mod tests {
                     status: WaveRunStatus::Planned,
                     current_task: "Integration Steward".to_string(),
                     proof_complete: false,
+                    proof_source: "compatibility-adapter".to_string(),
                     expected_markers: vec!["[wave-integration]".to_string()],
                     observed_markers: Vec::new(),
                     missing_markers: vec!["[wave-integration]".to_string()],
@@ -1327,6 +1349,7 @@ mod tests {
                 total_waves: 10,
                 completed_waves: 5,
             },
+            latest_run_details: vec![active_run.clone()],
             planning: PlanningStatusReadModel {
                 project_name: "Codex Wave Mode".to_string(),
                 default_mode: wave_config::ExecutionMode::DarkFactory,

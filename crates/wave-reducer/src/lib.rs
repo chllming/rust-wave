@@ -1,5 +1,9 @@
 //! Pure planning reducer over authored waves, lint findings, rerun intents, and
 //! compatibility-backed run inputs.
+//!
+//! Compatibility run records remain explicit adapter inputs in this wave. The
+//! reducer consumes typed gate verdicts and closure facts rather than
+//! re-deriving queue/blocker semantics from raw run records inline.
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -923,6 +927,31 @@ mod tests {
     }
 
     #[test]
+    fn dry_run_adapter_unblocks_dependents_without_marking_completion() {
+        let waves = vec![test_wave(0, Vec::new()), test_wave(1, vec![0])];
+        let latest_runs = HashMap::from([(0, run_record(0, WaveRunStatus::DryRun))]);
+
+        let state = reduce(&waves, &[], &[], latest_runs, HashSet::new());
+
+        assert!(state.waves[0].ready);
+        assert_eq!(state.waves[0].readiness.state, QueueReadinessState::Ready);
+        assert_eq!(
+            state.waves[0].run_gate.gate.disposition,
+            GateDisposition::Pass
+        );
+        assert!(state.waves[0].run_gate.gate.blocking_reasons.is_empty());
+        assert!(!state.waves[0].lifecycle.completed);
+        assert_eq!(
+            state.waves[0].planning_gate.disposition,
+            GateDisposition::Pass
+        );
+        assert!(state.waves[0].planning_gate.blocking_reasons.is_empty());
+        assert!(state.waves[1].dependency_gates[0].satisfied);
+        assert!(state.waves[1].ready);
+        assert_eq!(state.queue.readiness.next_ready_wave_ids, vec![0, 1]);
+    }
+
+    #[test]
     fn failed_run_remains_claimable_but_exposes_failed_gate() {
         let waves = vec![test_wave(0, Vec::new())];
         let latest_runs = HashMap::from([(0, run_record(0, WaveRunStatus::Failed))]);
@@ -1045,6 +1074,7 @@ mod tests {
             last_message_path: PathBuf::from(".wave/state/runs/last-message.txt"),
             events_path: PathBuf::from(".wave/state/runs/events.jsonl"),
             stderr_path: PathBuf::from(".wave/state/runs/stderr.txt"),
+            result_envelope_path: None,
             expected_markers: vec![marker.to_string()],
             observed_markers: vec![marker.to_string()],
             exit_code: Some(0),

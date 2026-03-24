@@ -1515,6 +1515,72 @@ mod tests {
     }
 
     #[test]
+    fn queue_panel_read_model_preserves_explicit_readiness_state_labels() {
+        let config = test_config();
+        let active_wave = test_wave(0, Vec::new());
+        let blocked_wave = test_wave(1, vec![0]);
+        let completed_wave = test_wave(2, Vec::new());
+        let latest_runs = HashMap::from([
+            (
+                0,
+                WaveRunRecord {
+                    run_id: "wave-0-running".to_string(),
+                    wave_id: 0,
+                    slug: "wave-0".to_string(),
+                    title: "Wave 0".to_string(),
+                    status: WaveRunStatus::Running,
+                    dry_run: false,
+                    bundle_dir: PathBuf::from(".wave/state/build/specs/wave-0"),
+                    trace_path: PathBuf::from(".wave/traces/wave-0.json"),
+                    codex_home: PathBuf::from(".wave/codex"),
+                    created_at_ms: 1,
+                    started_at_ms: Some(1),
+                    launcher_pid: None,
+                    completed_at_ms: None,
+                    agents: Vec::new(),
+                    error: None,
+                },
+            ),
+            (
+                2,
+                WaveRunRecord {
+                    run_id: "wave-2-succeeded".to_string(),
+                    wave_id: 2,
+                    slug: "wave-2".to_string(),
+                    title: "Wave 2".to_string(),
+                    status: WaveRunStatus::Succeeded,
+                    dry_run: false,
+                    bundle_dir: PathBuf::from(".wave/state/build/specs/wave-2"),
+                    trace_path: PathBuf::from(".wave/traces/wave-2.json"),
+                    codex_home: PathBuf::from(".wave/codex"),
+                    created_at_ms: 1,
+                    started_at_ms: Some(1),
+                    launcher_pid: None,
+                    completed_at_ms: Some(2),
+                    agents: Vec::new(),
+                    error: None,
+                },
+            ),
+        ]);
+
+        let bundle = build_planning_projection_bundle_with_skill_catalog(
+            &config,
+            &[active_wave, blocked_wave, completed_wave],
+            &[],
+            &[],
+            &latest_runs,
+        );
+        let queue = build_queue_panel_read_model(&bundle.projection);
+
+        assert_eq!(queue.waves[0].queue_state, "active");
+        assert!(!queue.waves[0].blocked);
+        assert!(queue.waves[1].queue_state.starts_with("blocked: wave:0"));
+        assert!(queue.waves[1].blocked);
+        assert_eq!(queue.waves[2].queue_state, "completed");
+        assert!(!queue.waves[2].blocked);
+    }
+
+    #[test]
     fn dashboard_read_model_ignores_dry_run_records() {
         let config = test_config();
         let waves = vec![test_wave(0, Vec::new())];

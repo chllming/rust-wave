@@ -21,7 +21,7 @@
         "queue-json-surface"
       ],
       "nextExecutableWave": 12,
-      "nextWork": "Land structured result envelopes and proof lifecycle while replay ratification remains later work.",
+      "nextWork": "Land structured result envelopes and proof lifecycle, route new-run persistence through wave-results, and make replay mismatches semantic while replay ratification remains later work.",
       "promotionScopeNote": "TUI, launcher, scheduler, and trace components consume the reducer-backed projections but keep their existing levels until their own waves promote them.",
       "remainingCompatibilityBoundary": "Structured result envelopes are not yet authoritative. Proof lifecycle still depends on compatibility run artifacts, and replay ratification still depends on compatibility run and trace artifacts.",
       "qaClosure": "Wave 11 cont-QA closure is owned by A0 and is not claimed by the component matrix."

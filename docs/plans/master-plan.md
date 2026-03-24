@@ -28,18 +28,19 @@
   - Wave `10` lands the authority-core domain, durable control and coordination logs, and typed authority roots in `wave.toml`, while leaving queue, blocker, closure, operator, and replay truth on compatibility run records and trace bundles under `.wave/state/runs/` and `.wave/traces/runs/` until the reducer/projection cutover lands.
   - Wave `11` lands the reducer/projection spine: planning status, queue/control JSON, and operator-facing status surfaces now derive from reducer-backed projections over compatibility run records, while structured result envelopes remain later work and proof lifecycle plus replay ratification remain compatibility-backed.
 - This shared-plan landing does not claim Wave `11` cont-QA closure; that final verdict still belongs to `A0`.
-- The next executable work is Wave `12`: land structured result envelopes and proof lifecycle so closure, proof, and doc-delta state stop depending directly on free-form marker scanning, while replay ratification and compatibility-adapter retirement remain explicit later work.
+- The next executable work is Wave `12`: land structured result envelopes and proof lifecycle so closure, proof, and doc-delta state stop depending directly on free-form marker scanning, new-run persistence flows through `wave-results`, and replay mismatches are semantic rather than raw path-format drift, while replay ratification and compatibility-adapter retirement remain explicit later work.
 - After that cutover, keep later work honest against the repo-landed dogfood evidence and close any future gaps against the same live surface.
 
 ## Next Waves
 
-1. Wave `12`: land structured result envelopes and proof lifecycle so closure, proof, and doc-delta state stop depending directly on free-form marker scanning while replay ratification remains a later follow-on cutover.
+1. Wave `12`: land structured result envelopes and proof lifecycle so closure, proof, and doc-delta state stop depending directly on free-form marker scanning, runtime writes flow through `wave-results`, and replay checks normalized or canonical envelope references while replay ratification remains a later follow-on cutover.
 2. Waves `13` through `20`: add post-agent gates, targeted mid-wave checkpoints, contradiction-aware repair loops, replay parity, planner-emitted invariants and staged gates, and local-first telemetry over the same authority model.
 3. As waves execute, correct any gap between the shared-plan story, the code, and the operator-visible runtime state before promoting any later evidence.
 
 ## Planning Rules
 
 - Treat component promotions, deploy environments, Context7 defaults, owned paths, and final markers as contract fields, not planning prose.
+- Treat manifest and dependency-edge ownership as contract fields when an architectural seam requires them; do not split a required seam across owners that cannot complete it.
 - When a wave changes parser fields, skill semantics, closure order, or marker ownership, update code, repo guidance, shared-plan docs, and the component matrix in the same slice.
 - When parser or lint rules change how waves must be authored, update the shared-plan assumptions and the component matrix together so the docs stay aligned with the executable contract.
 - Shared-plan docs may record a landing before `A0` runs, but only the `A0` gate closes cont-QA; do not mark that state closed in plan docs ahead of the gate verdict.
