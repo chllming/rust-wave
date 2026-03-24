@@ -220,7 +220,7 @@ pub fn load_operator_snapshot(root: &Path, config: &ProjectConfig) -> Result<Ope
     let mut active_run_details = latest_runs
         .values()
         .filter(|run| matches!(run.status, WaveRunStatus::Planned | WaveRunStatus::Running))
-        .filter_map(|run| build_active_run_detail(root, &waves, run))
+        .filter_map(|run| build_run_detail(root, &waves, run))
         .collect::<Vec<_>>();
     active_run_details.sort_by_key(|detail| detail.wave_id);
     Ok(build_operator_snapshot(
@@ -377,7 +377,7 @@ pub fn build_dashboard_snapshot(dashboard: &DashboardReadModel) -> DashboardSnap
     }
 }
 
-fn build_active_run_detail(
+pub fn build_run_detail(
     root: &Path,
     waves: &[WaveDocument],
     run: &WaveRunRecord,
@@ -752,10 +752,26 @@ mod tests {
         let spine = ProjectionSpine { planning, operator };
         let snapshot = build_operator_snapshot(&spine, Vec::new(), Vec::new()).unwrap();
 
+        assert_eq!(
+            snapshot.control_status,
+            build_control_status_read_model_from_spine(&spine)
+        );
+        assert_eq!(
+            snapshot.dashboard.next_ready_wave_ids,
+            spine.operator.dashboard.next_ready_wave_ids
+        );
         assert!(snapshot.panels.queue.queue_ready);
         assert_eq!(
             snapshot.panels.queue.queue_ready_reason,
             "ready waves are available to claim"
+        );
+        assert_eq!(
+            snapshot.panels.queue.claimable_wave_ids,
+            snapshot.control_status.queue_decision.claimable_wave_ids
+        );
+        assert_eq!(
+            snapshot.panels.queue.blocker_summary,
+            snapshot.control_status.queue_decision.blocker_summary
         );
         assert_eq!(
             snapshot.control_status.queue_decision.lines[0],
@@ -770,5 +786,13 @@ mod tests {
         assert_eq!(snapshot.panels.control.unavailable_actions[0].key, "launch");
         assert_eq!(snapshot.panels.control.actions.len(), 7);
         assert_eq!(snapshot.panels.queue.waves[0].queue_state, "ready");
+        assert_eq!(
+            snapshot.panels.queue.waves[0].id,
+            spine.operator.queue.waves[0].id
+        );
+        assert_eq!(
+            snapshot.panels.queue.waves[0].queue_state,
+            spine.operator.queue.waves[0].queue_state
+        );
     }
 }

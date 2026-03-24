@@ -30,7 +30,6 @@ use wave_trace::WaveRunRecord;
 use wave_trace::WaveRunStatus;
 use wave_trace::load_latest_run_records_by_wave;
 use wave_trace::load_run_record;
-use wave_trace::load_trace_bundle;
 use wave_trace::now_epoch_ms;
 use wave_trace::write_run_record;
 use wave_trace::write_trace_bundle;
@@ -251,11 +250,7 @@ pub fn trace_inspection_report(record: &WaveRunRecord) -> TraceInspectionReport 
 }
 
 pub fn dogfood_evidence_report(record: &WaveRunRecord) -> DogfoodEvidenceReport {
-    let evidence = load_trace_bundle(&record.trace_path)
-        .ok()
-        .flatten()
-        .and_then(|bundle| bundle.self_host_evidence)
-        .unwrap_or_else(|| wave_trace::self_host_evidence(record));
+    let evidence = wave_trace::self_host_evidence(record);
     DogfoodEvidenceReport {
         wave_id: evidence.wave_id,
         run_id: evidence.run_id,
@@ -402,7 +397,6 @@ pub fn launch_wave(
     options: LaunchOptions,
 ) -> Result<LaunchReport> {
     let wave = select_wave(waves, status, options.wave_id)?;
-    let _ = clear_rerun(root, config, wave.metadata.id)?;
     let run_id = format!("wave-{:02}-{}", wave.metadata.id, now_epoch_ms()?);
     let bundle = compile_wave_bundle(root, config, wave, &run_id)?;
     let preflight = build_launch_preflight(wave, options.dry_run);
@@ -413,9 +407,22 @@ pub fn launch_wave(
         return Err(LaunchPreflightError { report: preflight }.into());
     }
 
-    let codex_home = bootstrap_project_codex_home(root, config)?;
     let trace_path = trace_runs_dir(root, config).join(format!("{run_id}.json"));
     let state_path = state_runs_dir(root, config).join(format!("{run_id}.json"));
+
+    if options.dry_run {
+        return Ok(LaunchReport {
+            run_id,
+            wave_id: wave.metadata.id,
+            status: WaveRunStatus::DryRun,
+            state_path,
+            trace_path,
+            bundle_dir: bundle.bundle_dir,
+            preflight_path,
+        });
+    }
+
+    let codex_home = bootstrap_project_codex_home(root, config)?;
     fs::create_dir_all(trace_runs_dir(root, config)).with_context(|| {
         format!(
             "failed to create {}",
@@ -428,6 +435,7 @@ pub fn launch_wave(
             state_runs_dir(root, config).display()
         )
     })?;
+    let _ = clear_rerun(root, config, wave.metadata.id)?;
 
     let created_at_ms = now_epoch_ms()?;
     let mut record = WaveRunRecord {
@@ -435,22 +443,14 @@ pub fn launch_wave(
         wave_id: wave.metadata.id,
         slug: wave.metadata.slug.clone(),
         title: wave.metadata.title.clone(),
-        status: if options.dry_run {
-            WaveRunStatus::DryRun
-        } else {
-            WaveRunStatus::Planned
-        },
+        status: WaveRunStatus::Planned,
         dry_run: options.dry_run,
         bundle_dir: bundle.bundle_dir.clone(),
         trace_path: trace_path.clone(),
         codex_home: codex_home.clone(),
         created_at_ms,
         started_at_ms: None,
-        launcher_pid: if options.dry_run {
-            None
-        } else {
-            Some(std::process::id())
-        },
+        launcher_pid: Some(std::process::id()),
         completed_at_ms: None,
         agents: bundle
             .agents
@@ -458,11 +458,7 @@ pub fn launch_wave(
             .map(|agent| AgentRunRecord {
                 id: agent.id.clone(),
                 title: agent.title.clone(),
-                status: if options.dry_run {
-                    WaveRunStatus::DryRun
-                } else {
-                    WaveRunStatus::Planned
-                },
+                status: WaveRunStatus::Planned,
                 prompt_path: agent.prompt_path.clone(),
                 last_message_path: agent.prompt_path.parent().unwrap().join("last-message.txt"),
                 events_path: agent.prompt_path.parent().unwrap().join("events.jsonl"),
@@ -475,21 +471,6 @@ pub fn launch_wave(
             .collect(),
         error: None,
     };
-
-    if options.dry_run {
-        record.completed_at_ms = Some(now_epoch_ms()?);
-        write_run_record(&state_path, &record)?;
-        write_trace_bundle(&trace_path, &record)?;
-        return Ok(LaunchReport {
-            run_id,
-            wave_id: wave.metadata.id,
-            status: record.status,
-            state_path,
-            trace_path,
-            bundle_dir: bundle.bundle_dir,
-            preflight_path,
-        });
-    }
 
     if !codex_binary_available() {
         bail!("codex binary is not available on PATH");
@@ -1389,9 +1370,17 @@ fn write_rerun_intent(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::collections::HashSet;
     use wave_config::AuthorityConfig;
     use wave_config::ExecutionMode;
+    use wave_control_plane::build_planning_status_with_state;
+    use wave_spec::CompletionLevel;
     use wave_spec::Context7Defaults;
+    use wave_spec::DeployEnvironment;
+    use wave_spec::DocImpact;
+    use wave_spec::DurabilityLevel;
+    use wave_spec::ExitContract;
+    use wave_spec::ProofLevel;
     use wave_spec::WaveMetadata;
 
     #[test]
@@ -1665,6 +1654,60 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn dry_run_launch_keeps_rerun_intent_and_skips_run_state() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-dry-run-test-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        let waves = vec![launchable_test_wave(0)];
+        let status = build_planning_status_with_state(
+            &config,
+            &waves,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+
+        request_rerun(&root, &config, 0, "repair projection parity").expect("request rerun");
+        let report = launch_wave(
+            &root,
+            &config,
+            &waves,
+            &status,
+            LaunchOptions {
+                wave_id: Some(0),
+                dry_run: true,
+            },
+        )
+        .expect("dry-run launch");
+
+        assert_eq!(report.status, WaveRunStatus::DryRun);
+        assert!(report.bundle_dir.is_dir());
+        assert!(report.preflight_path.exists());
+        assert!(!report.state_path.exists());
+        assert!(!report.trace_path.exists());
+        assert!(
+            pending_rerun_wave_ids(&root, &config)
+                .expect("pending reruns")
+                .contains(&0)
+        );
+        assert!(
+            load_latest_runs(&root, &config)
+                .expect("latest runs")
+                .is_empty()
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
     fn test_agent(id: &str) -> WaveAgent {
         WaveAgent {
             id: id.to_string(),
@@ -1683,6 +1726,61 @@ mod tests {
             file_ownership: Vec::new(),
             final_markers: Vec::new(),
             prompt: "Primary goal:\n- noop\n\nRequired context before coding:\n- Read README.md.\n\nFile ownership (only touch these paths):\n- README.md".to_string(),
+        }
+    }
+
+    fn launchable_test_wave(id: u32) -> WaveDocument {
+        let implementation_agent = WaveAgent {
+            id: "A1".to_string(),
+            title: "Implementation".to_string(),
+            role_prompts: Vec::new(),
+            executor: BTreeMap::from([("model".to_string(), "gpt-5.4".to_string())]),
+            context7: Some(Context7Defaults {
+                bundle: "none".to_string(),
+                query: Some("noop".to_string()),
+            }),
+            skills: Vec::new(),
+            components: Vec::new(),
+            capabilities: Vec::new(),
+            exit_contract: Some(ExitContract {
+                completion: CompletionLevel::Contract,
+                durability: DurabilityLevel::Durable,
+                proof: ProofLevel::Unit,
+                doc_impact: DocImpact::Owned,
+            }),
+            deliverables: vec!["README.md".to_string()],
+            file_ownership: vec!["README.md".to_string()],
+            final_markers: vec!["[wave-proof]".to_string()],
+            prompt: "Primary goal:\n- noop\n\nRequired context before coding:\n- Read README.md.\n\nFile ownership (only touch these paths):\n- README.md".to_string(),
+        };
+
+        WaveDocument {
+            path: PathBuf::from(format!("waves/{id:02}.md")),
+            metadata: WaveMetadata {
+                id,
+                slug: format!("wave-{id}"),
+                title: format!("Wave {id}"),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["A0".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: vec!["README.md".to_string()],
+            },
+            heading_title: Some(format!("Wave {id}")),
+            commit_message: Some(format!("Feat: wave {id}")),
+            component_promotions: Vec::new(),
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "Local validation".to_string(),
+            }],
+            context7_defaults: None,
+            agents: vec![
+                implementation_agent,
+                test_agent("A8"),
+                test_agent("A9"),
+                test_agent("A0"),
+            ],
         }
     }
 

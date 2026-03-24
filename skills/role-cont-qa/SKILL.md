@@ -12,6 +12,8 @@ Use this skill when the agent is the wave's final cont-QA closure steward.
 - Re-read the shared summary, inbox, and latest closure artifacts before the final judgment.
 - Keep verdicts consistent across the report. Do not say PASS in the verdict and CONCERNS in the gate marker.
 - Treat the last gate marker and last verdict line as authoritative for closure. Earlier markers are superseded.
+- Require exact proof mapping. Every passing or blocking claim should cite the exact artifact path, command, marker, or fixture that supports it.
+- Prefer the latest landed artifact that addresses the same scope. Stale closure markers do not survive contrary later evidence.
 - Do not self-block on the live run record showing `A0` as `running` while you are executing. Your own runtime status flips only after you exit, so judge closure from landed artifacts and prior-stage markers instead of treating your transient in-flight state as missing proof.
 
 ## Workflow
@@ -19,7 +21,7 @@ Use this skill when the agent is the wave's final cont-QA closure steward.
 Execute these steps in order. Do not skip steps.
 
 1. **Receive evidence** -- collect all implementation proof, coordination records, integration marker, doc closure marker, and cont-EVAL marker (if present).
-2. **Review vs exit contracts** -- walk each agent's exit contract line by line. For each line, confirm a proof artifact backs it. Record pass or gap.
+2. **Review vs exit contracts** -- walk each agent's exit contract line by line. For each line, confirm a proof artifact backs it. Record the exact proof artifact or exact gap.
 3. **Review vs promotions** -- walk each declared component promotion. Confirm evidence shows the component reached the declared target level, not just that adjacent code landed.
 4. **Verify integration** -- confirm the `[wave-integration]` marker shows `ready-for-doc-closure`. Check that no later coordination records contradict it.
 5. **Verify doc closure** -- confirm the `[wave-doc-closure]` marker shows `closed` or `no-change`. If `no-change`, verify the reasoning is valid given what the wave changed.
@@ -39,6 +41,8 @@ Walk each item. Any unchecked item is a potential blocker.
 - [ ] Doc closure marker is `closed` or valid `no-change`.
 - [ ] cont-EVAL marker (if present) is `satisfied` with matching ids and zero regressions.
 - [ ] Runtime-facing proof is real evidence, not future-work notes or speculative validation.
+- [ ] Operator or proof surfaces touched by the wave serialize the same truth as their authoritative reducer or envelope source.
+- [ ] The latest cited evidence supersedes any stale earlier PASS, CONCERNS, or `ready-for-doc-closure` claim on the same scope.
 - [ ] No contradictions exist between implementation claims, integration summary, docs, and runtime state.
 
 ## Verdict Decision Tree
@@ -46,10 +50,10 @@ Walk each item. Any unchecked item is a potential blocker.
 Apply in order:
 
 1. **PASS** -- all checklist items are satisfied. Every exit contract line has proof. Integration, docs, and cont-EVAL (if present) markers are positive. No contradictions remain.
-2. **CONCERNS** -- all critical items are satisfied, but minor gaps exist that do not block wave progression. Name each concern explicitly. The wave can close but follow-up work should be tracked.
+2. **CONCERNS** -- critical implementation work may be landed, but unresolved concerns still prevent final closure. Name each concern explicitly and keep the wave open for another pass.
 3. **BLOCKED** -- one or more critical items are not satisfied. Missing proof, missing deliverables, unresolved contradictions, or negative markers prevent closure. Name the exact blocking set.
 
-PASS is the only verdict that allows wave closure. CONCERNS allows closure with tracked follow-ups. BLOCKED keeps the wave open.
+PASS is the only verdict that allows wave closure. CONCERNS and BLOCKED both keep the wave open.
 
 ## Marker Format
 
@@ -83,6 +87,7 @@ Each dimension is independently scored. The overall verdict is the minimum acros
 - Keep the final verdict text and final gate marker internally consistent.
 - An append-only cont-QA report is the primary output. Do not delete or rewrite earlier sections; append corrections.
 - When blocking, name the exact agent, file, or deliverable that is missing, not broad categories.
+- When possible, name the smallest rerun target or owner that would clear the blocker.
 - When an authored wave names specific closure markers or shared-plan surfaces, treat those as part of the gate contract.
 
 ## Customization

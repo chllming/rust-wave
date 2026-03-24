@@ -32,6 +32,7 @@ proof = ["wave.toml", "crates/wave-config/src/lib.rs", "crates/wave-spec/src/lib
 ### Executor
 - profile: review-codex
 - model: gpt-5.4
+- codex.config: model_reasoning_effort=high,model_verbosity=low
 
 ### Context7
 - bundle: none
@@ -76,6 +77,7 @@ File ownership (only touch these paths):
 ### Executor
 - profile: review-codex
 - model: gpt-5.4
+- codex.config: model_reasoning_effort=high,model_verbosity=low
 
 ### Context7
 - bundle: none
@@ -171,7 +173,7 @@ File ownership (only touch these paths):
 ### Executor
 - profile: implement-codex
 - model: gpt-5.4
-- codex.config: model_reasoning_effort=xhigh,model_verbosity=low
+- codex.config: model_reasoning_effort=high,model_verbosity=low
 
 ### Context7
 - bundle: rust-config-spec
@@ -236,7 +238,7 @@ File ownership (only touch these paths):
 ### Executor
 - profile: implement-codex
 - model: gpt-5.4
-- codex.config: model_reasoning_effort=xhigh,model_verbosity=low
+- codex.config: model_reasoning_effort=high,model_verbosity=low
 
 ### Context7
 - bundle: rust-config-spec

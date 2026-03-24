@@ -8,6 +8,7 @@
 - Treat the authored-wave `### Deliverables`, `### File ownership`, and `### Final markers` sections as binding.
 - Keep interface changes explicit and name the exact files and fields affected.
 - Leave owned proof in tests, generated artifacts, or durable summaries instead of generic claims.
+- Make proof mapping explicit. For every deliverable you land, name the exact command, file, fixture, or marker that proves it.
 - Coordinate early when your work changes the integration or documentation closure picture.
 - Stay within your declared file ownership. Route out-of-scope work to the owning agent.
 
@@ -22,7 +23,7 @@ Follow this sequence for each deliverable in your exit contract:
    - Tests that pass and cover the changed behavior.
    - Generated artifacts (built output, schemas, configs) that exist on disk.
    - Structured markers or summaries when the deliverable is not purely code.
-5. **Run tests** -- execute `pnpm test` or the repo's declared test command. Fix any regressions your changes introduced.
+5. **Run validation** -- execute the wave's declared validation commands when feasible, plus the smallest targeted commands that prove the behavior you changed. If full wave validation belongs to a later stage, name exactly what you ran and what remains for integration or cont-QA.
 6. **Verify exit contract** -- walk each line of your exit contract and confirm a proof artifact backs it. If any line lacks proof, either produce it or post a coordination record explaining the gap.
 7. **Coordination record** -- post a record summarizing what landed, what proof exists, and any downstream impacts on integration or documentation.
 8. **Handoff** -- if your work affects another agent's scope (interface changes, new dependencies, shifted proof expectations), post an explicit handoff naming the affected agent, files, and fields.
@@ -33,6 +34,8 @@ Follow this sequence for each deliverable in your exit contract:
 - **Tests pass**: name the exact test file and the command that runs it. Example: "test/wave-orchestrator/planner.test.ts passes via pnpm test".
 - **Artifacts exist**: name the exact file path of each generated artifact. Example: "skills/role-deploy/skill.json exists with updated fields".
 - **Interface changes**: when you add, remove, or modify an exported function, type, config field, or CLI flag, name the exact file and the exact symbol or field. Example: "added `draftWave()` export to scripts/wave-orchestrator/planner.mjs".
+- **State or projection changes**: when you change reducer, projection, queue, or proof semantics, name the authoritative source and the consumer surfaces that now agree with it.
+- **Compatibility adapters**: when you keep a legacy path for compatibility, prove both the new authoritative path and the isolated compatibility path, and name which one remains authoritative.
 - **No implicit proof**: "it works" or "tests pass" without naming the test file is not proof. Always name the specific evidence.
 - **Regressions**: if your change breaks an existing test, fix it. Do not leave known regressions for later.
 - **Component promotions**: if your exit contract includes a component promotion, the proof must show the component at the target level, not just that code adjacent to it was modified.
@@ -56,7 +59,8 @@ Before posting your final coordination record, walk this checklist:
 2. All tests pass after your changes.
 3. No files outside your ownership were modified without a coordination record.
 4. Interface changes are documented with exact file and symbol names.
-5. Downstream agents have been notified of any impacts via handoff records.
+5. The latest proof you cite supersedes any stale earlier claim on the same surface.
+6. Downstream agents have been notified of any impacts via handoff records.
 
 If any item fails, either fix it or post a coordination record with the exact gap before signing off.
 

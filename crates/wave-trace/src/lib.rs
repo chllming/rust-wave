@@ -91,10 +91,7 @@ pub struct WaveRunRecord {
 
 impl WaveRunRecord {
     pub fn completed_successfully(&self) -> bool {
-        matches!(
-            self.status,
-            WaveRunStatus::Succeeded | WaveRunStatus::DryRun
-        )
+        matches!(self.status, WaveRunStatus::Succeeded)
     }
 }
 
@@ -190,7 +187,12 @@ pub fn write_run_record(path: &Path, record: &WaveRunRecord) -> Result<()> {
 pub fn load_run_record(path: &Path) -> Result<WaveRunRecord> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read run record {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))
+    let mut record = serde_json::from_str::<WaveRunRecord>(&raw)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    if let Some(repo_root) = repo_root_from_authority_path(path) {
+        normalize_run_record_paths(&mut record, &repo_root);
+    }
+    Ok(record)
 }
 
 pub fn load_latest_run_records_by_wave(dir: &Path) -> Result<HashMap<u32, WaveRunRecord>> {
@@ -235,10 +237,17 @@ pub fn load_trace_bundle(path: &Path) -> Result<Option<TraceBundleV1>> {
     }
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read trace bundle {}", path.display()))?;
-    if let Ok(bundle) = serde_json::from_str::<TraceBundleV1>(&raw) {
+    let repo_root = repo_root_from_authority_path(path);
+    if let Ok(mut bundle) = serde_json::from_str::<TraceBundleV1>(&raw) {
+        if let Some(repo_root) = &repo_root {
+            normalize_trace_bundle_paths(&mut bundle, repo_root);
+        }
         return Ok(Some(bundle));
     }
-    if let Ok(record) = serde_json::from_str::<WaveRunRecord>(&raw) {
+    if let Ok(mut record) = serde_json::from_str::<WaveRunRecord>(&raw) {
+        if let Some(repo_root) = &repo_root {
+            normalize_run_record_paths(&mut record, repo_root);
+        }
         return Ok(Some(TraceBundleV1 {
             schema_version: TRACE_SCHEMA_VERSION.to_string(),
             recorded_at_ms: record.completed_at_ms.unwrap_or(record.created_at_ms),
@@ -372,6 +381,46 @@ fn replay_report(record: &WaveRunRecord, issues: Vec<ReplayIssue>) -> ReplayRepo
         wave_id: record.wave_id,
         ok: issues.is_empty(),
         issues,
+    }
+}
+
+fn repo_root_from_authority_path(path: &Path) -> Option<PathBuf> {
+    let anchor = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    for ancestor in anchor.ancestors() {
+        if ancestor.file_name().and_then(|name| name.to_str()) == Some(".wave") {
+            return ancestor.parent().map(Path::to_path_buf);
+        }
+    }
+    None
+}
+
+fn normalize_trace_bundle_paths(bundle: &mut TraceBundleV1, repo_root: &Path) {
+    normalize_run_record_paths(&mut bundle.run, repo_root);
+    for agent in &mut bundle.agent_artifacts {
+        for artifact in &mut agent.artifacts {
+            normalize_repo_relative_path(&mut artifact.path, repo_root);
+        }
+    }
+    for artifact in &mut bundle.run_artifacts {
+        normalize_repo_relative_path(&mut artifact.path, repo_root);
+    }
+}
+
+fn normalize_run_record_paths(record: &mut WaveRunRecord, repo_root: &Path) {
+    normalize_repo_relative_path(&mut record.bundle_dir, repo_root);
+    normalize_repo_relative_path(&mut record.trace_path, repo_root);
+    normalize_repo_relative_path(&mut record.codex_home, repo_root);
+    for agent in &mut record.agents {
+        normalize_repo_relative_path(&mut agent.prompt_path, repo_root);
+        normalize_repo_relative_path(&mut agent.last_message_path, repo_root);
+        normalize_repo_relative_path(&mut agent.events_path, repo_root);
+        normalize_repo_relative_path(&mut agent.stderr_path, repo_root);
+    }
+}
+
+fn normalize_repo_relative_path(path: &mut PathBuf, repo_root: &Path) {
+    if path.is_relative() {
+        *path = repo_root.join(path.as_path());
     }
 }
 
@@ -774,6 +823,119 @@ mod tests {
         let replay = validate_replay(&record);
         assert!(!replay.ok);
         assert_eq!(replay.issues[0].kind, "missing_trace_bundle");
+    }
+
+    #[test]
+    fn dry_run_is_not_treated_as_completed_success() {
+        let record = sample_record(Path::new("/tmp"), WaveRunStatus::DryRun);
+        assert!(!record.completed_successfully());
+    }
+
+    #[test]
+    fn load_run_record_normalizes_repo_relative_paths() {
+        let repo = tempdir().expect("tempdir");
+        let runs_dir = repo.path().join(".wave/state/runs");
+        fs::create_dir_all(&runs_dir).expect("create runs dir");
+
+        let path = runs_dir.join("wave-8-1.json");
+        let mut record = sample_record(repo.path(), WaveRunStatus::Succeeded);
+        record.bundle_dir = PathBuf::from("./.wave/state/build/specs/wave-8-1");
+        record.trace_path = PathBuf::from("./.wave/traces/runs/wave-8-1.json");
+        record.codex_home = PathBuf::from("./.wave/codex");
+        record.agents[0].prompt_path =
+            PathBuf::from("./.wave/state/build/specs/wave-8-1/agents/A1/prompt.md");
+        record.agents[0].last_message_path =
+            PathBuf::from("./.wave/state/build/specs/wave-8-1/agents/A1/last-message.txt");
+        record.agents[0].events_path =
+            PathBuf::from("./.wave/state/build/specs/wave-8-1/agents/A1/events.jsonl");
+        record.agents[0].stderr_path =
+            PathBuf::from("./.wave/state/build/specs/wave-8-1/agents/A1/stderr.txt");
+        write_run_record(&path, &record).expect("write record");
+
+        let loaded = load_run_record(&path).expect("load record");
+
+        assert_eq!(
+            loaded.trace_path,
+            repo.path().join(".wave/traces/runs/wave-8-1.json")
+        );
+        assert_eq!(
+            loaded.agents[0].prompt_path,
+            repo.path()
+                .join(".wave/state/build/specs/wave-8-1/agents/A1/prompt.md")
+        );
+    }
+
+    #[test]
+    fn load_trace_bundle_normalizes_repo_relative_paths() {
+        let repo = tempdir().expect("tempdir");
+        let trace_dir = repo.path().join(".wave/traces/runs");
+        fs::create_dir_all(&trace_dir).expect("create trace dir");
+
+        let trace_path = trace_dir.join("wave-8-1.json");
+        let bundle = TraceBundleV1 {
+            schema_version: TRACE_SCHEMA_VERSION.to_string(),
+            recorded_at_ms: 3,
+            run: WaveRunRecord {
+                trace_path: PathBuf::from("./.wave/traces/runs/wave-8-1.json"),
+                bundle_dir: PathBuf::from("./.wave/state/build/specs/wave-8-1"),
+                codex_home: PathBuf::from("./.wave/codex"),
+                agents: vec![AgentRunRecord {
+                    prompt_path: PathBuf::from(
+                        "./.wave/state/build/specs/wave-8-1/agents/A1/prompt.md",
+                    ),
+                    last_message_path: PathBuf::from(
+                        "./.wave/state/build/specs/wave-8-1/agents/A1/last-message.txt",
+                    ),
+                    events_path: PathBuf::from(
+                        "./.wave/state/build/specs/wave-8-1/agents/A1/events.jsonl",
+                    ),
+                    stderr_path: PathBuf::from(
+                        "./.wave/state/build/specs/wave-8-1/agents/A1/stderr.txt",
+                    ),
+                    ..sample_agent(repo.path(), WaveRunStatus::Succeeded)
+                }],
+                ..sample_record(repo.path(), WaveRunStatus::Succeeded)
+            },
+            self_host_evidence: None,
+            agent_artifacts: vec![TraceAgentArtifactRecord {
+                id: "A1".to_string(),
+                prompt_exists: true,
+                last_message_exists: true,
+                events_exists: true,
+                stderr_exists: true,
+                artifacts: vec![TraceArtifactRecord {
+                    kind: "prompt".to_string(),
+                    path: PathBuf::from("./.wave/state/build/specs/wave-8-1/agents/A1/prompt.md"),
+                    exists: true,
+                    bytes: Some(8),
+                }],
+            }],
+            run_artifacts: vec![TraceArtifactRecord {
+                kind: "bundle_dir".to_string(),
+                path: PathBuf::from("./.wave/state/build/specs/wave-8-1"),
+                exists: true,
+                bytes: None,
+            }],
+        };
+        write_json(&trace_path, &bundle).expect("write trace bundle");
+
+        let loaded = load_trace_bundle(&trace_path)
+            .expect("load trace bundle")
+            .expect("trace bundle exists");
+
+        assert_eq!(
+            loaded.run.trace_path,
+            repo.path().join(".wave/traces/runs/wave-8-1.json")
+        );
+        assert_eq!(
+            loaded.agent_artifacts[0].artifacts[0].path,
+            repo.path()
+                .join(".wave/state/build/specs/wave-8-1/agents/A1/prompt.md")
+        );
+        assert_eq!(
+            loaded.run_artifacts[0].path,
+            repo.path().join(".wave/state/build/specs/wave-8-1")
+        );
     }
 
     trait AgentPathExt {

@@ -836,13 +836,15 @@ fn draw_queue_tab(frame: &mut ratatui::Frame<'_>, area: Rect, snapshot: &Operato
     );
     frame.render_widget(summary, chunks[0]);
 
-    let rows = snapshot.panels.queue.waves.iter().map(|wave| {
-        Row::new(vec![
-            Cell::from(wave.id.to_string()),
-            Cell::from(wave.title.clone()),
-            Cell::from(wave.queue_state.clone()),
-        ])
-    });
+    let rows = queue_table_rows(snapshot)
+        .into_iter()
+        .map(|(id, title, queue_state)| {
+            Row::new(vec![
+                Cell::from(id),
+                Cell::from(title),
+                Cell::from(queue_state),
+            ])
+        });
 
     let table = Table::new(
         rows,
@@ -902,38 +904,10 @@ fn draw_control_tab(
         chunks[0],
     );
 
-    let mut status_items = selected_active_run(snapshot, selected_wave_id)
-        .map(|run| {
-            if run.replay.ok {
-                vec![ListItem::new(format!(
-                    "Replay OK for wave {} run {}",
-                    run.wave_id, run.run_id
-                ))]
-            } else {
-                run.replay
-                    .issues
-                    .iter()
-                    .map(|issue| ListItem::new(format!("{}: {}", issue.kind, issue.detail)))
-                    .collect::<Vec<_>>()
-            }
-        })
-        .unwrap_or_else(|| vec![ListItem::new("No active replay state.")]);
-    status_items.extend(
-        snapshot
-            .control_status
-            .closure_attention_lines
-            .iter()
-            .cloned()
-            .map(ListItem::new),
-    );
-    status_items.extend(
-        snapshot
-            .control_status
-            .skill_issue_lines
-            .iter()
-            .cloned()
-            .map(ListItem::new),
-    );
+    let status_items = control_status_items(snapshot, selected_wave_id)
+        .into_iter()
+        .map(ListItem::new)
+        .collect::<Vec<_>>();
     frame.render_widget(
         List::new(status_items).block(Block::default().borders(Borders::ALL).title("Status")),
         chunks[1],
@@ -969,6 +943,50 @@ fn selected_active_run(
                 .find(|run| run.wave_id == wave_id)
         })
         .or_else(|| snapshot.active_run_details.first())
+}
+
+fn queue_table_rows(snapshot: &OperatorSnapshot) -> Vec<(String, String, String)> {
+    snapshot
+        .panels
+        .queue
+        .waves
+        .iter()
+        .map(|wave| {
+            (
+                wave.id.to_string(),
+                wave.title.clone(),
+                wave.queue_state.clone(),
+            )
+        })
+        .collect()
+}
+
+fn control_status_items(snapshot: &OperatorSnapshot, selected_wave_id: Option<u32>) -> Vec<String> {
+    let mut items = selected_active_run(snapshot, selected_wave_id)
+        .map(|run| {
+            if run.replay.ok {
+                vec![format!(
+                    "Replay OK for wave {} run {}",
+                    run.wave_id, run.run_id
+                )]
+            } else {
+                run.replay
+                    .issues
+                    .iter()
+                    .map(|issue| format!("{}: {}", issue.kind, issue.detail))
+                    .collect::<Vec<_>>()
+            }
+        })
+        .unwrap_or_else(|| vec!["No active replay state.".to_string()]);
+    items.extend(
+        snapshot
+            .control_status
+            .closure_attention_lines
+            .iter()
+            .cloned(),
+    );
+    items.extend(snapshot.control_status.skill_issue_lines.iter().cloned());
+    items
 }
 
 #[cfg(test)]
@@ -1176,6 +1194,44 @@ mod tests {
                 "queue decision: claimable waves=custom".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn queue_rows_come_from_snapshot_queue_panel() {
+        let mut snapshot = test_snapshot();
+        snapshot.panels.queue.waves = vec![wave_app_server::QueuePanelWaveSnapshot {
+            id: 42,
+            slug: "queue-row".to_string(),
+            title: "Queue Row".to_string(),
+            queue_state: "blocked".to_string(),
+            blocked: true,
+        }];
+
+        assert_eq!(
+            queue_table_rows(&snapshot),
+            vec![(
+                "42".to_string(),
+                "Queue Row".to_string(),
+                "blocked".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn control_items_come_from_snapshot_control_payload() {
+        let mut snapshot = test_snapshot();
+        snapshot.control_status.closure_attention_lines = vec!["closure gap: custom".to_string()];
+        snapshot.control_status.skill_issue_lines = vec!["skill issue: custom".to_string()];
+
+        let rendered = control_status_items(&snapshot, Some(5));
+
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line == "Replay OK for wave 5 run wave-05-test")
+        );
+        assert!(rendered.iter().any(|line| line == "closure gap: custom"));
+        assert!(rendered.iter().any(|line| line == "skill issue: custom"));
     }
 
     #[test]
@@ -1428,8 +1484,8 @@ mod tests {
                         id: 5,
                         slug: "tui-right-panel".to_string(),
                         title: "Build the right-side operator panel in the TUI".to_string(),
-                        queue_state: "blocked: active-run:running".to_string(),
-                        blocked: true,
+                        queue_state: "active".to_string(),
+                        blocked: false,
                     }],
                 },
                 control: ControlPanelSnapshot {

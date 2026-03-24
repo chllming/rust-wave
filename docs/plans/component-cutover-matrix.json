@@ -13,10 +13,17 @@
   ],
   "cutoverNotes": {
     "wave11": {
-      "landing": "Reducer-backed planning, queue, and control/operator projections are live over compatibility run inputs.",
+      "landing": "Reducer-backed planning status, queue/control JSON, and operator-facing status projections are live over compatibility run records.",
+      "promotedComponents": [
+        "reducer-state-spine",
+        "gate-verdict-spine",
+        "planning-status",
+        "queue-json-surface"
+      ],
       "nextExecutableWave": 12,
-      "nextWork": "Land structured result envelopes and proof lifecycle.",
-      "remainingCompatibilityBoundary": "Structured result envelopes are not yet authoritative. Proof lifecycle and replay ratification still depend on compatibility run and trace artifacts.",
+      "nextWork": "Land structured result envelopes and proof lifecycle while replay ratification remains later work.",
+      "promotionScopeNote": "TUI, launcher, scheduler, and trace components consume the reducer-backed projections but keep their existing levels until their own waves promote them.",
+      "remainingCompatibilityBoundary": "Structured result envelopes are not yet authoritative. Proof lifecycle still depends on compatibility run artifacts, and replay ratification still depends on compatibility run and trace artifacts.",
       "qaClosure": "Wave 11 cont-QA closure is owned by A0 and is not claimed by the component matrix."
     }
   },
@@ -241,7 +248,7 @@
       "proofSurfaces": [
         "pure reducer state over authored declarations and compatibility adapters",
         "deterministic lifecycle and blocker fixtures",
-        "planning and operator projections consume reducer state while structured result envelopes remain later authority work"
+        "planning status, queue/control status, and operator projections consume reducer state while structured result envelopes remain later authority work"
       ]
     },
     "gate-verdict-spine": {
@@ -260,7 +267,7 @@
       "proofSurfaces": [
         "typed gate verdict helpers",
         "closure verdict helpers over reducer-backed state",
-        "proof lifecycle and replay ratification remain compatibility-backed in Wave 11"
+        "proof lifecycle remains compatibility-backed in Wave 11 and replay ratification still depends on compatibility run and trace artifacts"
       ]
     },
     "planning-status": {
@@ -283,11 +290,11 @@
         }
       ],
       "proofSurfaces": [
-        "reducer-backed planning summary over compatibility run adapters",
+        "reducer-backed planning and operator-status summary over compatibility run-record adapters",
         "per-wave agent and closure counts",
         "queue visibility and blocker projection",
         "projection and reducer parity tests",
-        "queue and control status are reducer-backed while proof lifecycle remains compatibility-backed"
+        "queue and control status are reducer-backed while proof lifecycle remains compatibility-backed and replay ratification remains later work"
       ]
     },
     "queue-json-surface": {
@@ -312,9 +319,9 @@
       "proofSurfaces": [
         "doctor JSON",
         "control status JSON",
-        "reducer-backed queue visibility projection over compatibility inputs",
+        "reducer-backed queue visibility and operator-status projection over compatibility run-record inputs",
         "blocker-wave and skill-issue reporting",
-        "queue and control JSON are reducer-backed while proof and replay evidence remain compatibility-backed"
+        "queue and control JSON are reducer-backed while proof lifecycle and replay evidence remain compatibility-backed via run records and trace bundles"
       ]
     },
     "codex-launcher-substrate": {

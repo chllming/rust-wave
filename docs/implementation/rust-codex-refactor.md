@@ -129,6 +129,15 @@ That same model feeds the operator surfaces today:
 - `wave-tui`
   renders the right-side operator panel for `Run`, `Agents`, `Queue`, and `Control`, with the queue story and control attention lines coming from the app-server snapshot's reducer-backed control-status payload rather than terminal-local recomputation
 
+The current repo-local cutover point is therefore explicit:
+
+- `wave-projections`
+  is the authoritative reducer-backed planning and operator read-model layer
+- `wave-control-plane`
+  is compatibility naming only; it forwards the `wave-projections` surface and does not hide separate reducer or planner logic
+- `wave-cli`, `wave-app-server`, and `wave-tui`
+  prove summary-level and row-level parity against the same projection truth in unit fixtures rather than rebuilding queue/control truth per consumer
+
 Trace data is part of the same operator evidence boundary. `wave trace latest` surfaces the durable record for each completed wave, including the trace path and replay verdict, and `wave trace replay` validates that the stored compatibility trace bundle or compatibility run record still matches the live run state and artifact inventory.
 
 The repo guidance docs should therefore describe the same concrete contract that these crates enforce, not a looser future-state summary.
@@ -151,6 +160,17 @@ The current status model should be read as:
   rerun intents, replay/proof state, and operator actions
 
 The important constraint is that `Queue` and `control status` are not separate truths. They are projections from the same control-plane model. If the queue says a wave is blocked, the status output and the TUI should agree on the blocker until the underlying state changes.
+
+The current cutover is covered in-tree by projection-parity fixtures:
+
+- `cargo test -p wave-projections`
+  proves the reducer-backed planning bundle, operator snapshot inputs, and control-status helpers come from one `ProjectionSpine`
+- `cargo test -p wave-app-server`
+  proves the transport snapshot carries the projection-owned queue rows and control-status payload without re-deriving them
+- `cargo test -p wave-tui`
+  proves queue rows and control status items render from the app-server snapshot payload
+- `cargo test -p wave-cli`
+  proves `wave control status` assembles its JSON report directly from the same projection spine contract
 
 This is especially relevant for the future TUI dependency: the UI should consume the same structured queue/status truth, not re-derive planning state from ad hoc terminal-specific logic.
 

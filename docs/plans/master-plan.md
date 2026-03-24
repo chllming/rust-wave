@@ -9,7 +9,7 @@
 - Keep the operator-facing TUI story aligned with the live right-side panel so docs do not split queue/control truth between the shell and CLI surfaces, including direct queue navigation and rerun-intent control.
 - Keep later queue and dogfood waves authored against the fail-closed dark-factory profile, so missing launch contracts are treated as authoring errors rather than execution-time fixes.
 - Keep later waves aligned with autonomous queue selection and dependency-aware gating now that wave 7 has landed those scheduler paths in the repo-local runtime and made claimability typed instead of manual.
-- Keep the Wave 0.2 cutover honest about the current compatibility boundary, so planning, queue, and control/operator truth are described as reducer-backed over compatibility run inputs after Wave 11, while structured result envelopes remain later work and proof lifecycle plus replay ratification remain compatibility-backed until later waves retire those paths.
+- Keep the Wave 0.2 cutover honest about the current compatibility boundary, so planning status, queue/control JSON, and operator-facing status truth are described as reducer-backed over compatibility run records after Wave 11, while structured result envelopes remain later work and proof lifecycle plus replay ratification remain compatibility-backed until later waves retire those paths.
 - Fold control-discipline hardening into later waves, including post-agent gates, doc-parity enforcement, contradiction tracking, planner-emitted invariants, and non-authoritative telemetry.
 
 ## Landed Baseline
@@ -26,8 +26,9 @@
   - Wave `8` lands recorded trace bundles and replay validation.
   - Wave `9` lands the repo-local self-host runbook and durable dogfood evidence.
   - Wave `10` lands the authority-core domain, durable control and coordination logs, and typed authority roots in `wave.toml`, while leaving queue, blocker, closure, operator, and replay truth on compatibility run records and trace bundles under `.wave/state/runs/` and `.wave/traces/runs/` until the reducer/projection cutover lands.
-  - Wave `11` lands the reducer/projection spine: planning, queue, and control/operator surfaces now derive from reducer-backed projections over compatibility run inputs, while structured result envelopes remain later work and proof lifecycle plus replay ratification remain compatibility-backed.
-- The next executable work is Wave `12`: land structured result envelopes and proof lifecycle so closure, proof, and doc-delta state stop depending directly on free-form marker scanning, while keeping replay ratification and legacy compatibility adapters explicit.
+  - Wave `11` lands the reducer/projection spine: planning status, queue/control JSON, and operator-facing status surfaces now derive from reducer-backed projections over compatibility run records, while structured result envelopes remain later work and proof lifecycle plus replay ratification remain compatibility-backed.
+- This shared-plan landing does not claim Wave `11` cont-QA closure; that final verdict still belongs to `A0`.
+- The next executable work is Wave `12`: land structured result envelopes and proof lifecycle so closure, proof, and doc-delta state stop depending directly on free-form marker scanning, while replay ratification and compatibility-adapter retirement remain explicit later work.
 - After that cutover, keep later work honest against the repo-landed dogfood evidence and close any future gaps against the same live surface.
 
 ## Next Waves
@@ -42,6 +43,7 @@
 - When a wave changes parser fields, skill semantics, closure order, or marker ownership, update code, repo guidance, shared-plan docs, and the component matrix in the same slice.
 - When parser or lint rules change how waves must be authored, update the shared-plan assumptions and the component matrix together so the docs stay aligned with the executable contract.
 - Shared-plan docs may record a landing before `A0` runs, but only the `A0` gate closes cont-QA; do not mark that state closed in plan docs ahead of the gate verdict.
+- For Wave `11`, only `reducer-state-spine`, `gate-verdict-spine`, `planning-status`, and `queue-json-surface` move to `baseline-proved`; consumers that read those projections keep their own existing maturity until their own cutover waves promote them.
 - Later waves may rely on `wave doctor` and `wave control status` reading one typed planning projection for per-wave agent counts, blocker categories, closure totals, queue visibility, and skill-catalog health.
 - Later waves may rely on the launcher substrate managing agent execution against project-scoped Codex home and per-agent run artifacts instead of mutating global operator state.
 - Do not describe repo-local execution, TUI, autonomous scheduling, or replay behavior as future work when the executable surface is already present in the worktree.

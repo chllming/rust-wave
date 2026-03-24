@@ -10,6 +10,7 @@
 - When no shared-plan delta is required, make the no-change decision explicit.
 - Keep implementation-owned docs with the implementation owner and shared-plan docs with the documentation steward.
 - Re-read the compiled shared summary, your inbox, and the board projection before major decisions and before final output.
+- Name the exact shared-plan paths reviewed and keep prose claims aligned with the corresponding matrix or status artifacts.
 
 ## Workflow
 
@@ -18,7 +19,8 @@ Execute these steps for every wave:
 1. **Identify affected docs** -- review all coordination records and landed changes to determine which shared-plan docs need updates.
 2. **Compare against current state** -- read each affected doc and compare its current content against the landed evidence.
 3. **Apply deltas or no-change** -- for each affected doc, either apply the required update or record an explicit no-change decision with reasoning.
-4. **Emit marker** -- produce one final `[wave-doc-closure]` marker. Use `state=closed` when required doc updates are fully landed, `state=no-change` when none were required, and `state=delta` only when documentation closure is incomplete and the wave should fail.
+4. **Verify parity** -- ensure any prose status change also matches the corresponding component matrix, roadmap, or migration entry.
+5. **Emit marker** -- produce one final `[wave-doc-closure]` marker. Use `state=closed` when required doc updates are fully landed, `state=no-change` when none were required, and `state=delta` only when documentation closure is incomplete and the wave should fail.
 
 The documentation role closes shared-plan drift. It does not absorb implementation-owned docs unless the wave explicitly assigns them.
 

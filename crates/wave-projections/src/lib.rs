@@ -163,6 +163,7 @@ pub struct WavePlanningProjection {
     pub depends_on: Vec<u32>,
     pub blocked_by: Vec<String>,
     pub blocker_state: Vec<WaveBlockerState>,
+    pub readiness: WaveReadinessState,
     pub lint_errors: usize,
     pub ready: bool,
     pub rerun_requested: bool,
@@ -630,6 +631,7 @@ pub fn build_planning_status_projection(status: &PlanningStatus) -> PlanningStat
             depends_on: wave.depends_on.clone(),
             blocked_by: wave.blocked_by.clone(),
             blocker_state: blocker_state.clone(),
+            readiness: wave.readiness.clone(),
             lint_errors: wave.lint_errors,
             ready: wave.ready,
             rerun_requested: wave.rerun_requested,
@@ -735,7 +737,7 @@ pub fn build_dashboard_read_model(
 ) -> DashboardReadModel {
     let mut active_runs = latest_runs
         .values()
-        .filter(|run| !run.completed_successfully())
+        .filter(|run| matches!(run.status, WaveRunStatus::Planned | WaveRunStatus::Running))
         .map(|run| DashboardRunReadModel {
             wave_id: run.wave_id,
             run_id: run.run_id.clone(),
@@ -794,8 +796,8 @@ pub fn build_queue_panel_read_model(projection: &PlanningStatusProjection) -> Qu
                 id: wave.id,
                 slug: wave.slug.clone(),
                 title: wave.title.clone(),
-                queue_state: queue_state_label(wave.completed, wave.ready, &wave.blocked_by),
-                blocked: !wave.completed && !wave.ready && !wave.blocked_by.is_empty(),
+                queue_state: queue_state_label(wave.readiness.state, &wave.blocked_by),
+                blocked: matches!(wave.readiness.state, QueueReadinessState::Blocked),
             })
             .collect(),
     }
@@ -1057,15 +1059,13 @@ fn format_blockers(blocked_by: &[String]) -> String {
     }
 }
 
-fn queue_state_label(completed: bool, ready: bool, blocked_by: &[String]) -> String {
-    if completed {
-        "completed".to_string()
-    } else if ready {
-        "ready".to_string()
-    } else if blocked_by.is_empty() {
-        "pending".to_string()
-    } else {
-        format!("blocked: {}", blocked_by.join(", "))
+fn queue_state_label(state: QueueReadinessState, blocked_by: &[String]) -> String {
+    match state {
+        QueueReadinessState::Completed => "completed".to_string(),
+        QueueReadinessState::Ready => "ready".to_string(),
+        QueueReadinessState::Active => "active".to_string(),
+        QueueReadinessState::Blocked if blocked_by.is_empty() => "blocked".to_string(),
+        QueueReadinessState::Blocked => format!("blocked: {}", blocked_by.join(", ")),
     }
 }
 
@@ -1503,6 +1503,8 @@ mod tests {
         assert_eq!(spine.operator.dashboard.active_runs[0].wave_id, 0);
         assert_eq!(spine.operator.run.active_wave_ids, vec![0]);
         assert_eq!(spine.operator.queue.active_wave_ids, vec![0]);
+        assert_eq!(spine.operator.queue.waves[0].queue_state, "active");
+        assert!(!spine.operator.queue.waves[0].blocked);
         assert!(!spine.operator.control.launcher_ready);
         assert_eq!(
             spine.operator.control.unavailable_reasons,
@@ -1510,6 +1512,38 @@ mod tests {
         );
         assert_eq!(spine.operator.control.unavailable_actions[0].key, "launch");
         assert_eq!(spine.operator.control.actions.len(), 7);
+    }
+
+    #[test]
+    fn dashboard_read_model_ignores_dry_run_records() {
+        let config = test_config();
+        let waves = vec![test_wave(0, Vec::new())];
+        let status =
+            build_planning_status_with_skill_catalog(&config, &waves, &[], &[], &HashMap::new());
+        let latest_runs = HashMap::from([(
+            0,
+            WaveRunRecord {
+                run_id: "wave-0-dry-run".to_string(),
+                wave_id: 0,
+                slug: "wave-0".to_string(),
+                title: "Wave 0".to_string(),
+                status: WaveRunStatus::DryRun,
+                dry_run: true,
+                bundle_dir: PathBuf::from(".wave/state/build/specs/wave-0"),
+                trace_path: PathBuf::from(".wave/traces/wave-0.json"),
+                codex_home: PathBuf::from(".wave/codex"),
+                created_at_ms: 1,
+                started_at_ms: None,
+                launcher_pid: None,
+                completed_at_ms: Some(1),
+                agents: Vec::new(),
+                error: None,
+            },
+        )]);
+
+        let dashboard = build_dashboard_read_model(&status, &latest_runs);
+
+        assert!(dashboard.active_runs.is_empty());
     }
 
     #[test]

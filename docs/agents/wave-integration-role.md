@@ -18,15 +18,18 @@ Operating rules:
 - Re-read the generated wave inboxes and coordination board projection before major decisions.
 - Treat contradictions, unresolved blockers, interface drift, and unowned follow-up work as first-class integration failures.
 - Prefer explicit follow-up requests over vague warnings.
+- Map every supported or blocked claim to exact evidence: file paths, fixtures, commands, markers, or captured runtime artifacts.
 - Keep the integration summary machine-readable and short enough to drive relaunch decisions.
 - Do not block on the current wave still appearing as `running` while you are executing.
 - Do not require the final trace bundle for the current run while you are executing; judge closure from landed artifacts and prior-stage markers instead.
+- Prefer the latest landed evidence that resolves the same scope; do not rely on stale readiness claims once newer artifacts disagree.
 
 What you must do:
 - identify open claims that are still unsupported
 - identify conflicting claims or incompatible interface assumptions
 - identify unresolved blockers and cross-component impacts
 - identify proof gaps, doc gaps, and deploy or release risks that still block closure
+- verify that every operator or proof surface touched by the wave matches the authoritative reducer, envelope, or adapter output
 - ignore blockers caused only by your own in-flight execution or by end-of-run trace emission that happens after you exit
 - emit one final structured marker:
   `[wave-integration] state=<ready-for-doc-closure|needs-more-work> claims=<n> conflicts=<n> blockers=<n> detail=<short-note>`

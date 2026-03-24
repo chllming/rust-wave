@@ -32,6 +32,7 @@ The `Queue` view is the operator planning surface. It reflects the same control-
 
 The panel should keep consuming that same queue truth. The UI may change, but it should not invent a second source of status state.
 In the current Rust implementation, that queue/control truth is reducer-backed: `wave-reducer` computes the planning state and `wave-projections` turns it into the `ProjectionSpine`, operator snapshot input read models, and queue/control status helper read models that `wave control status --json`, `wave-app-server`, and the TUI consume. `wave-app-server` now carries that control-status read model through the operator snapshot so the TUI can render the queue decision story and control attention lines without rebuilding them locally. `wave-control-plane` is now only a forwarding shim over that contract. Compatibility run records still enter as adapter inputs for active-run and replay facts in this stage.
+Parity is covered by repo-local fixtures: `cargo test -p wave-cli`, `cargo test -p wave-app-server`, and `cargo test -p wave-tui` all exercise the same reducer-backed queue/control payload from different consumer edges.
 When multiple waves are active, the `Run`, `Agents`, and `Control` tabs follow the currently selected wave instead of whichever run happens to appear first in the snapshot.
 
 ## Keybindings
@@ -117,6 +118,7 @@ cargo run -p wave-cli -- control status --json
 cargo run -p wave-cli -- control show --wave 0 --json
 cargo run -p wave-cli -- trace latest
 cargo run -p wave-cli -- trace replay --wave 0
+cargo test -p wave-projections -p wave-cli -p wave-app-server -p wave-tui
 ```
 
 For planning-only bootstrap work, validate the queue/status path first. If those commands disagree, the UI docs should be treated as stale until the control-plane model is fixed.

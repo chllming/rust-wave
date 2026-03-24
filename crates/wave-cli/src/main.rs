@@ -11,6 +11,7 @@ use wave_app_server::ActiveRunDetail;
 use wave_app_server::AgentPanelItem;
 use wave_app_server::OperatorSnapshot;
 use wave_app_server::ProofSnapshot;
+use wave_app_server::build_run_detail;
 use wave_app_server::load_operator_snapshot;
 use wave_config::DEFAULT_CONFIG_PATH;
 use wave_config::ProjectConfig;
@@ -582,7 +583,7 @@ fn authority_surface(config: &ProjectConfig, root: &Path) -> AuthoritySurface {
             trace_root: resolved.authority.trace_dir,
             trace_runs: resolved.authority.trace_runs_dir,
         },
-        projection_source: "planning, queue, and control status are reducer-backed projections over compatibility run inputs; replay remains compatibility-backed",
+        projection_source: "planning status, queue/control JSON, and operator-facing status surfaces are reducer-backed projections over compatibility run records; proof lifecycle and replay remain compatibility-backed",
     }
 }
 
@@ -1032,17 +1033,13 @@ fn render_draft(
 }
 
 fn render_status(spine: &ProjectionSpine, json: bool) -> Result<()> {
-    let status = &spine.planning.status;
-    let projection = &spine.planning.projection;
-    let control_status = build_control_status_read_model_from_spine(spine);
+    let report = build_control_status_report(spine);
     if json {
-        print_json(&ControlStatusReport {
-            status: status.clone(),
-            projection: projection.clone(),
-            operator: spine.operator.clone(),
-            control_status: control_status.clone(),
-        })
+        print_json(&report)
     } else {
+        let status = &report.status;
+        let projection = &report.projection;
+        let control_status = &report.control_status;
         println!("project: {}", status.project_name);
         println!("mode: {}", status.default_mode);
         println!(
@@ -1092,6 +1089,15 @@ fn render_status(spine: &ProjectionSpine, json: bool) -> Result<()> {
             }
         }
         Ok(())
+    }
+}
+
+fn build_control_status_report(spine: &ProjectionSpine) -> ControlStatusReport {
+    ControlStatusReport {
+        status: spine.planning.status.clone(),
+        projection: spine.planning.projection.clone(),
+        operator: spine.operator.clone(),
+        control_status: build_control_status_read_model_from_spine(spine),
     }
 }
 
@@ -1296,22 +1302,15 @@ fn render_proof_show(
 ) -> Result<()> {
     let snapshot = load_operator_snapshot(root, config)?;
     let wave_id = select_wave_id(&snapshot, wave_id)?;
-    let report = snapshot
-        .active_run_details
-        .iter()
-        .find(|run| run.wave_id == wave_id)
-        .map(|run| ProofReport {
-            wave_id,
-            run_id: Some(run.run_id.clone()),
-            proof: Some(run.proof.clone()),
-            replay: Some(run.replay.clone()),
-        })
-        .unwrap_or(ProofReport {
-            wave_id,
-            run_id: None,
-            proof: None,
-            replay: None,
-        });
+    let waves = load_wave_documents(config, root)?;
+    let latest_runs = load_latest_runs(root, config)?;
+    let report = proof_report_for_wave(
+        root,
+        &waves,
+        &snapshot.active_run_details,
+        &latest_runs,
+        wave_id,
+    );
 
     if json {
         print_json(&report)
@@ -1339,9 +1338,41 @@ fn render_proof_show(
         }
         Ok(())
     } else {
-        println!("wave {} has no active proof snapshot", wave_id);
+        println!("wave {} has no recorded proof snapshot", wave_id);
         Ok(())
     }
+}
+
+fn proof_report_for_wave(
+    root: &Path,
+    waves: &[WaveDocument],
+    active_run_details: &[ActiveRunDetail],
+    latest_runs: &HashMap<u32, WaveRunRecord>,
+    wave_id: u32,
+) -> ProofReport {
+    let run_detail = active_run_details
+        .iter()
+        .find(|run| run.wave_id == wave_id)
+        .cloned()
+        .or_else(|| {
+            latest_runs
+                .get(&wave_id)
+                .and_then(|run| build_run_detail(root, waves, run))
+        });
+
+    run_detail
+        .map(|run| ProofReport {
+            wave_id,
+            run_id: Some(run.run_id),
+            proof: Some(run.proof),
+            replay: Some(run.replay),
+        })
+        .unwrap_or(ProofReport {
+            wave_id,
+            run_id: None,
+            proof: None,
+            replay: None,
+        })
 }
 
 fn render_launch(
@@ -1630,6 +1661,27 @@ fn print_json<T: Serialize>(value: &T) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+    use std::collections::HashMap;
+    use wave_control_plane::PlanningProjectionBundle;
+    use wave_control_plane::PlanningStatusReadModel;
+    use wave_control_plane::PlanningStatusSummary;
+    use wave_control_plane::QueueReadinessReadModel;
+    use wave_control_plane::QueueReadinessStateReadModel;
+    use wave_control_plane::SkillCatalogHealth;
+    use wave_control_plane::WaveReadinessReadModel;
+    use wave_control_plane::WaveStatusReadModel;
+    use wave_control_plane::build_operator_snapshot_inputs;
+    use wave_control_plane::build_planning_status_projection;
+    use wave_spec::CompletionLevel;
+    use wave_spec::Context7Defaults;
+    use wave_spec::DocImpact;
+    use wave_spec::DurabilityLevel;
+    use wave_spec::ExitContract;
+    use wave_spec::ProofLevel;
+    use wave_spec::WaveAgent;
+    use wave_spec::WaveDocument;
+    use wave_spec::WaveMetadata;
 
     #[test]
     fn config_root_uses_parent() {
@@ -1682,5 +1734,211 @@ mod tests {
 
         assert_eq!(surface.present_count(), 7);
         assert!(!surface.all_exist());
+    }
+
+    #[test]
+    fn control_status_report_preserves_projection_spine_truth() {
+        let status = PlanningStatusReadModel {
+            project_name: "Test".to_string(),
+            default_mode: wave_config::ExecutionMode::DarkFactory,
+            summary: PlanningStatusSummary {
+                total_waves: 1,
+                ready_waves: 1,
+                blocked_waves: 0,
+                active_waves: 0,
+                completed_waves: 0,
+                total_agents: 3,
+                implementation_agents: 1,
+                closure_agents: 2,
+                waves_with_complete_closure: 1,
+                waves_missing_closure: 0,
+                total_missing_closure_agents: 0,
+                lint_error_waves: 0,
+                skill_catalog_issue_count: 0,
+            },
+            skill_catalog: SkillCatalogHealth {
+                ok: true,
+                issue_count: 0,
+                issues: Vec::new(),
+            },
+            queue: QueueReadinessReadModel {
+                next_ready_wave_ids: vec![11],
+                next_ready_wave_id: Some(11),
+                claimable_wave_ids: vec![11],
+                ready_wave_count: 1,
+                blocked_wave_count: 0,
+                active_wave_count: 0,
+                completed_wave_count: 0,
+                queue_ready: true,
+                queue_ready_reason: "ready waves are available to claim".to_string(),
+            },
+            next_ready_wave_ids: vec![11],
+            waves: vec![WaveStatusReadModel {
+                id: 11,
+                slug: "projection-spine".to_string(),
+                title: "Projection Spine".to_string(),
+                depends_on: Vec::new(),
+                blocked_by: Vec::new(),
+                blocker_state: Vec::new(),
+                lint_errors: 0,
+                ready: true,
+                agent_count: 3,
+                implementation_agent_count: 1,
+                closure_agent_count: 2,
+                closure_complete: true,
+                required_closure_agents: vec!["A0".to_string(), "A8".to_string(), "A9".to_string()],
+                present_closure_agents: vec!["A0".to_string(), "A8".to_string(), "A9".to_string()],
+                missing_closure_agents: Vec::new(),
+                readiness: WaveReadinessReadModel {
+                    state: QueueReadinessStateReadModel::Ready,
+                    claimable: true,
+                    reasons: Vec::new(),
+                    primary_reason: None,
+                },
+                rerun_requested: false,
+                completed: false,
+                last_run_status: None,
+            }],
+            has_errors: false,
+        };
+        let projection = build_planning_status_projection(&status);
+        let planning = PlanningProjectionBundle {
+            status: status.clone(),
+            projection: projection.clone(),
+        };
+        let operator = build_operator_snapshot_inputs(&planning, &HashMap::new(), true);
+        let spine = ProjectionSpine { planning, operator };
+
+        let report = build_control_status_report(&spine);
+
+        assert_eq!(report.status.queue, report.projection.queue.readiness);
+        assert_eq!(
+            report.operator.dashboard.next_ready_wave_ids,
+            report.status.next_ready_wave_ids
+        );
+        assert_eq!(
+            report.operator.queue.waves.len(),
+            report.projection.waves.len()
+        );
+        assert_eq!(report.operator.queue.waves[0].queue_state, "ready");
+        assert_eq!(
+            report.control_status.queue_decision.claimable_wave_ids,
+            report.operator.queue.claimable_wave_ids
+        );
+        assert_eq!(
+            report.control_status.queue_decision.blocker_summary,
+            report.operator.queue.blocker_summary
+        );
+        assert_eq!(
+            report.control_status.queue_decision.lines[0],
+            "queue decision: next claimable wave=11"
+        );
+    }
+
+    #[test]
+    fn proof_report_falls_back_to_latest_completed_run() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-cli-proof-test-{}-{}",
+            std::process::id(),
+            wave_trace::now_epoch_ms().expect("timestamp")
+        ));
+        std::fs::create_dir_all(&root).expect("create temp root");
+        let bundle_dir = root.join(".wave/state/build/specs/wave-12-1");
+        let agent_dir = bundle_dir.join("agents/A1");
+        let trace_path = root.join(".wave/traces/runs/wave-12-1.json");
+        std::fs::create_dir_all(&agent_dir).expect("create agent dir");
+        std::fs::create_dir_all(trace_path.parent().expect("trace dir")).expect("create trace dir");
+        std::fs::create_dir_all(root.join(".wave/codex")).expect("create codex dir");
+        std::fs::write(root.join("README.md"), "proof\n").expect("write proof artifact");
+        std::fs::write(agent_dir.join("prompt.md"), "# prompt\n").expect("write prompt");
+        std::fs::write(agent_dir.join("last-message.txt"), "done\n").expect("write message");
+        std::fs::write(agent_dir.join("events.jsonl"), "{}\n").expect("write events");
+        std::fs::write(agent_dir.join("stderr.txt"), "").expect("write stderr");
+
+        let wave = proof_test_wave();
+        let run = WaveRunRecord {
+            run_id: "wave-12-1".to_string(),
+            wave_id: 12,
+            slug: "result-envelope".to_string(),
+            title: "Result Envelope".to_string(),
+            status: wave_trace::WaveRunStatus::Succeeded,
+            dry_run: false,
+            bundle_dir: bundle_dir.clone(),
+            trace_path: trace_path.clone(),
+            codex_home: root.join(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            launcher_pid: None,
+            completed_at_ms: Some(3),
+            agents: vec![wave_trace::AgentRunRecord {
+                id: "A1".to_string(),
+                title: "Implementation".to_string(),
+                status: wave_trace::WaveRunStatus::Succeeded,
+                prompt_path: agent_dir.join("prompt.md"),
+                last_message_path: agent_dir.join("last-message.txt"),
+                events_path: agent_dir.join("events.jsonl"),
+                stderr_path: agent_dir.join("stderr.txt"),
+                expected_markers: vec!["[wave-proof]".to_string()],
+                observed_markers: vec!["[wave-proof]".to_string()],
+                exit_code: Some(0),
+                error: None,
+            }],
+            error: None,
+        };
+        wave_trace::write_trace_bundle(&trace_path, &run).expect("write trace bundle");
+        let latest_runs = HashMap::from([(12, run)]);
+
+        let report = proof_report_for_wave(&root, &[wave], &[], &latest_runs, 12);
+
+        assert_eq!(report.run_id.as_deref(), Some("wave-12-1"));
+        assert!(report.proof.as_ref().expect("proof").complete);
+        assert!(report.replay.as_ref().expect("replay").ok);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn proof_test_wave() -> WaveDocument {
+        WaveDocument {
+            path: PathBuf::from("waves/12.md"),
+            metadata: WaveMetadata {
+                id: 12,
+                slug: "result-envelope".to_string(),
+                title: "Result Envelope".to_string(),
+                mode: wave_config::ExecutionMode::DarkFactory,
+                owners: vec!["A0".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: vec!["README.md".to_string()],
+            },
+            heading_title: Some("Wave 12".to_string()),
+            commit_message: Some("Feat: result envelope".to_string()),
+            component_promotions: Vec::new(),
+            deploy_environments: Vec::new(),
+            context7_defaults: None,
+            agents: vec![WaveAgent {
+                id: "A1".to_string(),
+                title: "Implementation".to_string(),
+                role_prompts: Vec::new(),
+                executor: BTreeMap::from([("model".to_string(), "gpt-5.4".to_string())]),
+                context7: Some(Context7Defaults {
+                    bundle: "none".to_string(),
+                    query: Some("noop".to_string()),
+                }),
+                skills: Vec::new(),
+                components: Vec::new(),
+                capabilities: Vec::new(),
+                exit_contract: Some(ExitContract {
+                    completion: CompletionLevel::Contract,
+                    durability: DurabilityLevel::Durable,
+                    proof: ProofLevel::Unit,
+                    doc_impact: DocImpact::Owned,
+                }),
+                deliverables: vec!["README.md".to_string()],
+                file_ownership: vec!["README.md".to_string()],
+                final_markers: vec!["[wave-proof]".to_string()],
+                prompt: "Primary goal:\n- noop\n\nRequired context before coding:\n- Read README.md.\n\nFile ownership (only touch these paths):\n- README.md".to_string(),
+            }],
+        }
     }
 }

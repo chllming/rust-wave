@@ -7,11 +7,13 @@
 - Re-read your authored-wave agent section before major work. `### Deliverables`, `### File ownership`, `### Skills`, and `### Final markers` are binding.
 - Re-read the compiled shared summary, inbox, and board projection before major decisions and before final output.
 - Treat file ownership, exit contracts, and structured markers as hard requirements.
+- Map every deliverable and every closure claim to exact proof. Name the file path, command, marker, or artifact that proves it.
 - Post coordination records for meaningful progress, blockers, decisions, and handoffs.
 - Make gaps explicit with exact files, exact fields, and exact follow-up owners.
 - Do not infer closure from intent alone. Closure requires proof artifacts and consistent shared state.
 - Silence is not evidence. If a deliverable is not mentioned in landed artifacts, it is not done.
 - When two sources conflict, prefer the one backed by landed code or durable proof over the one backed by prose.
+- Later durable evidence supersedes earlier claims only when it addresses the same scope explicitly. Do not treat stale markers as current truth.
 
 ## Authored-Wave Expectations
 
@@ -49,10 +51,12 @@
 ## Proof Requirements
 
 - Every exit contract deliverable must have a corresponding proof artifact: a passing test, a generated file, a durable summary, or an explicit structured marker.
+- Proof should be traceable line by line. When you claim an exit contract line is satisfied, name the exact artifact that satisfies that line.
 - Generic claims ("tests pass", "works correctly") are not proof. Name the exact test file, command, or artifact.
 - Component promotions require evidence that the component actually reached the declared level, not just that adjacent code landed.
 - Runtime-facing proof must be real evidence (logs, health checks, build output), not future-work notes.
 - Proof must be durable. Transient output (terminal scrollback, ephemeral logs) is not proof unless captured into a file.
+- When a wave changes operator or proof surfaces, parity proof must name the authoritative producer and every touched consumer surface.
 - When proof cannot be produced within the wave, record the gap explicitly with the reason and the follow-up owner.
 
 ## Closure Checklist
@@ -70,6 +74,8 @@ A wave is closable only when all nine conditions are satisfied:
 9. **Documentation and cont-QA pass** -- doc closure marker is `closed` or `no-change`, and the cont-QA verdict is `PASS` with a matching gate marker.
 
 If any condition is not met, the wave remains open. Do not approximate closure.
+
+For waves that cut over operator status, queue, or proof surfaces, "Exit contracts pass" includes parity between the authoritative reducer or envelope truth and every user-facing consumer touched by the wave.
 
 Closure runs in staged order:
 1. Implementation and proof (all implementation agents).
