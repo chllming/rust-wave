@@ -187,13 +187,15 @@ Compatibility-backed launcher inputs are still allowed to feed those reducers in
 The proof-lifecycle parity fixtures for Wave 12 are intentionally narrow and shared across surfaces:
 
 - `cargo test -p wave-runtime persist_agent_result_envelope_writes_canonical_result_path`
-  proves runtime persistence writes the normalized canonical envelope path under `.wave/state/results/`
+  proves runtime persistence writes the normalized canonical envelope path under `.wave/state/results/` through the `wave-results` store boundary instead of treating `wave-trace` as the result writer
 - `cargo test -p wave-gates compatibility_run_input_prefers_structured_result_envelope_markers`
-  proves closure-gate input resolves final-marker truth from the stored envelope before falling back to the compatibility adapter
+  proves closure-gate input resolves final-marker truth from the stored envelope before falling back to the explicit `wave-results` compatibility adapter
 - `cargo test -p wave-app-server build_run_detail_prefers_structured_result_envelope_for_proof`
-  proves app-server proof snapshots recompute from the stored envelope instead of inferring proof only from compatibility run markers
+  proves app-server proof snapshots recompute from the stored envelope instead of inferring proof only from compatibility run markers, and that proof views still resolve a non-active latest relevant run
 - `cargo test -p wave-cli proof_report_falls_back_to_latest_completed_run`
   proves `wave control proof show` resolves the latest relevant run for a wave and preserves the same structured-envelope proof source the app-server snapshot exposes
+- `cargo test -p wave-results`
+  proves structured closure verdicts can fall back to the owned integration and cont-QA artifacts when the terminal summary is incomplete, and that synthetic marker evidence no longer falsely claims a `last-message.txt` source line
 
 This is especially relevant for the future TUI dependency: the UI should consume the same structured queue/status truth, not re-derive planning state from ad hoc terminal-specific logic.
 
@@ -328,7 +330,7 @@ The current Rust runtime writes durable local state here:
 - `.wave/state/events/coordination/`
   Canonical append-only coordination records for contradictions, facts, citations, and human-input state.
 - `.wave/state/results/`
-  Canonical authority root for result-envelope storage and attempt-scoped structured outputs. The live runtime now writes one normalized agent result envelope per attempted agent here and keeps the compatibility run record as an explicit adapter path.
+  Canonical authority root for result-envelope storage and attempt-scoped structured outputs. The live runtime now writes one normalized agent result envelope per attempted agent here through `wave-results`, and keeps the compatibility run record only as the explicit legacy adapter path.
 - `.wave/state/derived/`
   Canonical authority root reserved for reducer-backed derived state once later cutover waves stop emitting compatibility-only queue outputs.
 - `.wave/state/projections/`
@@ -353,11 +355,12 @@ The Codex-backed launcher slice depends on a few concrete assumptions that shoul
 - `CODEX_HOME` and `CODEX_SQLITE_HOME` are both pinned to `.wave/codex/`
 - `last-message.txt` is the per-agent terminal artifact for the final assistant message
 - the launcher writes a structured result envelope under `.wave/state/results/` for each completed agent attempt and also writes the compatibility run and trace artifacts needed by replay
+- the launcher writes that structured result envelope through the `wave-results` boundary, so stored proof state, app-server proof snapshots, and closure-gate input all read the same normalized envelope truth for new runs
 - launcher execution is a runtime substrate only; it is not a claim that autonomous queue behavior or any future TUI scheduling logic has shipped in this wave
 - preflight refusal is part of the shipped launch contract, so missing requirements should surface before any live mutation begins
 - the self-host flow is repo-local dogfood, not live-host mutation or fleet orchestration
 - the shipped self-host loop is `project show`, `doctor`, `lint`, `draft`, `launch`, `control`, `trace`, and the built-in TUI on the same repo-scoped state roots
-- planning, queue, and control-status projections are reducer-backed read models over compatibility inputs in this wave, while proof and closure surfaces are now envelope-first and replay remains compatibility-backed evidence rather than a promise that every future orchestration feature has shipped
+- planning, queue, and control-status projections are reducer-backed read models over compatibility inputs in this wave, while proof and closure surfaces are now envelope-first, legacy proof adaptation is isolated to `wave-results`, and replay remains compatibility-backed evidence rather than a promise that every future orchestration feature has shipped
 
 Keep these assumptions aligned with the launcher code. If one changes, update the config and the reference docs in the same wave.
 
@@ -379,7 +382,7 @@ The live right-side panel contract is intentionally narrow:
 
 Only the tab-switching, wave-navigation, rerun-intent, and quit bindings are live today. Other dashboard affordances mentioned in older docs should be treated as planned until the TUI actually ships them.
 
-The TUI is a consumer of control-plane truth, not an independent planner. Any future terminal-surface changes should preserve that dependency so the queue view, `wave control status`, and replay/proof surfaces remain consistent. The current app-server snapshot now carries the projection-owned control-status read model directly so the TUI does not have to rebuild the queue decision story from planning status in its own process, and proof views now resolve the latest relevant run for a wave instead of only currently active runs.
+The TUI is a consumer of control-plane truth, not an independent planner. Any future terminal-surface changes should preserve that dependency so the queue view, `wave control status`, and replay/proof surfaces remain consistent. The current app-server snapshot now carries the projection-owned control-status read model directly so the TUI does not have to rebuild the queue decision story from planning status in its own process, and proof views now resolve the latest relevant run for a wave instead of only currently active runs. Replay is still an explicit compatibility boundary here: it compares normalized run, trace, and result-envelope references, but it still ratifies the compatibility run and trace artifacts rather than a final canonical replay v2 surface.
 When there are multiple active runs, the `Run`, `Agents`, and `Control` tabs should bind to the currently selected wave rather than drifting to an unrelated first-active-run snapshot.
 
 Only these actions are shipped today:
@@ -401,7 +404,7 @@ The intended self-host loop for this repository is the same one the code already
 3. `wave draft` compiles the active wave into runtime prompts under `.wave/state/build/specs/`.
 4. `wave launch --wave <id> --dry-run --json` writes the preflight report before mutation.
 5. `wave launch --wave <id> --json` runs the local operator slice when the dry run is clean.
-6. `wave control show --wave <id> --json`, `wave control proof show --wave <id> --json`, `wave control task list --wave <id> --json`, `wave trace latest --json`, and `wave trace replay --json` expose queue, proof, and trace evidence for the latest relevant run. Proof state is recomputed from the current stored result envelopes first, with compatibility run records used only as the explicit legacy adapter.
+6. `wave control show --wave <id> --json`, `wave control proof show --wave <id> --json`, `wave control task list --wave <id> --json`, `wave trace latest --json`, and `wave trace replay --json` expose queue, proof, and trace evidence for the latest relevant run. Proof state is recomputed from the current stored result envelopes first, with compatibility run records used only through the explicit `wave-results` legacy adapter while `wave-trace` stays limited to persisted envelope loading and replay over compatibility-backed artifacts with normalized envelope references.
 7. `wave` on an interactive terminal shows the same state in the built-in TUI.
 
 This is dogfood evidence, not a claim that live-host deployment, remote fleet control, or a separate dashboard product has landed. Wave 13 is still the planned home for mandatory post-agent gates and the launcher-side stop-and-check discipline that should run after each implementation slice.

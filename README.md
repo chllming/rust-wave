@@ -151,7 +151,7 @@ Current gaps remain explicit:
 - `wave adhoc` and `wave dep` still short-circuit with not-implemented messages.
 - The TUI is the built-in operator shell, not a separate dashboard app.
 - Self-host dogfooding is local-first; it does not imply live-host deployment or remote fleet control.
-- Wave 0.2 now lands authority-core plus reducer-backed planning, queue, and control projections over compatibility run inputs; replay and proof lifecycle still depend on compatibility run and trace artifacts until later waves land result envelopes and replay ratification.
+- Wave 0.2 now lands authority-core plus reducer-backed planning, queue, and control projections over compatibility run inputs; proof and closure surfaces are envelope-first through stored result envelopes, with legacy proof adaptation isolated to `wave-results`, while replay ratification still depends on compatibility run and trace artifacts until later waves retire those adapters.
 
 ## Context7
 
@@ -185,7 +185,7 @@ The canonical Wave 0.2 authority-root contract is the set of `.wave/state/` path
 - projections: `.wave/state/projections/`
 - canonical traces: `.wave/state/traces/`
 
-At the current Wave 0.2 stage, those roots are typed, resolved, and doctor-checked. Planning, queue, and control projections are now reducer-backed read models over compatibility run inputs, while replay and proof lifecycle still rely on compatibility run and trace artifacts until the later envelope and replay waves land.
+At the current Wave 0.2 stage, those roots are typed, resolved, and doctor-checked. Planning, queue, and control projections are now reducer-backed read models over compatibility run inputs, while proof and closure surfaces read stored result envelopes first, legacy proof adaptation lives only in `wave-results`, and replay ratification still relies on compatibility run and trace artifacts until the later replay wave lands.
 
 `state_runs_dir` and `trace_runs_dir` remain present as compatibility outputs while later cutover waves replace the current run-record and trace-bundle path. `state_control_dir` continues to house rerun intents for the current operator slice.
 

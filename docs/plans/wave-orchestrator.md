@@ -1,10 +1,15 @@
 # Wave Orchestrator
 
+> Reference-status note:
+> This document describes the broader Wave orchestrator and package-era multi-runtime surface.
+> In this Rust repo, treat it as target-state or upstream reference unless a Rust-specific doc says otherwise.
+> The canonical statement of live Rust behavior remains `README.md`, `docs/implementation/rust-codex-refactor.md`, `docs/plans/current-state.md`, and `docs/reference/runtime-config/README.md`.
+
 The Wave Orchestrator coordinates repository work as bounded execution waves.
 
 For the broader docs map, concept pages, and workflow guides, start at [docs/README.md](../README.md).
 
-This runbook is the operational view of the architecture:
+This runbook is the operational view of the broader Wave architecture:
 
 - one wave contract defines goals, ownership, proof, and closure
 - one canonical coordination log acts as the shared blackboard state
@@ -30,7 +35,7 @@ This runbook is the operational view of the architecture:
 - supports a file-backed human feedback queue
 - performs a closure sweep so optional `cont-EVAL`, optional security review, integration, documentation, and cont-QA gates reflect final landed state
 
-The self-host dogfood run proved the repo-local operator loop end to end:
+The Rust repo's self-host dogfood run proved a narrower local operator loop end to end:
 
 - `cargo run -p wave-cli -- project show --json`
 - `cargo run -p wave-cli -- doctor --json`
@@ -44,6 +49,8 @@ The self-host dogfood run proved the repo-local operator loop end to end:
 - `cargo run -p wave-cli -- trace latest --json`
 - `cargo run -p wave-cli -- trace replay --json`
 - `cargo run -p wave-cli --`
+
+The Rust rewrite does not currently ship all of the package-style commands listed below. Read this command section as reference surface, not as the live Rust command map.
 
 ## Main Commands
 

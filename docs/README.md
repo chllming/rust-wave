@@ -5,7 +5,7 @@ This tree mixes two kinds of material:
 - repo-specific Rust rewrite guidance for the CLI and operator surfaces that ship in this worktree
 - broader package-era Wave concepts and reference docs that remain useful background, but do not describe the full live Rust CLI surface
 
-For this repo, start with the Rust-specific docs first and treat the generic package docs as supporting context.
+For this repo, start with the Rust-specific docs first and treat the generic package docs as supporting context or target-state reference.
 
 ## Suggested Structure
 
@@ -18,7 +18,7 @@ For this repo, start with the Rust-specific docs first and treat the generic pac
 - `docs/plans/`
   Starter plan docs, runbooks, roadmap, and current-state pages that ship with the package and seed adopting repositories.
 - `docs/research/`
-  Source index for the external papers and articles that informed the harness design. Hydrated caches stay local and ignored.
+  Source index for the external papers and articles that informed the harness design. Cached archive material is supporting reference, while the repo-owned synthesis and bibliography stay under tracked docs.
 
 ## Start Here
 
@@ -26,6 +26,10 @@ For this repo, start with the Rust-specific docs first and treat the generic pac
   Read [implementation/rust-codex-refactor.md](./implementation/rust-codex-refactor.md) for the shipped Rust/Codex operator slice, the self-host loop, and the current compatibility boundary.
 - Rust 0.2 target:
   Read [implementation/rust-wave-0.2-architecture.md](./implementation/rust-wave-0.2-architecture.md) for the post-bootstrap authority model and the later reducer cutover plan.
+- Parallel-wave multi-runtime target:
+  Read [implementation/parallel-wave-multi-runtime-architecture.md](./implementation/parallel-wave-multi-runtime-architecture.md) for the intended end-state harness: parallel waves, scheduler/lease control, and a shared planning/skills abstraction above Codex and Claude adapters.
+- Full-cycle wave model:
+  Read [plans/full-cycle-waves.md](./plans/full-cycle-waves.md) for the design-first operating model: spec, architecture, product/design, synthesis, implementation, and post-implementation hardening on one shared substrate.
 - Rust 0.3 carry-forward notes:
   Read [implementation/rust-wave-0.3-notes.md](./implementation/rust-wave-0.3-notes.md) for lessons from executing Wave 10 and Wave 11, the current control-plane boundary, and the extra guardrails that later architecture work should add.
 - Runtime config and authority roots:
@@ -36,10 +40,12 @@ For this repo, start with the Rust-specific docs first and treat the generic pac
   Read [reference/sample-waves.md](./reference/sample-waves.md) for authored-wave examples that match the current structured wave surface.
 - Want the broader Wave concepts:
   Read [concepts/what-is-a-wave.md](./concepts/what-is-a-wave.md), [concepts/runtime-agnostic-orchestration.md](./concepts/runtime-agnostic-orchestration.md), and [concepts/context7-vs-skills.md](./concepts/context7-vs-skills.md) as background reference. Treat them as conceptual material, not as the current Rust CLI runbook.
+- Need upstream/package-era orchestration context:
+  Read [plans/wave-orchestrator.md](./plans/wave-orchestrator.md) as a reference design and package-surface snapshot. It is not the canonical statement of the live Rust implementation in this repo.
 - Tuning runtime behavior:
   Read [reference/runtime-config/README.md](./reference/runtime-config/README.md) and [reference/skills.md](./reference/skills.md).
 - Want the research framing behind the design:
-  Read [research/coordination-failure-review.md](./research/coordination-failure-review.md) and [research/agent-context-sources.md](./research/agent-context-sources.md) as supporting research input rather than operator instructions.
+  Read [research/coordination-failure-review.md](./research/coordination-failure-review.md) for the repo-owned synthesis, then [research/agent-context-sources.md](./research/agent-context-sources.md) and [research/agent-context-cache.md](./research/agent-context-cache.md) for the bibliography and cache crosswalk. Treat them as supporting research input rather than operator instructions.
 
 ## Package vs Repo-Owned Material
 
@@ -53,3 +59,12 @@ For this repo, start with the Rust-specific docs first and treat the generic pac
   - the repository source itself
 
 Some docs under `docs/guides/` and `docs/plans/` describe broader or older package surfaces that the Rust CLI in this repo does not fully ship yet. Use them as background only unless the Rust-specific docs above point you there directly.
+
+## Doc Truth Levels
+
+- `live`
+  Describes behavior the current Rust workspace actually ships. Prefer `README.md`, `docs/implementation/rust-codex-refactor.md`, `docs/plans/current-state.md`, and `docs/reference/runtime-config/README.md`.
+- `target-state`
+  Describes the intended architecture the Rust rewrite is moving toward, but not necessarily behavior that is implemented today. Prefer `docs/implementation/rust-wave-0.2-architecture.md`, `docs/implementation/rust-wave-0.3-notes.md`, and `docs/implementation/parallel-wave-multi-runtime-architecture.md`.
+- `reference-upstream`
+  Describes the broader package-era or upstream Wave surface for comparison, migration planning, or future parity. Treat `docs/plans/wave-orchestrator.md` and some runtime-specific reference pages as this class unless a Rust-specific doc says otherwise.

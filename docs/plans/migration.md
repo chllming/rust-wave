@@ -4,6 +4,7 @@
 
 - This repo no longer treats the older package-first starter scaffold as the active model.
 - The live baseline is the Rust workspace plus rich authored waves under `waves/`.
+- The only live runtime in the Rust workspace today is Codex. Treat multi-runtime docs as target-state/reference until the Rust executor boundary actually lands.
 - Until the runtime and adoption waves land, treat this repository as the reference implementation; do not assume an npm-style install or upgrade flow is the current path.
 
 ## Moving Older Waves To The Authored-Wave Contract
@@ -42,6 +43,7 @@
 
 - Cross-repo bootstrap automation, richer adoption flows, `wave adhoc`, `wave dep`, and live-host deployment workflows remain future work.
 - The repo-local runtime waves are already executable in this worktree, so shared-plan docs should describe launcher, TUI, autonomous queueing, dependency-aware gating, replay, and queue-status projections as live local capabilities.
+- True parallel waves, durable scheduler leases, and live Claude execution remain target-state architecture for the Rust rewrite. Do not describe them as shipped until the runtime and docs both move together.
 - Trace bundles plus replay validation mean later closure and dogfood waves can cite durable local evidence for recorded runs without waiting on live-host mutation proof.
 - The right-side operator panel is part of that live local capability set and should be described as the direct queue/control dashboard, not a separate dashboard product.
 - Later waves should assume the shell can expose operator actions and not just operator visibility when they define queue, rerun, or planning interactions.
@@ -52,10 +54,11 @@
 - Launcher and agent-lifecycle docs should treat `.wave/codex/` plus per-run bundle artifacts as the authoritative runtime-state contract for later waves.
 - Wave 9 now lands the self-host dogfood runbook and evidence as part of the repo baseline, so future migration notes should treat that evidence as shipped local state rather than a planned proof slice.
 - Wave 10 now lands typed authority roots under `.wave/state/events/control/`, `.wave/state/events/coordination/`, `.wave/state/results/`, `.wave/state/derived/`, `.wave/state/projections/`, and `.wave/state/traces/`, so later cutover waves should migrate truth onto those roots instead of inventing new ones.
-- The current compatibility boundary is now narrower: planning status, queue/control JSON, and operator-facing queue/control projections already flow through reducer-backed read models over compatibility run records, while structured result envelopes are not yet authoritative and proof lifecycle plus replay ratification still depend on compatibility surfaces under `.wave/state/runs/` and `.wave/traces/runs/`.
-- The next executable cutover is Wave 12: land structured result envelopes and proof lifecycle so closure input, proof summaries, and doc-delta state stop depending directly on free-form marker scanning, runtime persistence flows through `wave-results`, legacy adapters remain explicit, and replay mismatches are normalized or semantic rather than raw path drift while replay ratification stays later work.
-- Wave 11 shared-plan updates may record that reducer/projection landing, but they do not close cont-QA; that gate still belongs to `A0`.
-- Wave 13 is the natural point to add mandatory post-agent gates in the launcher/supervisor path, and Wave 14 is the natural point to add selective mid-wave checkpoints and targeted retry.
+- The current compatibility boundary is now narrower: planning status, queue/control JSON, and operator-facing queue/control projections already flow through reducer-backed read models over compatibility run records, while proof and closure surfaces read structured result envelopes first through `wave-results` for the active run and the latest completed or failed run and replay ratification still depends on compatibility surfaces under `.wave/state/runs/` and `.wave/traces/runs/`.
+- Wave 12 is now the landed proof/closure cutover: closure input, proof summaries, and doc-delta state stop depending directly on runtime-side free-form marker parsing for new runs, runtime persistence flows through `wave-results`, proof views stay envelope-first for the active run or the latest completed or failed run, legacy adapters remain explicit for legacy attempts, and replay mismatches are normalized or semantic rather than raw path drift while replay ratification stays later work.
+- Wave 12 shared-plan updates may record that landing, but they do not close cont-QA; that gate still belongs to `A0`.
+- Wave 13 is the natural point for runtime breakup plus mandatory post-agent gate foundations in the launcher/supervisor path, and Wave 14 is the natural point for targeted mid-wave checkpoints and selective retry.
+- Treat Wave 13 as runtime breakup plus scheduler foundation in the architecture docs. Without a scheduler-backed claim and lease model, the repo remains a serial launcher with cleaner seams rather than a true parallel-wave harness.
 - Wave 15 should make code/doc/component-state mismatches durable contradiction state, Wave 16 should ratify replay against reducer and gate outcomes while replay checks remain compatibility-backed until then, and Wave 19 should make the planner emit architecture intent, invariants, and staged gate plans as part of the authored contract.
 - When a wave requires manifest or dependency-edge edits to close an architectural seam, that ownership must be declared in the same implementation slice instead of left as follow-up prose.
 - Treat `docs/plans/component-cutover-matrix.json` as the canonical cutover-state declaration when later docs make compatibility-boundary claims.

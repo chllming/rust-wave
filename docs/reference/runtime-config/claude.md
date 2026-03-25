@@ -1,8 +1,25 @@
 # Claude Runtime Configuration
 
-Wave launches Claude headlessly with `claude -p --no-session-persistence`.
+This page is a target-state/reference description for the Rust rewrite.
 
-## Supported Configuration
+It does **not** mean the current Rust workspace already ships Claude execution. The live Rust runtime is still Codex-only, as documented in [README.md](./README.md).
+
+Use this page as:
+
+- a design target for a future Rust `wave-executor-claude` adapter
+- a reference surface from the broader Wave architecture
+
+Do not read it as proof that `wave launch` in this repo currently invokes Claude.
+
+If or when a Rust Claude adapter lands, update this page together with:
+
+- `docs/reference/runtime-config/README.md`
+- `docs/plans/current-state.md`
+- `docs/implementation/rust-codex-refactor.md`
+
+Wave would launch Claude headlessly with `claude -p --no-session-persistence`.
+
+## Target Configuration
 
 | Behavior | `wave.config.json` / profile key | Wave `### Executor` key | Launch effect |
 | --- | --- | --- | --- |
@@ -24,7 +41,7 @@ Wave launches Claude headlessly with `claude -p --no-session-persistence`.
 | Allowed tools | `executors.claude.allowedTools`, `executors.profiles.<name>.claude.allowedTools` | `claude.allowed_tools` | Adds repeated `--allowedTools <tool>` |
 | Disallowed tools | `executors.claude.disallowedTools`, `executors.profiles.<name>.claude.disallowedTools` | `claude.disallowed_tools` | Adds repeated `--disallowedTools <tool>` |
 
-## Overlay Behavior
+## Target Overlay Behavior
 
 Wave always writes `claude-system-prompt.txt` for the harness runtime instructions.
 
@@ -99,7 +116,7 @@ If no inline overlay data is present, Wave passes the base `claude.settings` fil
 - claude.disallowed_tools: Edit
 ````
 
-## Dry-Run Output
+## Target Dry-Run Output
 
 For a dry run, inspect:
 
@@ -107,4 +124,14 @@ For a dry run, inspect:
 - `claude-settings.json`, when generated
 - `launch-preview.json`
 
-`launch-preview.json` shows the final `claude -p` invocation, whether `--effort`, `--settings`, `--allowedTools`, `--disallowedTools`, `--mcp-config`, or `--system-prompt-file` were included, and the resolved `limits` block for attempt timeout plus known turn ceiling.
+`launch-preview.json` would show the final `claude -p` invocation, whether `--effort`, `--settings`, `--allowedTools`, `--disallowedTools`, `--mcp-config`, or `--system-prompt-file` were included, and the resolved `limits` block for attempt timeout plus known turn ceiling.
+
+## Rust Rewrite Status
+
+Today, in this repository:
+
+- authored waves may describe a future multi-runtime contract
+- architecture docs may target Codex plus Claude under a shared executor abstraction
+- the live Rust launcher still only executes Codex
+
+Treat this file as future-facing until the Rust runtime grows a real Claude adapter.

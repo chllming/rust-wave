@@ -3,18 +3,21 @@
 ## Goals
 
 - Keep `waves/*.md` as the canonical execution contract for the Rust/Codex rewrite.
+- Keep the docs explicit about what is live in the Rust repo versus what is target-state architecture or upstream/package reference.
 - Keep parser, lint, doctor, queue-status, and shared-plan docs aligned whenever the authored-wave contract changes.
 - Keep repo-owned operating rules in `skills/` and repo docs, while reserving Context7 for narrow external-library truth.
 - Keep the live repo-local operator/runtime surface honest about what is already executable in this worktree versus what still needs dogfood proof, while recognizing that wave 9 now adds repo-landed self-host evidence on top of trace bundles and replay validation.
 - Keep the operator-facing TUI story aligned with the live right-side panel so docs do not split queue/control truth between the shell and CLI surfaces, including direct queue navigation and rerun-intent control.
 - Keep later queue and dogfood waves authored against the fail-closed dark-factory profile, so missing launch contracts are treated as authoring errors rather than execution-time fixes.
 - Keep later waves aligned with autonomous queue selection and dependency-aware gating now that wave 7 has landed those scheduler paths in the repo-local runtime and made claimability typed instead of manual.
-- Keep the Wave 0.2 cutover honest about the current compatibility boundary, so planning status, queue/control JSON, and operator-facing status truth are described as reducer-backed over compatibility run records after Wave 11, while structured result envelopes remain later work and proof lifecycle plus replay ratification remain compatibility-backed until later waves retire those paths.
-- Fold control-discipline hardening into later waves, including post-agent gates, doc-parity enforcement, contradiction tracking, planner-emitted invariants, and non-authoritative telemetry.
+- Keep the Wave 0.2 cutover honest about the current compatibility boundary, so planning status, queue/control JSON, and operator-facing status truth stay described as reducer-backed over compatibility run records, proof and closure surfaces stay described as envelope-first through `wave-results` for the active run and the latest completed or failed run, and replay ratification stays compatibility-backed until later waves retire the run/trace adapters.
+- Fold control-discipline hardening into later waves, with Wave `13` owning runtime breakup plus post-agent gates, Wave `14` owning targeted mid-wave checkpoints and retry, Wave `19` owning planner-emitted invariants and staged gate plans, and later waves carrying contradiction tracking plus non-authoritative telemetry.
+- Keep the intended parallel-wave multi-runtime architecture documented even while the live Rust runtime remains Codex-only and serial.
+- Keep the target harness full-cycle, not implementation-only: design/spec/product loops first, implementation second, and verification/hardening/rollout after, all on the same reducer-backed substrate.
 
 ## Landed Baseline
 
-- Waves `0` through `11` are now code-landed in the current worktree:
+- Waves `0` through `12` are now code-landed in the current worktree:
   - Wave `0` freezes the rich authored-wave schema, including frontmatter, shared wave sections, structured agent blocks, mandatory closure agents, non-empty skills for every agent, owned-path and deliverable constraints, role-section boundaries, and marker contracts.
   - Wave `1` lands the Rust workspace shape and bootstrap CLI entrypoints.
   - Wave `2` lands `wave.toml`, typed config loading, authored-wave parsing, and dark-factory lint.
@@ -26,16 +29,22 @@
   - Wave `8` lands recorded trace bundles and replay validation.
   - Wave `9` lands the repo-local self-host runbook and durable dogfood evidence.
   - Wave `10` lands the authority-core domain, durable control and coordination logs, and typed authority roots in `wave.toml`, while leaving queue, blocker, closure, operator, and replay truth on compatibility run records and trace bundles under `.wave/state/runs/` and `.wave/traces/runs/` until the reducer/projection cutover lands.
-  - Wave `11` lands the reducer/projection spine: planning status, queue/control JSON, and operator-facing status surfaces now derive from reducer-backed projections over compatibility run records, while structured result envelopes remain later work and proof lifecycle plus replay ratification remain compatibility-backed.
-- This shared-plan landing does not claim Wave `11` cont-QA closure; that final verdict still belongs to `A0`.
-- The next executable work is Wave `12`: land structured result envelopes and proof lifecycle so closure, proof, and doc-delta state stop depending directly on free-form marker scanning, new-run persistence flows through `wave-results`, and replay mismatches are semantic rather than raw path-format drift, while replay ratification and compatibility-adapter retirement remain explicit later work.
+  - Wave `11` lands the reducer/projection spine: planning status, queue/control JSON, and operator-facing status surfaces now derive from reducer-backed projections over compatibility run records.
+  - Wave `12` lands structured result envelopes and proof lifecycle for new runs: runtime persistence flows through `wave-results`, proof and closure surfaces resolve stored envelopes first for the active run and the latest completed or failed run, explicit legacy adapters stay visible for legacy attempts, and replay mismatches compare normalized or semantic envelope references while replay ratification remains compatibility-backed through the run and trace adapters.
+- This shared-plan landing does not claim Wave `12` cont-QA closure; that final verdict still belongs to `A0`.
+- The next executable work on paper is to make the docs and architecture boundary explicit: research parity, live-vs-target-state honesty, and a documented scheduler-plus-executor abstraction for later Rust waves.
+- The target architecture should now explicitly absorb the full-cycle wave model: design loops, synthesis gates, implementation packets, and post-implementation hardening all belong in the same harness plan.
+- The next implementation-oriented architecture wave remains Wave `13`: break up runtime orchestration and add mandatory post-agent gate foundations in the launcher/supervisor path while keeping the repo-local envelope-first proof boundary honest.
 - After that cutover, keep later work honest against the repo-landed dogfood evidence and close any future gaps against the same live surface.
 
 ## Next Waves
 
-1. Wave `12`: land structured result envelopes and proof lifecycle so closure, proof, and doc-delta state stop depending directly on free-form marker scanning, runtime writes flow through `wave-results`, and replay checks normalized or canonical envelope references while replay ratification remains a later follow-on cutover.
-2. Waves `13` through `20`: add post-agent gates, targeted mid-wave checkpoints, contradiction-aware repair loops, replay parity, planner-emitted invariants and staged gates, and local-first telemetry over the same authority model.
-3. As waves execute, correct any gap between the shared-plan story, the code, and the operator-visible runtime state before promoting any later evidence.
+1. Wave `13`: break up runtime orchestration and add mandatory post-agent gate foundations so implementation slices stop, validate, and only then advance.
+2. Wave `13` should be framed as runtime breakup plus scheduler foundation, not only as crate splitting, because true parallel waves require durable ownership and late-bound runtime adapters.
+3. The architecture and wave planner should model full-cycle work explicitly: spec, architecture, product/design, synthesis, implementation, verification, hardening, and rollout waves should all sit on the same control-plane substrate.
+4. Wave `14`: add targeted mid-wave checkpoints plus selective retry so failed slices can be isolated before full closure.
+5. Waves `15` through `20`: add contradiction-aware repair loops, replay parity, Wave `19` planner-emitted invariants and staged gate plans, and local-first telemetry over the same authority model.
+6. As waves execute, correct any gap between the shared-plan story, the code, and the operator-visible runtime state before promoting any later evidence.
 
 ## Planning Rules
 
@@ -54,8 +63,10 @@
 - Do not describe the right-side panel as read-only when it already exposes direct queue navigation and rerun-intent controls.
 - Do not describe queue admission as manual-only when autonomous queueing and dependency gating are already part of the typed control-plane flow and claimability decisions come from typed state.
 - Do not treat later queue and dogfood waves as if they need a new TUI control plane before they can reason about queue selection or rerun intents.
-- Do not describe structured result envelopes as already authoritative, or proof lifecycle and replay ratification as fully event/envelope backed, until the later result-envelope and replay-ratification waves actually land.
+- Do not describe proof surfaces as active-run-only when the live boundary already resolves envelope-first proof for the active run and the latest completed or failed run, with explicit compatibility adapters only for legacy attempts or replay.
+- Do not describe structured result envelopes as the universal reducer/control authority, or replay ratification as fully event/envelope backed, until the later cutover waves actually land; the live boundary today is envelope-first proof/closure for the active run and the latest completed or failed run with compatibility-backed replay.
 - Do not describe live-host deployment proof as landed until the matching component reaches `repo-landed` in the component cutover matrix.
 - Do not author later queue or dogfood waves as if dark-factory is optional or merely descriptive; once the profile is selected, the wave must already satisfy the launch-time contract that preflight enforces.
 - Treat `docs/plans/component-cutover-matrix.json` as the canonical doc-parity declaration for cutover claims in README, current-state, and runtime-reference docs.
 - When later waves advance control-plane behavior, require the authored contract to name the architecture sections in scope, the invariants it must preserve, and any staged gate expectations the launcher or closure roles must enforce.
+- When the planner or architecture docs describe later waves, include the full-cycle role of the wave: design loop, synthesis gate, implementation slice, or post-implementation hardening/rollout closure.

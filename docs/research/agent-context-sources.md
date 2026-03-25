@@ -5,9 +5,18 @@ summary: "Primary external sources used as inspiration for planning, harness des
 
 # Agent Context Sources
 
-This repository does not commit converted paper/article caches. Keep any hydrated local copies under `docs/research/agent-context-cache/` or another ignored cache directory.
+This page is the repo-owned bibliography for the research that informed the harness design.
 
-For a narrative synthesis of the most relevant MAS failure modes and how Wave responds to them, start with [coordination-failure-review.md](./coordination-failure-review.md) and then use this page as the bibliography.
+The repository currently includes a checked-in snapshot of `docs/research/agent-context-cache/` for browsing convenience. Treat that cache as supporting reference material, not as canonical policy. If local-only or refreshed cache exports are needed later, keep them under the same directory structure or another ignored cache root and update this page to say so explicitly.
+
+For a narrative synthesis of the most relevant multi-agent failure modes and how the intended Wave architecture responds to them, start with [coordination-failure-review.md](./coordination-failure-review.md) and then use this page as the bibliography.
+
+## How To Use This Page
+
+- Read `coordination-failure-review.md` first for the repo-owned synthesis.
+- Use this page as the canonical bibliography and source list.
+- Use `agent-context-cache/` as a browsing aid for cached papers and practice articles.
+- When cache topic names differ from the bibliography sections below, follow the crosswalk in [agent-context-cache.md](./agent-context-cache.md).
 
 ## Practice Articles
 
@@ -175,4 +184,4 @@ For a narrative synthesis of the most relevant MAS failure modes and how Wave re
 
 - Use these sources as inspiration and comparison points, not as canonical repo policy.
 - Context7 bundles should be narrow and task-scoped.
-- Cached local exports belong in ignored paths only.
+- Cached exports may be checked in or kept local-only, but the repo-owned guidance must say which is true. Do not let the cache status drift from the docs again.

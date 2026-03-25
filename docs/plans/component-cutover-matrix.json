@@ -23,8 +23,21 @@
       "nextExecutableWave": 12,
       "nextWork": "Land structured result envelopes and proof lifecycle, route new-run persistence through wave-results, and make replay mismatches semantic while replay ratification remains later work.",
       "promotionScopeNote": "TUI, launcher, scheduler, and trace components consume the reducer-backed projections but keep their existing levels until their own waves promote them.",
-      "remainingCompatibilityBoundary": "Structured result envelopes are not yet authoritative. Proof lifecycle still depends on compatibility run artifacts, and replay ratification still depends on compatibility run and trace artifacts.",
+      "remainingCompatibilityBoundary": "Wave 11 stops at reducer-backed queue/control truth over compatibility run records; proof/closure and replay remain later work at this stage.",
       "qaClosure": "Wave 11 cont-QA closure is owned by A0 and is not claimed by the component matrix."
+    },
+    "wave12": {
+      "landing": "Structured result envelopes now land under .wave/state/results, proof surfaces are envelope-first for the active run and the latest completed or failed run, closure consumers read stored envelopes first for new runs, and replay readback compares canonical envelope identity while ratification stays compatibility-backed.",
+      "promotedComponents": [
+        "result-envelope-lifecycle",
+        "proof-lifecycle-spine",
+        "envelope-first-closure"
+      ],
+      "nextExecutableWave": 13,
+      "nextWork": "Break up runtime orchestration and add mandatory post-agent gate foundations in Wave 13; Wave 14 adds targeted mid-wave checkpoints and retry, and Wave 19 adds planner-emitted invariants plus staged gate plans.",
+      "promotionScopeNote": "Queue/control truth remains reducer-backed over compatibility run records; gate verdict helpers and launcher substrate consume the landed result-envelope boundary but keep their existing levels.",
+      "remainingCompatibilityBoundary": "Replay ratification still depends on compatibility run and trace artifacts, legacy attempts still use explicit compatibility adapters, and structured result envelopes are not yet the universal reducer/control authority.",
+      "qaClosure": "Wave 12 cont-QA closure is owned by A0 and is not claimed by the component matrix."
     }
   },
   "components": {
@@ -209,7 +222,7 @@
         "authority-root path resolution",
         "project show authority roots",
         "doctor authority-root checks",
-        "compatibility run and trace surfaces remain under .wave/state/runs and .wave/traces/runs for reducer inputs, proof lifecycle, and replay ratification"
+        "compatibility run and trace surfaces remain under .wave/state/runs and .wave/traces/runs for reducer inputs and replay ratification, while new-run proof and closure lifecycle read .wave/state/results first"
       ]
     },
     "dark-factory-lint": {
@@ -248,7 +261,7 @@
       "proofSurfaces": [
         "pure reducer state over authored declarations and compatibility adapters",
         "deterministic lifecycle and blocker fixtures",
-        "planning status, queue/control status, and operator projections consume reducer state while structured result envelopes remain later authority work"
+        "planning status, queue/control status, and operator projections consume reducer state while proof and closure surfaces resolve stored envelopes first for the active run and the latest completed or failed run"
       ]
     },
     "gate-verdict-spine": {
@@ -267,7 +280,7 @@
       "proofSurfaces": [
         "typed gate verdict helpers",
         "closure verdict helpers over reducer-backed state",
-        "proof lifecycle remains compatibility-backed in Wave 11 and replay ratification still depends on compatibility run and trace artifacts"
+        "new-run closure consumers resolve stored structured envelopes first, explicit compatibility adapters remain visible for legacy attempts, and replay ratification still depends on compatibility run and trace artifacts"
       ]
     },
     "planning-status": {
@@ -294,7 +307,7 @@
         "per-wave agent and closure counts",
         "queue visibility and blocker projection",
         "projection and reducer parity tests",
-        "queue and control status are reducer-backed while proof lifecycle remains compatibility-backed and replay ratification remains later work"
+        "queue and control status are reducer-backed while proof and closure are envelope-first for the active run and the latest completed or failed run and replay ratification remains later work"
       ]
     },
     "queue-json-surface": {
@@ -321,7 +334,70 @@
         "control status JSON",
         "reducer-backed queue visibility and operator-status projection over compatibility run-record inputs",
         "blocker-wave and skill-issue reporting",
-        "queue and control JSON are reducer-backed while proof lifecycle and replay evidence remain compatibility-backed via run records and trace bundles"
+        "queue and control JSON are reducer-backed while proof surfaces read stored envelopes first for the active run and the latest completed or failed run and replay evidence remains compatibility-backed via run records and trace bundles"
+      ]
+    },
+    "result-envelope-lifecycle": {
+      "title": "Result envelope lifecycle",
+      "canonicalDocs": [
+        "README.md",
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/12-result-envelope-proof-lifecycle.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 12,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "structured result envelopes under .wave/state/results",
+        "wave-results persistence and validation",
+        "immutable attempt-scoped result storage",
+        "explicit legacy compatibility adapters for older attempts"
+      ]
+    },
+    "proof-lifecycle-spine": {
+      "title": "Proof lifecycle spine",
+      "canonicalDocs": [
+        "README.md",
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/12-result-envelope-proof-lifecycle.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 12,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "app-server and CLI proof views resolve stored envelopes first",
+        "latest relevant active-or-latest-completed-or-failed run lookup",
+        "proof_source distinguishes structured-envelope from compatibility-adapter",
+        "trace readback preserves canonical envelope references while replay ratification remains compatibility-backed through run and trace artifacts"
+      ]
+    },
+    "envelope-first-closure": {
+      "title": "Envelope-first closure",
+      "canonicalDocs": [
+        "README.md",
+        "docs/implementation/rust-codex-refactor.md",
+        "waves/12-result-envelope-proof-lifecycle.md"
+      ],
+      "currentLevel": "repo-landed",
+      "promotions": [
+        {
+          "wave": 12,
+          "target": "repo-landed"
+        }
+      ],
+      "proofSurfaces": [
+        "runtime closure acceptance from envelope.closure",
+        "closure-gate input prefers stored structured envelopes",
+        "doc-delta and closure state are machine-readable at the result layer",
+        "legacy marker interpretation is confined to explicit compatibility adapters"
       ]
     },
     "codex-launcher-substrate": {
@@ -342,7 +418,7 @@
         "launcher runtime wiring",
         "Codex execution flow",
         "agent lifecycle management",
-        "compatibility run artifacts for queue, proof lifecycle, and replay"
+        "structured result envelopes for proof and closure, plus compatibility run artifacts for queue/control and replay"
       ]
     },
     "project-scoped-codex-home": {
@@ -387,7 +463,7 @@
         "terminal UI tests",
         "operator-visible queue selection and rerun controls",
         "reducer-backed queue and control panel projections",
-        "proof and replay lines still read compatibility-backed artifacts"
+        "proof lines read stored envelopes first while replay lines still read compatibility-backed artifacts"
       ]
     },
     "operator-status-tabs": {
@@ -411,7 +487,7 @@
         "narrow-terminal fallback",
         "shared reducer-backed queue/control truth with in-place operator actions",
         "primary operator affordances for queue selection and rerun intent",
-        "queue/control tabs are reducer-backed while proof/replay remain compatibility-backed"
+        "queue/control tabs are reducer-backed while proof is envelope-first and replay remains compatibility-backed"
       ]
     },
     "dark-factory-preflight": {

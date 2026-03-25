@@ -317,6 +317,7 @@ File ownership (only touch these paths):
 - doc-impact: owned
 
 ### Deliverables
+- Cargo.lock
 - crates/wave-gates/Cargo.toml
 - crates/wave-runtime/Cargo.toml
 - crates/wave-trace/Cargo.toml
@@ -331,6 +332,7 @@ File ownership (only touch these paths):
 - docs/reference/runtime-config/README.md
 
 ### File ownership
+- Cargo.lock
 - crates/wave-gates/Cargo.toml
 - crates/wave-runtime/Cargo.toml
 - crates/wave-trace/Cargo.toml
@@ -377,6 +379,7 @@ Specific expectations:
 - emit the final [wave-proof], [wave-doc-delta], and [wave-component] markers as plain lines by themselves at the end of the output
 
 File ownership (only touch these paths):
+- Cargo.lock
 - crates/wave-gates/Cargo.toml
 - crates/wave-runtime/Cargo.toml
 - crates/wave-trace/Cargo.toml
