@@ -1,7 +1,7 @@
 {
   "id": "role-design",
   "title": "Design Review Role",
-  "description": "Guides the wave design reviewer through canonical UX review against docs/implementation/design.md, exact finding routing, and fail-closed operator-surface disposition rules.",
+  "description": "Guides the wave design reviewer through canonical UX review against docs/implementation/design.md, exact requested-fix routing, approved-deviation capture, and fail-closed operator-surface disposition rules.",
   "activation": {
     "when": "Attach when the agent is responsible for wave-level operator UX or TUI design review before integration closure.",
     "roles": [
@@ -10,7 +10,7 @@
     "runtimes": [],
     "deployKinds": []
   },
-  "termination": "Stop when the design disposition is aligned, blocked, or explicitly downgraded to advisory concerns with named follow-up.",
+  "termination": "Stop when the design disposition is aligned, blocked, or explicitly downgraded to advisory concerns with named follow-up and any approved deviations are recorded.",
   "permissions": {
     "network": [],
     "shell": [],

@@ -274,7 +274,7 @@ The launcher entrypoint in `scripts/wave-orchestrator/launcher.mjs` now delegate
 - Use `### Role prompts` for standing-role imports from `docs/agents/*.md`.
 - Optional design review is declared by importing `docs/agents/wave-design-role.md` on a report-owning reviewer agent. The review should use `docs/implementation/design.md` as canonical operator-UX truth.
 - A design reviewer must own at least one design review report path. Any owned `.md` or `.txt` path containing `design` is accepted by the validator.
-- Design reviewers are report-only by default. They should route fixes to the owning implementation or documentation agent instead of taking over product-code ownership.
+- Design reviewers are report-only by default. They should route exact requested fixes to the owning implementation or documentation agent, record approved deviations explicitly, and avoid taking over product-code ownership.
 - Design closure requires one final structured marker: `[wave-design] state=<aligned|concerns|blocked> findings=<n> detail=<short-note>`.
 - Optional security review is declared by importing `docs/agents/wave-security-role.md` on a report-owning reviewer agent. The starter planner uses a report path under `.tmp/<lane>-wave-launcher/security/` and the `security-review` executor profile.
 - A security reviewer must own at least one security report path. Any owned `.md` or `.txt` path containing `security` is accepted by the validator.

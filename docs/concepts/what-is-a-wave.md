@@ -99,7 +99,7 @@ The starter runtime expects three standard closure roles plus optional review sp
 - `E0`
   Optional `cont-EVAL` for iterative benchmark or output tuning; report-only by default, implementation-owning only when explicitly assigned non-report files
 - `A6`
-  Optional design reviewer; report-only by default and used to review operator-facing UX against `docs/implementation/design.md` before integration closure
+  Optional design reviewer; report-only by default and used to review operator-facing UX against `docs/implementation/design.md` before integration closure, with exact requested fixes and approved deviations recorded in the report
 - `A7`
   Optional security reviewer; report-only by default and used to publish a threat-model-first security review before integration closure
 
@@ -146,7 +146,7 @@ If you need the narrower supporting pages, see [runtime-agnostic-orchestration.m
 Current live waves are strict about closure artifacts:
 
 - `cont-EVAL` must emit a structured `[wave-eval]` marker whose `target_ids` matches the declared eval targets and whose `benchmark_ids` enumerates the executed benchmark set.
-- Design reviewers must leave a design review report and emit a final `[wave-design]` marker with `state=<aligned|concerns|blocked>` and finding count.
+- Design reviewers must leave a design review report with canonical checks, findings, requested fixes, approved deviations, and final disposition, then emit a final `[wave-design]` marker with `state=<aligned|concerns|blocked>` and finding count.
 - Security reviewers must leave a security review report and emit a final `[wave-security]` marker with `state=<clear|concerns|blocked>`, finding count, and approval count.
 - `cont-QA` must emit both a final `Verdict:` line and a final `[wave-gate]` marker.
 - Replay keeps read-only compatibility with older traces and older evaluator-era artifacts, but live waves do not pass on verdict-only or underspecified closure markers.

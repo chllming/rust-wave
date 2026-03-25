@@ -152,7 +152,7 @@ For self-host dogfooding, keep the operational loop concrete:
 
 The repo uses the same closure model across parser, lint, and queue status:
 
-- `A6` is an optional design reviewer and owns `[wave-design]` when a wave includes operator-surface or TUI ergonomics review
+- `A6` is an optional report-only design reviewer and owns `[wave-design]` when a wave includes operator-surface or TUI ergonomics review
 - `A7` is an optional security reviewer and owns `[wave-security]` when a wave includes security review
 - `A8` is the integration steward and owns `[wave-integration]`
 - `A9` is the documentation steward and owns `[wave-doc-closure]`
@@ -169,7 +169,7 @@ Do not assume closure agents will absorb missing implementation work. Their job 
 
 Practical closure boundaries:
 
-- `A6` reviews landed operator-facing UX against `docs/implementation/design.md` and routes exact design fixes without taking implementation ownership.
+- `A6` reviews landed operator-facing UX against `docs/implementation/design.md`, records exact requested fixes plus approved deviations, and routes those fixes without taking implementation ownership.
 - `A7` reviews security posture and routes exact security fixes without taking implementation ownership.
 - `A8` reconciles landed slices and integration claims. It should not take implementation ownership through the side door.
 - `A9` updates shared-plan or closure documentation only.

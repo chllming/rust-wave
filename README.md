@@ -235,7 +235,7 @@ Closure agents stay lighter, but they are still structured:
 
 Closure roles stay distinct:
 
-- `A6` is optional design review and ends with `[wave-design]` when the wave includes operator-surface or TUI ergonomics review
+- `A6` is optional report-only design review and ends with `[wave-design]` when the wave includes operator-surface or TUI ergonomics review
 - `A7` is optional security review and ends with `[wave-security]` when the wave includes threat-model-first review
 - `A8` integrates and ends with `[wave-integration]`
 - `A9` closes documentation and ends with `[wave-doc-closure]`
@@ -272,7 +272,7 @@ For future waves, write the spec as if `wave lint` were the first reviewer:
 
 1. declare the wave-level frontmatter, commit message, component promotions, deploy environments, and Context7 defaults
 2. give each implementation agent concrete deliverables, a closed file-ownership slice, components, capabilities, exit contract fields, skills, and implementation markers
-3. keep `A8`, `A9`, and `A0` present with closure-only owned files, role-prompt paths, and only the marker family each role owns; add optional specialist reviewers such as `A6` design review only when the wave actually needs them
+3. keep `A8`, `A9`, and `A0` present with closure-only owned files, role-prompt paths, and only the marker family each role owns; add optional specialist reviewers such as `A6` design review only when the wave actually needs a report-only UX or operator-surface review with exact requested fixes
 4. restate the exact owned paths inside each agent's `### Prompt`; the prompt and `### File ownership` section must match
 5. run `cargo run -p wave-cli -- draft`, `cargo run -p wave-cli -- lint --json`, and `cargo run -p wave-cli -- doctor --json` before treating the wave as ready
 
