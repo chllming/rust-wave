@@ -12,6 +12,14 @@ use wave_dark_factory::FindingSeverity;
 use wave_dark_factory::LintFinding;
 use wave_dark_factory::SkillCatalogIssue;
 use wave_dark_factory::has_errors;
+use wave_domain::SchedulerBudget;
+use wave_domain::SchedulerBudgetRecord;
+use wave_domain::SchedulerEventPayload;
+use wave_domain::SchedulerOwner;
+use wave_domain::TaskLeaseRecord;
+use wave_domain::TaskLeaseState;
+use wave_domain::WaveClaimRecord;
+use wave_events::SchedulerEvent;
 use wave_gates::CompatibilityRunFacts;
 use wave_gates::CompatibilityRunInput;
 use wave_gates::DependencyGateVerdict;
@@ -30,6 +38,9 @@ pub enum WaveBlockerKind {
     Dependency,
     Lint,
     Closure,
+    Ownership,
+    LeaseExpired,
+    Budget,
     ActiveRun,
     AlreadyCompleted,
     Other,
@@ -39,6 +50,7 @@ pub enum WaveBlockerKind {
 #[serde(rename_all = "snake_case")]
 pub enum QueueReadinessState {
     Ready,
+    Claimed,
     Blocked,
     Active,
     Completed,
@@ -54,9 +66,62 @@ pub struct WaveBlockerState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WaveReadinessState {
     pub state: QueueReadinessState,
+    pub planning_ready: bool,
     pub claimable: bool,
     pub reasons: Vec<WaveBlockerState>,
     pub primary_reason: Option<WaveBlockerState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SchedulerOwnerState {
+    pub scheduler_id: String,
+    pub scheduler_path: String,
+    pub runtime: Option<String>,
+    pub executor: Option<String>,
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WaveClaimStateView {
+    pub claim_id: String,
+    pub owner: SchedulerOwnerState,
+    pub claimed_at_ms: u128,
+    pub released_at_ms: Option<u128>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TaskLeaseStateView {
+    pub lease_id: String,
+    pub task_id: String,
+    pub claim_id: Option<String>,
+    pub owner: SchedulerOwnerState,
+    pub state: TaskLeaseState,
+    pub granted_at_ms: u128,
+    pub heartbeat_at_ms: Option<u128>,
+    pub expires_at_ms: Option<u128>,
+    pub finished_at_ms: Option<u128>,
+    pub stale: bool,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SchedulerBudgetState {
+    pub max_active_wave_claims: Option<u32>,
+    pub max_active_task_leases: Option<u32>,
+    pub active_wave_claims: usize,
+    pub active_task_leases: usize,
+    pub budget_blocked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WaveOwnershipState {
+    pub claim: Option<WaveClaimStateView>,
+    pub active_leases: Vec<TaskLeaseStateView>,
+    pub stale_leases: Vec<TaskLeaseStateView>,
+    pub contention_reasons: Vec<String>,
+    pub blocked_by_owner: Option<SchedulerOwnerState>,
+    pub budget: SchedulerBudgetState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -64,7 +129,9 @@ pub struct QueueReadinessProjection {
     pub next_ready_wave_ids: Vec<u32>,
     pub next_ready_wave_id: Option<u32>,
     pub claimable_wave_ids: Vec<u32>,
+    pub claimed_wave_ids: Vec<u32>,
     pub ready_wave_count: usize,
+    pub claimed_wave_count: usize,
     pub blocked_wave_count: usize,
     pub active_wave_count: usize,
     pub completed_wave_count: usize,
@@ -84,6 +151,9 @@ pub struct WaveBlockerFlags {
     pub dependency: bool,
     pub lint: bool,
     pub closure: bool,
+    pub ownership: bool,
+    pub lease_expired: bool,
+    pub budget: bool,
     pub active_run: bool,
     pub already_completed: bool,
     pub other: bool,
@@ -126,6 +196,7 @@ pub struct WavePlanningState {
     pub blockers: WaveBlockerFlags,
     pub lint_errors: usize,
     pub ready: bool,
+    pub ownership: WaveOwnershipState,
     pub agents: WaveAgentCounts,
     pub closure: WaveClosureFacts,
     pub lifecycle: WaveLifecycleSummary,
@@ -164,6 +235,9 @@ pub struct QueueBlockerSummary {
     pub dependency: usize,
     pub lint: usize,
     pub closure: usize,
+    pub ownership: usize,
+    pub lease_expired: usize,
+    pub budget: usize,
     pub active_run: usize,
     pub already_completed: usize,
     pub other: usize,
@@ -174,6 +248,9 @@ pub struct QueueBlockerWaves {
     pub dependency: Vec<WaveRef>,
     pub lint: Vec<WaveRef>,
     pub closure: Vec<WaveRef>,
+    pub ownership: Vec<WaveRef>,
+    pub lease_expired: Vec<WaveRef>,
+    pub budget: Vec<WaveRef>,
     pub active_run: Vec<WaveRef>,
     pub already_completed: Vec<WaveRef>,
     pub other: Vec<WaveRef>,
@@ -196,6 +273,7 @@ pub struct BlockedWaveProjection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct QueueProjection {
     pub ready: Vec<WaveRef>,
+    pub claimed: Vec<WaveRef>,
     pub active: Vec<WaveRef>,
     pub completed: Vec<WaveRef>,
     pub blocked: Vec<BlockedWaveProjection>,
@@ -244,12 +322,47 @@ pub struct PlanningReducerState {
     pub has_errors: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+struct SchedulerReducerState {
+    waves: HashMap<u32, SchedulerWaveState>,
+    budget: Option<SchedulerBudgetRecord>,
+    reference_time_ms: u128,
+    active_wave_claims: usize,
+    active_task_leases: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SchedulerWaveState {
+    claim: Option<WaveClaimRecord>,
+    active_leases: Vec<TaskLeaseRecord>,
+    stale_leases: Vec<TaskLeaseRecord>,
+    contention_reasons: Vec<String>,
+}
+
 pub fn reduce_planning_state(
     waves: &[WaveDocument],
     findings: &[LintFinding],
     skill_catalog_issues: &[SkillCatalogIssue],
     latest_runs: &HashMap<u32, CompatibilityRunInput>,
     rerun_wave_ids: &HashSet<u32>,
+) -> PlanningReducerState {
+    reduce_planning_state_with_scheduler(
+        waves,
+        findings,
+        skill_catalog_issues,
+        latest_runs,
+        rerun_wave_ids,
+        &[],
+    )
+}
+
+pub fn reduce_planning_state_with_scheduler(
+    waves: &[WaveDocument],
+    findings: &[LintFinding],
+    skill_catalog_issues: &[SkillCatalogIssue],
+    latest_runs: &HashMap<u32, CompatibilityRunInput>,
+    rerun_wave_ids: &HashSet<u32>,
+    scheduler_events: &[SchedulerEvent],
 ) -> PlanningReducerState {
     let mut findings_by_wave: HashMap<u32, usize> = HashMap::new();
     for finding in findings {
@@ -258,6 +371,7 @@ pub fn reduce_planning_state(
         }
     }
 
+    let scheduler_state = reduce_scheduler_events(scheduler_events);
     let mut waves_state = Vec::new();
     for wave in waves {
         let latest_run = latest_runs.get(&wave.metadata.id);
@@ -287,13 +401,18 @@ pub fn reduce_planning_state(
             &closure,
             &run_gate,
         );
-        let blocked_by = planning_gate.blocking_reasons.clone();
+        let planning_ready = planning_gate.blocking_reasons.is_empty();
+        let ownership =
+            build_wave_ownership_state(&scheduler_state, wave.metadata.id, planning_ready);
+        let blocked_by =
+            combined_blockers(&planning_gate.blocking_reasons, &ownership, planning_ready);
         let blocker_state = classify_blockers(&blocked_by);
         let blockers = classify_blocker_flags(&blocker_state);
         let readiness = classify_wave_readiness(
             run_gate.completed,
             run_gate.actively_running,
-            &planning_gate,
+            planning_ready,
+            &ownership,
             &blocker_state,
         );
 
@@ -307,6 +426,7 @@ pub fn reduce_planning_state(
             blockers,
             lint_errors,
             ready: readiness.claimable,
+            ownership,
             agents: WaveAgentCounts {
                 total: wave.agents.len(),
                 implementation: wave.implementation_agents().count(),
@@ -334,10 +454,19 @@ pub fn reduce_planning_state(
         .collect::<Vec<_>>();
     let next_ready_wave_id = next_ready_wave_ids.first().copied();
     let claimable_wave_ids = next_ready_wave_ids.clone();
+    let claimed_wave_ids = waves_state
+        .iter()
+        .filter(|wave| matches!(wave.readiness.state, QueueReadinessState::Claimed))
+        .map(|wave| wave.id)
+        .collect::<Vec<_>>();
 
     let ready_waves = waves_state
         .iter()
         .filter(|wave| matches!(wave.readiness.state, QueueReadinessState::Ready))
+        .count();
+    let claimed_waves = waves_state
+        .iter()
+        .filter(|wave| matches!(wave.readiness.state, QueueReadinessState::Claimed))
         .count();
     let active_waves = waves_state
         .iter()
@@ -359,10 +488,30 @@ pub fn reduce_planning_state(
         .iter()
         .map(|wave| wave.closure.missing_agent_ids.len())
         .sum();
+    let ownership_blocked_waves = waves_state
+        .iter()
+        .filter(|wave| wave.blockers.ownership)
+        .count();
+    let budget_blocked_waves = waves_state
+        .iter()
+        .filter(|wave| wave.blockers.budget)
+        .count();
+    let stale_lease_waves = waves_state
+        .iter()
+        .filter(|wave| wave.blockers.lease_expired)
+        .count();
     let queue_ready_reason = if !next_ready_wave_ids.is_empty() {
         "ready waves are available to claim".to_string()
+    } else if budget_blocked_waves > 0 {
+        "capacity is exhausted by scheduler budget".to_string()
+    } else if claimed_waves > 0 {
+        "waves are already claimed by scheduler authority".to_string()
     } else if active_waves > 0 {
         "active waves are still running".to_string()
+    } else if stale_lease_waves > 0 {
+        "stale scheduler leases require attention".to_string()
+    } else if ownership_blocked_waves > 0 {
+        "scheduler ownership prevents new claims".to_string()
     } else if blocked_waves > 0 {
         "all remaining waves are blocked".to_string()
     } else {
@@ -392,6 +541,7 @@ pub fn reduce_planning_state(
     };
 
     let mut queue_ready = Vec::new();
+    let mut queue_claimed = Vec::new();
     let mut queue_active = Vec::new();
     let mut queue_completed = Vec::new();
     let mut queue_blocked = Vec::new();
@@ -412,6 +562,9 @@ pub fn reduce_planning_state(
 
         if wave.ready {
             queue_ready.push(wave_ref.clone());
+        }
+        if matches!(wave.readiness.state, QueueReadinessState::Claimed) {
+            queue_claimed.push(wave_ref.clone());
         }
         if matches!(wave.readiness.state, QueueReadinessState::Active) {
             queue_active.push(wave_ref.clone());
@@ -443,10 +596,7 @@ pub fn reduce_planning_state(
             accumulate_blocker_waves(&mut blocker_waves, &wave_ref, &wave.blockers);
         }
 
-        if !wave.ready
-            && !matches!(wave.readiness.state, QueueReadinessState::Completed)
-            && !matches!(wave.readiness.state, QueueReadinessState::Active)
-        {
+        if matches!(wave.readiness.state, QueueReadinessState::Blocked) {
             queue_blocked.push(BlockedWaveProjection {
                 id: wave.id,
                 slug: wave.slug.clone(),
@@ -479,6 +629,7 @@ pub fn reduce_planning_state(
         },
         queue: QueueProjection {
             ready: queue_ready,
+            claimed: queue_claimed,
             active: queue_active,
             completed: queue_completed,
             blocked: queue_blocked,
@@ -488,11 +639,13 @@ pub fn reduce_planning_state(
                 next_ready_wave_ids,
                 next_ready_wave_id,
                 claimable_wave_ids,
+                claimed_wave_ids,
                 ready_wave_count: ready_waves,
+                claimed_wave_count: claimed_waves,
                 blocked_wave_count: blocked_waves,
                 active_wave_count: active_waves,
                 completed_wave_count: completed_waves,
-                queue_ready: next_ready_wave_id.is_some() || active_waves > 0,
+                queue_ready: next_ready_wave_id.is_some() || claimed_waves > 0 || active_waves > 0,
                 queue_ready_reason,
             },
         },
@@ -528,6 +681,24 @@ fn classify_blockers(blocked_by: &[String]) -> Vec<WaveBlockerState> {
                     raw: blocker.clone(),
                     detail: Some(detail.to_string()),
                 }
+            } else if let Some(detail) = blocker.strip_prefix("ownership:") {
+                WaveBlockerState {
+                    kind: WaveBlockerKind::Ownership,
+                    raw: blocker.clone(),
+                    detail: Some(detail.to_string()),
+                }
+            } else if let Some(detail) = blocker.strip_prefix("lease-expired:") {
+                WaveBlockerState {
+                    kind: WaveBlockerKind::LeaseExpired,
+                    raw: blocker.clone(),
+                    detail: Some(detail.to_string()),
+                }
+            } else if let Some(detail) = blocker.strip_prefix("budget:") {
+                WaveBlockerState {
+                    kind: WaveBlockerKind::Budget,
+                    raw: blocker.clone(),
+                    detail: Some(detail.to_string()),
+                }
             } else if let Some(detail) = blocker.strip_prefix("active-run:") {
                 WaveBlockerState {
                     kind: WaveBlockerKind::ActiveRun,
@@ -558,6 +729,9 @@ fn classify_blocker_flags(blocker_state: &[WaveBlockerState]) -> WaveBlockerFlag
             WaveBlockerKind::Dependency => flags.dependency = true,
             WaveBlockerKind::Lint => flags.lint = true,
             WaveBlockerKind::Closure => flags.closure = true,
+            WaveBlockerKind::Ownership => flags.ownership = true,
+            WaveBlockerKind::LeaseExpired => flags.lease_expired = true,
+            WaveBlockerKind::Budget => flags.budget = true,
             WaveBlockerKind::ActiveRun => flags.active_run = true,
             WaveBlockerKind::AlreadyCompleted => flags.already_completed = true,
             WaveBlockerKind::Other => flags.other = true,
@@ -569,17 +743,27 @@ fn classify_blocker_flags(blocker_state: &[WaveBlockerState]) -> WaveBlockerFlag
 fn classify_wave_readiness(
     completed: bool,
     actively_running: bool,
-    planning_gate: &PlanningGateVerdict,
+    planning_ready: bool,
+    ownership: &WaveOwnershipState,
     blocker_state: &[WaveBlockerState],
 ) -> WaveReadinessState {
-    let claimable = !completed
+    let claimed = ownership.claim.is_some();
+    let active_by_lease = !ownership.active_leases.is_empty();
+    let claimable = planning_ready
+        && !completed
         && !actively_running
-        && blocker_state.is_empty()
-        && planning_gate.blocking_reasons.is_empty();
+        && !active_by_lease
+        && !claimed
+        && ownership.stale_leases.is_empty()
+        && ownership.contention_reasons.is_empty()
+        && !ownership.budget.budget_blocked
+        && blocker_state.is_empty();
     let state = if completed {
         QueueReadinessState::Completed
-    } else if actively_running {
+    } else if actively_running || active_by_lease {
         QueueReadinessState::Active
+    } else if claimed {
+        QueueReadinessState::Claimed
     } else if claimable {
         QueueReadinessState::Ready
     } else {
@@ -590,6 +774,7 @@ fn classify_wave_readiness(
 
     WaveReadinessState {
         state,
+        planning_ready,
         claimable,
         reasons,
         primary_reason,
@@ -615,6 +800,12 @@ fn accumulate_blockers(summary: &mut QueueBlockerSummary, blocked_by: &[String])
             summary.lint += 1;
         } else if blocker.starts_with("closure:") {
             summary.closure += 1;
+        } else if blocker.starts_with("ownership:") {
+            summary.ownership += 1;
+        } else if blocker.starts_with("lease-expired:") {
+            summary.lease_expired += 1;
+        } else if blocker.starts_with("budget:") {
+            summary.budget += 1;
         } else if blocker.starts_with("active-run:") {
             summary.active_run += 1;
         } else if blocker == "already-completed" {
@@ -639,6 +830,15 @@ fn accumulate_blocker_waves(
     if flags.closure {
         summary.closure.push(wave.clone());
     }
+    if flags.ownership {
+        summary.ownership.push(wave.clone());
+    }
+    if flags.lease_expired {
+        summary.lease_expired.push(wave.clone());
+    }
+    if flags.budget {
+        summary.budget.push(wave.clone());
+    }
     if flags.active_run {
         summary.active_run.push(wave.clone());
     }
@@ -647,6 +847,286 @@ fn accumulate_blocker_waves(
     }
     if flags.other {
         summary.other.push(wave.clone());
+    }
+}
+
+fn reduce_scheduler_events(events: &[SchedulerEvent]) -> SchedulerReducerState {
+    let mut claims_by_id = HashMap::new();
+    let mut leases_by_id = HashMap::new();
+    let mut budget = None;
+    let mut reference_time_ms = 0;
+    let mut sorted_events = events.to_vec();
+    sorted_events.sort_by_key(|event| (event.created_at_ms, event.event_id.clone()));
+
+    for event in sorted_events {
+        reference_time_ms = reference_time_ms.max(event.created_at_ms);
+        match event.payload {
+            SchedulerEventPayload::WaveClaimUpdated { claim } => {
+                claims_by_id.insert(claim.claim_id.clone(), claim);
+            }
+            SchedulerEventPayload::TaskLeaseUpdated { lease } => {
+                leases_by_id.insert(lease.lease_id.clone(), lease);
+            }
+            SchedulerEventPayload::SchedulerBudgetUpdated { budget: record } => {
+                budget = select_latest_budget(budget, record);
+            }
+            SchedulerEventPayload::None => {}
+        }
+    }
+
+    let mut waves: HashMap<u32, SchedulerWaveState> = HashMap::new();
+    for claim in claims_by_id.into_values() {
+        let state = waves.entry(claim.wave_id).or_default();
+        if claim.state.is_held() {
+            if let Some(existing) = state.claim.as_ref() {
+                if existing.claim_id != claim.claim_id {
+                    state.contention_reasons.push(format!(
+                        "multiple held claims detected: {} and {}",
+                        existing.claim_id, claim.claim_id
+                    ));
+                    if is_newer_claim(&claim, existing) {
+                        state.claim = Some(claim);
+                    }
+                }
+            } else {
+                state.claim = Some(claim);
+            }
+        }
+    }
+
+    for lease in leases_by_id.into_values() {
+        let state = waves.entry(lease.wave_id).or_default();
+        let stale = lease_is_stale(&lease, reference_time_ms);
+        if lease.state.is_active() && !stale {
+            state.active_leases.push(lease);
+        } else if stale
+            || matches!(
+                lease.state,
+                TaskLeaseState::Expired | TaskLeaseState::Revoked
+            )
+        {
+            state.stale_leases.push(lease);
+        }
+    }
+
+    for state in waves.values_mut() {
+        state
+            .active_leases
+            .sort_by_key(|lease| (lease.granted_at_ms, lease.lease_id.as_str().to_string()));
+        state.stale_leases.sort_by_key(|lease| {
+            (
+                lease
+                    .finished_at_ms
+                    .unwrap_or(lease.expires_at_ms.unwrap_or(lease.granted_at_ms)),
+                lease.lease_id.as_str().to_string(),
+            )
+        });
+        state.contention_reasons.sort();
+        state.contention_reasons.dedup();
+    }
+
+    let active_wave_claims = waves.values().filter(|state| state.claim.is_some()).count();
+    let active_task_leases = waves
+        .values()
+        .map(|state| state.active_leases.len())
+        .sum::<usize>();
+
+    SchedulerReducerState {
+        waves,
+        budget,
+        reference_time_ms,
+        active_wave_claims,
+        active_task_leases,
+    }
+}
+
+fn build_wave_ownership_state(
+    scheduler_state: &SchedulerReducerState,
+    wave_id: u32,
+    planning_ready: bool,
+) -> WaveOwnershipState {
+    let wave_state = scheduler_state.waves.get(&wave_id);
+    let claim = wave_state.and_then(|state| state.claim.as_ref().map(convert_claim_view));
+    let active_leases = wave_state
+        .map(|state| {
+            state
+                .active_leases
+                .iter()
+                .map(|lease| convert_lease_view(lease, scheduler_state.reference_time_ms))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let stale_leases = wave_state
+        .map(|state| {
+            state
+                .stale_leases
+                .iter()
+                .map(|lease| convert_lease_view(lease, scheduler_state.reference_time_ms))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let contention_reasons = wave_state
+        .map(|state| state.contention_reasons.clone())
+        .unwrap_or_default();
+    let blocked_by_owner = claim.as_ref().map(|claim| claim.owner.clone());
+    let budget = build_budget_state(scheduler_state, planning_ready, claim.is_some());
+
+    WaveOwnershipState {
+        claim,
+        active_leases,
+        stale_leases,
+        contention_reasons,
+        blocked_by_owner,
+        budget,
+    }
+}
+
+fn build_budget_state(
+    scheduler_state: &SchedulerReducerState,
+    planning_ready: bool,
+    already_claimed: bool,
+) -> SchedulerBudgetState {
+    let limits = scheduler_state
+        .budget
+        .as_ref()
+        .map(|record| record.budget.clone())
+        .unwrap_or_else(SchedulerBudget::default);
+    let wave_claim_limit_hit = limits
+        .max_active_wave_claims
+        .map(|limit| scheduler_state.active_wave_claims >= limit as usize)
+        .unwrap_or(false);
+    let task_lease_limit_hit = limits
+        .max_active_task_leases
+        .map(|limit| scheduler_state.active_task_leases >= limit as usize)
+        .unwrap_or(false);
+
+    SchedulerBudgetState {
+        max_active_wave_claims: limits.max_active_wave_claims,
+        max_active_task_leases: limits.max_active_task_leases,
+        active_wave_claims: scheduler_state.active_wave_claims,
+        active_task_leases: scheduler_state.active_task_leases,
+        budget_blocked: planning_ready
+            && !already_claimed
+            && (wave_claim_limit_hit || task_lease_limit_hit),
+    }
+}
+
+fn combined_blockers(
+    planning_blockers: &[String],
+    ownership: &WaveOwnershipState,
+    planning_ready: bool,
+) -> Vec<String> {
+    let mut blocked_by = planning_blockers.to_vec();
+
+    if let Some(owner) = ownership.blocked_by_owner.as_ref() {
+        blocked_by.push(format!("ownership:claimed-by:{}", owner.scheduler_path));
+    }
+    for reason in &ownership.contention_reasons {
+        blocked_by.push(format!("ownership:contention:{reason}"));
+    }
+    for lease in &ownership.stale_leases {
+        blocked_by.push(format!(
+            "lease-expired:{}:{}",
+            lease.task_id,
+            lease.state_label()
+        ));
+    }
+    if planning_ready && ownership.budget.budget_blocked {
+        blocked_by.push(format!(
+            "budget:wave-claims:{}/{}",
+            ownership.budget.active_wave_claims,
+            ownership
+                .budget
+                .max_active_wave_claims
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unbounded".to_string())
+        ));
+    }
+
+    blocked_by
+}
+
+fn convert_claim_view(claim: &WaveClaimRecord) -> WaveClaimStateView {
+    WaveClaimStateView {
+        claim_id: claim.claim_id.as_str().to_string(),
+        owner: convert_owner_state(&claim.owner),
+        claimed_at_ms: claim.claimed_at_ms,
+        released_at_ms: claim.released_at_ms,
+        detail: claim.detail.clone(),
+    }
+}
+
+fn convert_lease_view(lease: &TaskLeaseRecord, reference_time_ms: u128) -> TaskLeaseStateView {
+    TaskLeaseStateView {
+        lease_id: lease.lease_id.as_str().to_string(),
+        task_id: lease.task_id.as_str().to_string(),
+        claim_id: lease
+            .claim_id
+            .as_ref()
+            .map(|claim_id| claim_id.as_str().to_string()),
+        owner: convert_owner_state(&lease.owner),
+        state: lease.state,
+        granted_at_ms: lease.granted_at_ms,
+        heartbeat_at_ms: lease.heartbeat_at_ms,
+        expires_at_ms: lease.expires_at_ms,
+        finished_at_ms: lease.finished_at_ms,
+        stale: lease_is_stale(lease, reference_time_ms),
+        detail: lease.detail.clone(),
+    }
+}
+
+fn convert_owner_state(owner: &SchedulerOwner) -> SchedulerOwnerState {
+    SchedulerOwnerState {
+        scheduler_id: owner.scheduler_id.clone(),
+        scheduler_path: owner.scheduler_path.clone(),
+        runtime: owner.runtime.clone(),
+        executor: owner.executor.clone(),
+        session_id: owner.session_id.clone(),
+    }
+}
+
+fn lease_is_stale(lease: &TaskLeaseRecord, reference_time_ms: u128) -> bool {
+    matches!(
+        lease.state,
+        TaskLeaseState::Expired | TaskLeaseState::Revoked
+    ) || lease
+        .expires_at_ms
+        .map(|expires_at_ms| expires_at_ms <= reference_time_ms)
+        .unwrap_or(false)
+}
+
+fn is_newer_claim(candidate: &WaveClaimRecord, current: &WaveClaimRecord) -> bool {
+    (candidate.claimed_at_ms, candidate.claim_id.as_str())
+        > (current.claimed_at_ms, current.claim_id.as_str())
+}
+
+fn select_latest_budget(
+    current: Option<SchedulerBudgetRecord>,
+    candidate: SchedulerBudgetRecord,
+) -> Option<SchedulerBudgetRecord> {
+    match current {
+        Some(current)
+            if (current.updated_at_ms, current.budget_id.as_str())
+                >= (candidate.updated_at_ms, candidate.budget_id.as_str()) =>
+        {
+            Some(current)
+        }
+        _ => Some(candidate),
+    }
+}
+
+trait LeaseStateLabel {
+    fn state_label(&self) -> &'static str;
+}
+
+impl LeaseStateLabel for TaskLeaseStateView {
+    fn state_label(&self) -> &'static str {
+        match self.state {
+            TaskLeaseState::Granted => "granted",
+            TaskLeaseState::Released => "released",
+            TaskLeaseState::Expired => "expired",
+            TaskLeaseState::Revoked => "revoked",
+        }
     }
 }
 
@@ -659,6 +1139,20 @@ mod tests {
     use wave_dark_factory::FindingSeverity;
     use wave_domain::ClosureDisposition;
     use wave_domain::GateDisposition;
+    use wave_domain::SchedulerBudget;
+    use wave_domain::SchedulerBudgetId;
+    use wave_domain::SchedulerBudgetRecord;
+    use wave_domain::SchedulerEventPayload;
+    use wave_domain::SchedulerOwner;
+    use wave_domain::TaskLeaseId;
+    use wave_domain::TaskLeaseRecord;
+    use wave_domain::TaskLeaseState;
+    use wave_domain::WaveClaimId;
+    use wave_domain::WaveClaimRecord;
+    use wave_domain::WaveClaimState;
+    use wave_domain::task_id_for_agent;
+    use wave_events::SchedulerEvent;
+    use wave_events::SchedulerEventKind;
     use wave_gates::REQUIRED_CLOSURE_AGENT_IDS;
     use wave_gates::compatibility_run_inputs_by_wave;
     use wave_spec::CompletionLevel;
@@ -1017,6 +1511,139 @@ mod tests {
         );
     }
 
+    #[test]
+    fn scheduler_claim_classifies_wave_as_claimed_without_losing_planning_readiness() {
+        let waves = vec![test_wave(0, Vec::new())];
+        let scheduler_events = vec![claim_acquired_event(
+            0,
+            "claim-wave-0-a",
+            "wave-0-run-a",
+            10,
+        )];
+
+        let state = reduce_with_scheduler(
+            &waves,
+            &[],
+            &[],
+            HashMap::new(),
+            HashSet::new(),
+            scheduler_events,
+        );
+
+        let wave = &state.waves[0];
+        assert!(wave.readiness.planning_ready);
+        assert!(!wave.readiness.claimable);
+        assert_eq!(wave.readiness.state, QueueReadinessState::Claimed);
+        assert!(wave.ownership.claim.is_some());
+        assert_eq!(
+            wave.ownership.claim.as_ref().unwrap().owner.scheduler_path,
+            "wave-runtime/codex"
+        );
+        assert_eq!(state.queue.claimed.len(), 1);
+        assert_eq!(state.queue.claimed[0].id, 0);
+        assert_eq!(state.queue.readiness.claimed_wave_ids, vec![0]);
+        assert_eq!(state.queue.readiness.claimed_wave_count, 1);
+    }
+
+    #[test]
+    fn scheduler_contention_and_budget_block_ready_waves() {
+        let waves = vec![test_wave(0, Vec::new()), test_wave(1, Vec::new())];
+        let scheduler_events = vec![
+            budget_event(1, 1),
+            claim_acquired_event(0, "claim-wave-0-a", "wave-0-run-a", 10),
+            claim_acquired_event(0, "claim-wave-0-b", "wave-0-run-b", 11),
+        ];
+
+        let state = reduce_with_scheduler(
+            &waves,
+            &[],
+            &[],
+            HashMap::new(),
+            HashSet::new(),
+            scheduler_events,
+        );
+
+        let claimed_wave = &state.waves[0];
+        assert_eq!(claimed_wave.readiness.state, QueueReadinessState::Claimed);
+        assert!(claimed_wave.blockers.ownership);
+        assert_eq!(claimed_wave.ownership.contention_reasons.len(), 1);
+
+        let blocked_wave = &state.waves[1];
+        assert_eq!(blocked_wave.readiness.state, QueueReadinessState::Blocked);
+        assert!(blocked_wave.readiness.planning_ready);
+        assert!(blocked_wave.blockers.budget);
+        assert!(
+            blocked_wave
+                .blocked_by
+                .iter()
+                .any(|reason| reason.starts_with("budget:"))
+        );
+        assert_eq!(
+            state.queue.readiness.queue_ready_reason,
+            "capacity is exhausted by scheduler budget"
+        );
+    }
+
+    #[test]
+    fn active_and_stale_leases_are_visible_in_reducer_state() {
+        let waves = vec![test_wave(0, Vec::new()), test_wave(1, Vec::new())];
+        let scheduler_events = vec![
+            claim_acquired_event(0, "claim-wave-0", "wave-0-run", 10),
+            lease_event(
+                0,
+                "claim-wave-0",
+                "wave-0-run",
+                "A1",
+                TaskLeaseState::Granted,
+                11,
+                None,
+            ),
+            claim_acquired_event(1, "claim-wave-1", "wave-1-run", 20),
+            lease_event(
+                1,
+                "claim-wave-1",
+                "wave-1-run",
+                "A1",
+                TaskLeaseState::Expired,
+                21,
+                Some(22),
+            ),
+            lease_event(
+                1,
+                "claim-wave-1",
+                "wave-1-run",
+                "A8",
+                TaskLeaseState::Revoked,
+                23,
+                Some(24),
+            ),
+        ];
+
+        let state = reduce_with_scheduler(
+            &waves,
+            &[],
+            &[],
+            HashMap::new(),
+            HashSet::new(),
+            scheduler_events,
+        );
+
+        let active_wave = &state.waves[0];
+        assert_eq!(active_wave.readiness.state, QueueReadinessState::Active);
+        assert_eq!(active_wave.ownership.active_leases.len(), 1);
+
+        let stale_wave = &state.waves[1];
+        assert_eq!(stale_wave.readiness.state, QueueReadinessState::Claimed);
+        assert_eq!(stale_wave.ownership.stale_leases.len(), 2);
+        assert!(stale_wave.blockers.lease_expired);
+        assert!(
+            stale_wave
+                .blocked_by
+                .iter()
+                .any(|reason| reason.starts_with("lease-expired:wave-01:agent-a1"))
+        );
+    }
+
     fn reduce(
         waves: &[WaveDocument],
         findings: &[LintFinding],
@@ -1031,6 +1658,25 @@ mod tests {
             skill_catalog_issues,
             &latest_runs,
             &rerun_wave_ids,
+        )
+    }
+
+    fn reduce_with_scheduler(
+        waves: &[WaveDocument],
+        findings: &[LintFinding],
+        skill_catalog_issues: &[SkillCatalogIssue],
+        latest_runs: HashMap<u32, WaveRunRecord>,
+        rerun_wave_ids: HashSet<u32>,
+        scheduler_events: Vec<SchedulerEvent>,
+    ) -> PlanningReducerState {
+        let latest_runs = compatibility_run_inputs_by_wave(&latest_runs);
+        reduce_planning_state_with_scheduler(
+            waves,
+            findings,
+            skill_catalog_issues,
+            &latest_runs,
+            &rerun_wave_ids,
+            &scheduler_events,
         )
     }
 
@@ -1201,5 +1847,114 @@ mod tests {
     #[test]
     fn required_closure_agent_ids_stay_stable() {
         assert_eq!(REQUIRED_CLOSURE_AGENT_IDS, ["A0", "A8", "A9"]);
+    }
+
+    fn scheduler_owner(session_id: &str) -> SchedulerOwner {
+        SchedulerOwner {
+            scheduler_id: "wave-runtime".to_string(),
+            scheduler_path: "wave-runtime/codex".to_string(),
+            runtime: Some("codex".to_string()),
+            executor: Some("codex".to_string()),
+            session_id: Some(session_id.to_string()),
+        }
+    }
+
+    fn claim_acquired_event(
+        wave_id: u32,
+        claim_id: &str,
+        session_id: &str,
+        created_at_ms: u128,
+    ) -> SchedulerEvent {
+        let claim = WaveClaimRecord {
+            claim_id: WaveClaimId::new(claim_id),
+            wave_id,
+            state: WaveClaimState::Held,
+            owner: scheduler_owner(session_id),
+            claimed_at_ms: created_at_ms,
+            released_at_ms: None,
+            detail: Some("claim acquired".to_string()),
+        };
+        SchedulerEvent::new(
+            format!("sched-claim-{wave_id}-{claim_id}"),
+            SchedulerEventKind::WaveClaimAcquired,
+        )
+        .with_wave_id(wave_id)
+        .with_claim_id(claim.claim_id.clone())
+        .with_created_at_ms(created_at_ms)
+        .with_correlation_id(session_id)
+        .with_payload(SchedulerEventPayload::WaveClaimUpdated { claim })
+    }
+
+    fn lease_event(
+        wave_id: u32,
+        claim_id: &str,
+        session_id: &str,
+        agent_id: &str,
+        state: TaskLeaseState,
+        granted_at_ms: u128,
+        finished_at_ms: Option<u128>,
+    ) -> SchedulerEvent {
+        let task_id = task_id_for_agent(wave_id, agent_id);
+        let lease = TaskLeaseRecord {
+            lease_id: TaskLeaseId::new(format!("lease-wave-{wave_id}-{agent_id}")),
+            wave_id,
+            task_id: task_id.clone(),
+            claim_id: Some(WaveClaimId::new(claim_id)),
+            state,
+            owner: scheduler_owner(session_id),
+            granted_at_ms,
+            heartbeat_at_ms: Some(granted_at_ms),
+            expires_at_ms: finished_at_ms,
+            finished_at_ms,
+            detail: Some(format!("lease {}", lease_state_name(state))),
+        };
+        let kind = match state {
+            TaskLeaseState::Granted => SchedulerEventKind::TaskLeaseGranted,
+            TaskLeaseState::Released => SchedulerEventKind::TaskLeaseReleased,
+            TaskLeaseState::Expired => SchedulerEventKind::TaskLeaseExpired,
+            TaskLeaseState::Revoked => SchedulerEventKind::TaskLeaseRevoked,
+        };
+        SchedulerEvent::new(
+            format!(
+                "sched-lease-{wave_id}-{agent_id}-{}",
+                lease_state_name(state)
+            ),
+            kind,
+        )
+        .with_wave_id(wave_id)
+        .with_task_id(task_id)
+        .with_claim_id(WaveClaimId::new(claim_id))
+        .with_lease_id(lease.lease_id.clone())
+        .with_created_at_ms(finished_at_ms.unwrap_or(granted_at_ms))
+        .with_correlation_id(session_id)
+        .with_payload(SchedulerEventPayload::TaskLeaseUpdated { lease })
+    }
+
+    fn budget_event(max_active_wave_claims: u32, updated_at_ms: u128) -> SchedulerEvent {
+        let budget = SchedulerBudgetRecord {
+            budget_id: SchedulerBudgetId::new("budget-default"),
+            budget: SchedulerBudget {
+                max_active_wave_claims: Some(max_active_wave_claims),
+                max_active_task_leases: Some(1),
+            },
+            owner: scheduler_owner("budget-bootstrap"),
+            updated_at_ms,
+            detail: Some("serial budget".to_string()),
+        };
+        SchedulerEvent::new(
+            format!("sched-budget-{updated_at_ms}"),
+            SchedulerEventKind::SchedulerBudgetUpdated,
+        )
+        .with_created_at_ms(updated_at_ms)
+        .with_payload(SchedulerEventPayload::SchedulerBudgetUpdated { budget })
+    }
+
+    fn lease_state_name(state: TaskLeaseState) -> &'static str {
+        match state {
+            TaskLeaseState::Granted => "granted",
+            TaskLeaseState::Released => "released",
+            TaskLeaseState::Expired => "expired",
+            TaskLeaseState::Revoked => "revoked",
+        }
     }
 }

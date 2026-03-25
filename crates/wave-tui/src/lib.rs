@@ -1034,6 +1034,23 @@ mod tests {
     use wave_control_plane::WaveReadinessReadModel;
     use wave_control_plane::WaveStatusReadModel;
 
+    fn empty_ownership() -> wave_control_plane::WaveOwnershipState {
+        wave_control_plane::WaveOwnershipState {
+            claim: None,
+            active_leases: Vec::new(),
+            stale_leases: Vec::new(),
+            contention_reasons: Vec::new(),
+            blocked_by_owner: None,
+            budget: wave_control_plane::SchedulerBudgetState {
+                max_active_wave_claims: None,
+                max_active_task_leases: None,
+                active_wave_claims: 0,
+                active_task_leases: 0,
+                budget_blocked: false,
+            },
+        }
+    }
+
     #[test]
     fn wide_layout_keeps_right_side_panel() {
         assert_eq!(shell_layout_mode(140), ShellLayoutMode::Wide);
@@ -1127,6 +1144,7 @@ mod tests {
                 blocker_state: Vec::new(),
                 lint_errors: 0,
                 ready: true,
+                ownership: empty_ownership(),
                 agent_count: 6,
                 implementation_agent_count: 3,
                 closure_agent_count: 3,
@@ -1139,6 +1157,7 @@ mod tests {
                 last_run_status: Some(WaveRunStatus::Running),
                 readiness: WaveReadinessReadModel {
                     state: QueueReadinessStateReadModel::Active,
+                    planning_ready: false,
                     claimable: false,
                     reasons: vec![wave_control_plane::QueueBlockerReadModel {
                         kind: wave_control_plane::QueueBlockerKindReadModel::ActiveRun,
@@ -1378,7 +1397,9 @@ mod tests {
                     next_ready_wave_ids: vec![6],
                     next_ready_wave_id: Some(6),
                     claimable_wave_ids: vec![6],
+                    claimed_wave_ids: Vec::new(),
                     ready_wave_count: 1,
+                    claimed_wave_count: 0,
                     blocked_wave_count: 3,
                     active_wave_count: 1,
                     completed_wave_count: 5,
@@ -1394,6 +1415,7 @@ mod tests {
                     blocker_state: Vec::new(),
                     lint_errors: 0,
                     ready: false,
+                    ownership: empty_ownership(),
                     agent_count: 6,
                     implementation_agent_count: 3,
                     closure_agent_count: 3,
@@ -1414,6 +1436,7 @@ mod tests {
                     last_run_status: Some(WaveRunStatus::Running),
                     readiness: WaveReadinessReadModel {
                         state: QueueReadinessStateReadModel::Active,
+                        planning_ready: false,
                         claimable: false,
                         reasons: vec![wave_control_plane::QueueBlockerReadModel {
                             kind: wave_control_plane::QueueBlockerKindReadModel::ActiveRun,
@@ -1433,11 +1456,15 @@ mod tests {
                 queue_decision: QueueDecisionReadModel {
                     next_claimable_wave_id: Some(6),
                     claimable_wave_ids: vec![6],
+                    claimed_wave_ids: Vec::new(),
                     queue_ready_reason: "ready waves are available to claim".to_string(),
                     blocker_summary: QueueBlockerSummary {
                         dependency: 3,
                         lint: 0,
                         closure: 0,
+                        ownership: 0,
+                        lease_expired: 0,
+                        budget: 0,
                         active_run: 1,
                         already_completed: 5,
                         other: 0,
@@ -1446,9 +1473,10 @@ mod tests {
                     lines: vec![
                         "queue decision: next claimable wave=6".to_string(),
                         "queue decision: claimable waves=6".to_string(),
+                        "queue decision: claimed waves=none".to_string(),
                         "queue decision: queue ready reason=ready waves are available to claim"
                             .to_string(),
-                        "queue decision: blocker story dependency=3 lint=0 closure=0 active_run=1"
+                        "queue decision: blocker story dependency=3 lint=0 closure=0 ownership=0 lease_expired=0 budget=0 active_run=1"
                             .to_string(),
                         "queue decision: closure-blocked=none".to_string(),
                     ],
@@ -1485,16 +1513,21 @@ mod tests {
                 },
                 queue: QueuePanelSnapshot {
                     ready_wave_count: 1,
+                    claimed_wave_count: 0,
                     blocked_wave_count: 3,
                     active_wave_count: 1,
                     completed_wave_count: 5,
                     ready_wave_ids: vec![6],
+                    claimed_wave_ids: Vec::new(),
                     blocked_wave_ids: vec![7, 8, 9],
                     active_wave_ids: vec![5],
                     blocker_summary: QueueBlockerSummary {
                         dependency: 3,
                         lint: 0,
                         closure: 0,
+                        ownership: 0,
+                        lease_expired: 0,
+                        budget: 0,
                         active_run: 1,
                         already_completed: 5,
                         other: 0,

@@ -105,10 +105,12 @@ pub struct AgentsPanelSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct QueuePanelSnapshot {
     pub ready_wave_count: usize,
+    pub claimed_wave_count: usize,
     pub blocked_wave_count: usize,
     pub active_wave_count: usize,
     pub completed_wave_count: usize,
     pub ready_wave_ids: Vec<u32>,
+    pub claimed_wave_ids: Vec<u32>,
     pub blocked_wave_ids: Vec<u32>,
     pub active_wave_ids: Vec<u32>,
     pub blocker_summary: QueueBlockerSummary,
@@ -319,10 +321,12 @@ fn build_operator_panels_snapshot(
         },
         queue: QueuePanelSnapshot {
             ready_wave_count: operator.queue.ready_wave_count,
+            claimed_wave_count: operator.queue.claimed_wave_count,
             blocked_wave_count: operator.queue.blocked_wave_count,
             active_wave_count: operator.queue.active_wave_count,
             completed_wave_count: operator.queue.completed_wave_count,
             ready_wave_ids: operator.queue.ready_wave_ids.clone(),
+            claimed_wave_ids: operator.queue.claimed_wave_ids.clone(),
             blocked_wave_ids: operator.queue.blocked_wave_ids.clone(),
             active_wave_ids: operator.queue.active_wave_ids.clone(),
             blocker_summary: operator.queue.blocker_summary.clone(),
@@ -690,6 +694,23 @@ mod tests {
     use wave_spec::ProofLevel;
     use wave_spec::WaveMetadata;
 
+    fn empty_ownership() -> wave_control_plane::WaveOwnershipState {
+        wave_control_plane::WaveOwnershipState {
+            claim: None,
+            active_leases: Vec::new(),
+            stale_leases: Vec::new(),
+            contention_reasons: Vec::new(),
+            blocked_by_owner: None,
+            budget: wave_control_plane::SchedulerBudgetState {
+                max_active_wave_claims: None,
+                max_active_task_leases: None,
+                active_wave_claims: 0,
+                active_task_leases: 0,
+                budget_blocked: false,
+            },
+        }
+    }
+
     #[test]
     fn dashboard_snapshot_counts_completed_waves() {
         let status = PlanningStatusReadModel {
@@ -719,7 +740,9 @@ mod tests {
                 next_ready_wave_ids: vec![2],
                 next_ready_wave_id: Some(2),
                 claimable_wave_ids: vec![2],
+                claimed_wave_ids: Vec::new(),
                 ready_wave_count: 1,
+                claimed_wave_count: 0,
                 blocked_wave_count: 0,
                 active_wave_count: 1,
                 completed_wave_count: 1,
@@ -737,6 +760,7 @@ mod tests {
                     blocker_state: Vec::new(),
                     lint_errors: 0,
                     ready: false,
+                    ownership: empty_ownership(),
                     agent_count: 6,
                     implementation_agent_count: 3,
                     closure_agent_count: 3,
@@ -754,6 +778,7 @@ mod tests {
                     missing_closure_agents: Vec::new(),
                     readiness: WaveReadinessReadModel {
                         state: QueueReadinessStateReadModel::Completed,
+                        planning_ready: false,
                         claimable: false,
                         reasons: vec![QueueBlockerReadModel {
                             kind: QueueBlockerKindReadModel::AlreadyCompleted,
@@ -779,6 +804,7 @@ mod tests {
                     blocker_state: Vec::new(),
                     lint_errors: 0,
                     ready: true,
+                    ownership: empty_ownership(),
                     agent_count: 6,
                     implementation_agent_count: 3,
                     closure_agent_count: 3,
@@ -796,6 +822,7 @@ mod tests {
                     missing_closure_agents: Vec::new(),
                     readiness: WaveReadinessReadModel {
                         state: QueueReadinessStateReadModel::Ready,
+                        planning_ready: true,
                         claimable: true,
                         reasons: Vec::new(),
                         primary_reason: None,
@@ -864,7 +891,9 @@ mod tests {
                 next_ready_wave_ids: vec![7],
                 next_ready_wave_id: Some(7),
                 claimable_wave_ids: vec![7],
+                claimed_wave_ids: Vec::new(),
                 ready_wave_count: 1,
+                claimed_wave_count: 0,
                 blocked_wave_count: 0,
                 active_wave_count: 0,
                 completed_wave_count: 0,
@@ -885,6 +914,7 @@ mod tests {
                 }],
                 lint_errors: 0,
                 ready: true,
+                ownership: empty_ownership(),
                 agent_count: 3,
                 implementation_agent_count: 1,
                 closure_agent_count: 2,
@@ -894,6 +924,7 @@ mod tests {
                 missing_closure_agents: Vec::new(),
                 readiness: WaveReadinessReadModel {
                     state: QueueReadinessStateReadModel::Ready,
+                    planning_ready: true,
                     claimable: true,
                     reasons: Vec::new(),
                     primary_reason: None,
@@ -987,7 +1018,9 @@ mod tests {
                 next_ready_wave_ids: Vec::new(),
                 next_ready_wave_id: None,
                 claimable_wave_ids: Vec::new(),
+                claimed_wave_ids: Vec::new(),
                 ready_wave_count: 0,
+                claimed_wave_count: 0,
                 blocked_wave_count: 1,
                 active_wave_count: 1,
                 completed_wave_count: 1,
@@ -1009,6 +1042,7 @@ mod tests {
                     }],
                     lint_errors: 0,
                     ready: false,
+                    ownership: empty_ownership(),
                     agent_count: 3,
                     implementation_agent_count: 1,
                     closure_agent_count: 2,
@@ -1026,6 +1060,7 @@ mod tests {
                     missing_closure_agents: Vec::new(),
                     readiness: WaveReadinessReadModel {
                         state: QueueReadinessStateReadModel::Active,
+                        planning_ready: false,
                         claimable: false,
                         reasons: vec![QueueBlockerReadModel {
                             kind: QueueBlockerKindReadModel::ActiveRun,
@@ -1055,6 +1090,7 @@ mod tests {
                     }],
                     lint_errors: 0,
                     ready: false,
+                    ownership: empty_ownership(),
                     agent_count: 3,
                     implementation_agent_count: 1,
                     closure_agent_count: 2,
@@ -1072,6 +1108,7 @@ mod tests {
                     missing_closure_agents: Vec::new(),
                     readiness: WaveReadinessReadModel {
                         state: QueueReadinessStateReadModel::Blocked,
+                        planning_ready: false,
                         claimable: false,
                         reasons: vec![QueueBlockerReadModel {
                             kind: QueueBlockerKindReadModel::Dependency,
@@ -1101,6 +1138,7 @@ mod tests {
                     }],
                     lint_errors: 0,
                     ready: false,
+                    ownership: empty_ownership(),
                     agent_count: 3,
                     implementation_agent_count: 1,
                     closure_agent_count: 2,
@@ -1118,6 +1156,7 @@ mod tests {
                     missing_closure_agents: Vec::new(),
                     readiness: WaveReadinessReadModel {
                         state: QueueReadinessStateReadModel::Completed,
+                        planning_ready: false,
                         claimable: false,
                         reasons: vec![QueueBlockerReadModel {
                             kind: QueueBlockerKindReadModel::AlreadyCompleted,

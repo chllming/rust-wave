@@ -18,13 +18,14 @@ The live Rust runtime is intentionally narrow:
 - project config comes from `wave.toml`
 - per-agent runtime settings come from the authored wave `### Executor` block
 - the only live runtime today is Codex
-- Wave 0.2 authority roots are typed in `wave.toml`, and planning, queue, and control projections now read through reducer-backed models over compatibility run inputs
+- Wave 0.2 authority roots are typed in `wave.toml`, and planning, queue, and control projections now read through reducer-backed models over canonical scheduler authority plus compatibility run inputs
 - `wave adhoc` and `wave dep` are still pending
 
 The active runtime paths are repo-local. The canonical Wave 0.2 authority-root set under `.wave/state/` is:
 
 - control events: `.wave/state/events/control/`
 - coordination records: `.wave/state/events/coordination/`
+- scheduler authority events: `.wave/state/events/scheduler/`
 - structured results: `.wave/state/results/`
 - derived state roots: `.wave/state/derived/`
 - projection roots: `.wave/state/projections/`
@@ -65,7 +66,7 @@ Today:
 - The current launcher only consumes the fields it actually implements. Unsupported keys are inert documentation until the runtime grows to honor them.
 - Skills are not auto-attached from config yet. The live contract is explicit per-agent `### Skills` in `waves/*.md`.
 - `wave doctor` now verifies the configured role-prompt files and that the canonical authority roots stay under `.wave/state/`.
-- `wave project show --json` and `wave doctor --json` expose and validate the typed authority-root contract; planning, queue, and operator projections are reducer-backed over compatibility run inputs, while proof and closure surfaces are now envelope-first and replay still depends on compatibility run and trace artifacts.
+- `wave project show --json` and `wave doctor --json` expose and validate the typed authority-root contract; planning, queue, and operator projections are reducer-backed over canonical scheduler authority plus compatibility run inputs, while proof and closure surfaces are now envelope-first and replay still depends on compatibility run and trace artifacts.
 
 ## Active Codex Fields
 
@@ -97,7 +98,7 @@ For each launched wave, the runtime writes:
 - a compatibility run-state record in `.wave/state/runs/<run-id>.json`
 - a compatibility trace bundle in `.wave/traces/runs/<run-id>.json`
 
-Wave 0.2 also reserves canonical authority roots for control events, coordination records, results, derived state, projections, and traces under `.wave/state/`. Those roots are now typed, resolved, and doctor-checked. Planning, queue, and control surfaces are already reducer-backed over compatibility run inputs in this stage. Proof snapshots, `wave control proof show`, and closure-gate reads now recompute from the current stored result envelopes first, with the `wave-results` legacy adapter as the only remaining marker-scan path. For closure agents, the result layer also re-reads the owned integration and cont-QA artifacts so the machine-readable closure verdict survives an incomplete terminal summary. Replay still has an explicit compatibility dependency on `.wave/state/runs/` and `.wave/traces/runs/`, although the replay checks now compare normalized run, trace, and result-envelope references instead of raw path formatting.
+Wave 0.2 also reserves canonical authority roots for control events, coordination records, scheduler events, results, derived state, projections, and traces under `.wave/state/`. Those roots are now typed, resolved, and doctor-checked. Planning, queue, and control surfaces are already reducer-backed over scheduler claims, leases, and budgets plus compatibility run inputs in this stage. Proof snapshots, `wave control proof show`, and closure-gate reads now recompute from the current stored result envelopes first, with the `wave-results` legacy adapter as the only remaining marker-scan path. For closure agents, the result layer also re-reads the owned integration and cont-QA artifacts so the machine-readable closure verdict survives an incomplete terminal summary. Replay still has an explicit compatibility dependency on `.wave/state/runs/` and `.wave/traces/runs/`, although the replay checks now compare normalized run, trace, and result-envelope references instead of raw path formatting.
 
 The TUI and `wave control ...` now consume reducer-backed projections plus envelope-first proof state over the artifacts above. Proof views and app-server snapshots resolve the latest relevant run for a wave, not only an active run. `wave trace ...` remains compatibility-backed in this wave, and Wave 13 is still the planned home for the launcher-side post-agent gate work that will stop after each implementation slice and run mandatory validation before advancing.
 
@@ -107,6 +108,7 @@ This file does not claim that the Rust runtime already supports:
 - runtime fallback across providers
 - runtime-aware skill projection
 - true parallel-wave scheduling
+- per-wave worktree isolation
 
 Those remain architecture targets described elsewhere in the docs.
 

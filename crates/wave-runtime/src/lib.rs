@@ -20,21 +20,35 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
+use wave_config::ProjectConfig;
+use wave_control_plane::PlanningStatus;
 use wave_domain::AttemptId;
 use wave_domain::AttemptRecord;
 use wave_domain::AttemptState;
-use wave_config::ProjectConfig;
-use wave_control_plane::PlanningStatus;
 use wave_domain::ClosureDisposition;
 use wave_domain::ControlEventPayload;
-use wave_domain::ResultEnvelope;
 use wave_domain::RerunRequest;
 use wave_domain::RerunRequestId;
 use wave_domain::RerunState;
+use wave_domain::ResultEnvelope;
+use wave_domain::SchedulerBudget;
+use wave_domain::SchedulerBudgetId;
+use wave_domain::SchedulerBudgetRecord;
+use wave_domain::SchedulerEventPayload;
+use wave_domain::SchedulerOwner;
+use wave_domain::TaskLeaseId;
+use wave_domain::TaskLeaseRecord;
+use wave_domain::TaskLeaseState;
+use wave_domain::WaveClaimId;
+use wave_domain::WaveClaimRecord;
+use wave_domain::WaveClaimState;
 use wave_domain::task_id_for_agent;
 use wave_events::ControlEvent;
 use wave_events::ControlEventKind;
 use wave_events::ControlEventLog;
+use wave_events::SchedulerEvent;
+use wave_events::SchedulerEventKind;
+use wave_events::SchedulerEventLog;
 use wave_results::ResultEnvelopeStore;
 use wave_results::build_structured_result_envelope;
 use wave_results::closure_contract_error as result_closure_contract_error;
@@ -527,7 +541,11 @@ pub fn launch_wave(
             root,
             config,
             ControlEvent::new(
-                format!("evt-launch-refused-{}-{}", wave.metadata.id, now_epoch_ms()?),
+                format!(
+                    "evt-launch-refused-{}-{}",
+                    wave.metadata.id,
+                    now_epoch_ms()?
+                ),
                 ControlEventKind::LaunchRefused,
                 wave.metadata.id,
             )
@@ -555,6 +573,17 @@ pub fn launch_wave(
     if !codex_binary_available() {
         bail!("codex binary is not available on PATH");
     }
+    ensure_default_scheduler_budget(root, config)?;
+    let refreshed_status = refresh_planning_status(root, config, waves)?;
+    if !is_claimable_wave(&refreshed_status, wave.metadata.id) {
+        let detail = refreshed_status
+            .waves
+            .iter()
+            .find(|entry| entry.id == wave.metadata.id)
+            .map(queue_entry_reason)
+            .unwrap_or_else(|| refreshed_status.queue.queue_ready_reason.clone());
+        bail!("wave {} is not claimable: {detail}", wave.metadata.id);
+    }
 
     let codex_home = bootstrap_project_codex_home(root, config)?;
     fs::create_dir_all(trace_runs_dir(root, config)).with_context(|| {
@@ -571,6 +600,7 @@ pub fn launch_wave(
     })?;
 
     let created_at_ms = now_epoch_ms()?;
+    let claim = acquire_wave_claim(root, config, wave, &run_id, created_at_ms)?;
     let launcher_pid = std::process::id();
     let mut record = WaveRunRecord {
         run_id: run_id.clone(),
@@ -607,11 +637,48 @@ pub fn launch_wave(
             .collect(),
         error: None,
     };
-    write_run_record(&state_path, &record)?;
-    let _ = clear_rerun_with_state(root, config, wave.metadata.id, RerunState::Completed)?;
+    if let Err(error) = write_run_record(&state_path, &record) {
+        release_wave_claim(
+            root,
+            config,
+            &claim,
+            "launch aborted before run state could be recorded",
+        )?;
+        return Err(error);
+    }
+    if let Err(error) =
+        clear_rerun_with_state(root, config, wave.metadata.id, RerunState::Completed)
+    {
+        release_wave_claim(
+            root,
+            config,
+            &claim,
+            "launch aborted while clearing rerun intent",
+        )?;
+        return Err(error);
+    }
 
     let execution_agents = ordered_agents(wave);
     for (index, agent) in execution_agents.iter().enumerate() {
+        let lease = match grant_task_lease(root, config, &record, agent, &claim) {
+            Ok(lease) => lease,
+            Err(error) => {
+                return finish_failed_launch(
+                    root,
+                    config,
+                    &bundle,
+                    &preflight_path,
+                    &state_path,
+                    &trace_path,
+                    &mut record,
+                    agent,
+                    index,
+                    &claim,
+                    None,
+                    error,
+                );
+            }
+        };
         append_attempt_event(
             root,
             config,
@@ -636,28 +703,31 @@ pub fn launch_wave(
             record.created_at_ms,
             record.started_at_ms,
         )?;
-        let prompt = match fs::read_to_string(&record.agents[index].prompt_path).with_context(|| {
-            format!(
-                "failed to read {}",
-                record.agents[index].prompt_path.display()
-            )
-        }) {
-            Ok(prompt) => prompt,
-            Err(error) => {
-                return finish_failed_launch(
-                    root,
-                    config,
-                    &bundle,
-                    &preflight_path,
-                    &state_path,
-                    &trace_path,
-                    &mut record,
-                    agent,
-                    index,
-                    error,
-                );
-            }
-        };
+        let prompt =
+            match fs::read_to_string(&record.agents[index].prompt_path).with_context(|| {
+                format!(
+                    "failed to read {}",
+                    record.agents[index].prompt_path.display()
+                )
+            }) {
+                Ok(prompt) => prompt,
+                Err(error) => {
+                    return finish_failed_launch(
+                        root,
+                        config,
+                        &bundle,
+                        &preflight_path,
+                        &state_path,
+                        &trace_path,
+                        &mut record,
+                        agent,
+                        index,
+                        &claim,
+                        Some(&lease),
+                        error,
+                    );
+                }
+            };
         let agent_record = match execute_agent(
             root,
             &record,
@@ -678,6 +748,8 @@ pub fn launch_wave(
                     &mut record,
                     agent,
                     index,
+                    &claim,
+                    Some(&lease),
                     error,
                 );
             }
@@ -696,10 +768,36 @@ pub fn launch_wave(
                         &mut record,
                         agent,
                         index,
+                        &claim,
+                        Some(&lease),
                         error,
                     );
                 }
             };
+        if agent_record.status == WaveRunStatus::Succeeded {
+            if let Err(error) = close_task_lease(
+                root,
+                config,
+                &lease,
+                TaskLeaseState::Released,
+                format!("agent {} completed", agent.id),
+            ) {
+                return finish_failed_launch(
+                    root,
+                    config,
+                    &bundle,
+                    &preflight_path,
+                    &state_path,
+                    &trace_path,
+                    &mut record,
+                    agent,
+                    index,
+                    &claim,
+                    Some(&lease),
+                    error,
+                );
+            }
+        }
         record.agents[index] = agent_record.clone();
         append_attempt_event(
             root,
@@ -711,11 +809,19 @@ pub fn launch_wave(
             record.started_at_ms,
         )?;
         if agent_record.status == WaveRunStatus::Failed {
+            close_task_lease(
+                root,
+                config,
+                &lease,
+                TaskLeaseState::Revoked,
+                format!("agent {} failed", agent.id),
+            )?;
             record.status = WaveRunStatus::Failed;
             record.error = agent_record.error.clone();
             record.completed_at_ms = Some(now_epoch_ms()?);
             write_run_record(&state_path, &record)?;
             write_trace_bundle(&trace_path, &record)?;
+            release_wave_claim(root, config, &claim, "wave failed; claim released")?;
             return Ok(LaunchReport {
                 run_id,
                 wave_id: wave.metadata.id,
@@ -729,6 +835,7 @@ pub fn launch_wave(
         write_run_record(&state_path, &record)?;
     }
 
+    release_wave_claim(root, config, &claim, "wave completed; claim released")?;
     record.status = WaveRunStatus::Succeeded;
     record.completed_at_ms = Some(now_epoch_ms()?);
     write_run_record(&state_path, &record)?;
@@ -902,6 +1009,12 @@ pub fn repair_orphaned_runs(root: &Path, config: &ProjectConfig) -> Result<Vec<W
         }
         write_run_record(&path, &record)?;
         write_trace_bundle(&record.trace_path, &record)?;
+        cleanup_scheduler_ownership_for_run(
+            root,
+            config,
+            &record,
+            "launcher orphaned; scheduler ownership revoked",
+        )?;
         repaired.push(record);
     }
 
@@ -913,13 +1026,250 @@ fn append_control_event(root: &Path, config: &ProjectConfig, event: ControlEvent
 }
 
 fn control_event_log(root: &Path, config: &ProjectConfig) -> ControlEventLog {
-    ControlEventLog::new(config.resolved_paths(root).authority.state_events_control_dir)
+    ControlEventLog::new(
+        config
+            .resolved_paths(root)
+            .authority
+            .state_events_control_dir,
+    )
+}
+
+fn scheduler_event_log(root: &Path, config: &ProjectConfig) -> SchedulerEventLog {
+    SchedulerEventLog::new(
+        config
+            .resolved_paths(root)
+            .authority
+            .state_events_scheduler_dir,
+    )
+}
+
+fn runtime_scheduler_owner(session_id: impl Into<String>) -> SchedulerOwner {
+    SchedulerOwner {
+        scheduler_id: "wave-runtime".to_string(),
+        scheduler_path: "wave-runtime/codex".to_string(),
+        runtime: Some("codex".to_string()),
+        executor: Some("codex".to_string()),
+        session_id: Some(session_id.into()),
+    }
+}
+
+fn ensure_default_scheduler_budget(root: &Path, config: &ProjectConfig) -> Result<()> {
+    let log = scheduler_event_log(root, config);
+    if log
+        .load_all()?
+        .iter()
+        .any(|event| matches!(event.kind, SchedulerEventKind::SchedulerBudgetUpdated))
+    {
+        return Ok(());
+    }
+
+    let created_at_ms = now_epoch_ms()?;
+    let budget = SchedulerBudgetRecord {
+        budget_id: SchedulerBudgetId::new("budget-default"),
+        budget: SchedulerBudget {
+            max_active_wave_claims: Some(1),
+            max_active_task_leases: Some(1),
+        },
+        owner: runtime_scheduler_owner("budget-bootstrap"),
+        updated_at_ms: created_at_ms,
+        detail: Some("default serial scheduler budget".to_string()),
+    };
+    log.append(
+        &SchedulerEvent::new(
+            format!("sched-budget-default-{created_at_ms}"),
+            SchedulerEventKind::SchedulerBudgetUpdated,
+        )
+        .with_created_at_ms(created_at_ms)
+        .with_correlation_id("scheduler-budget-default")
+        .with_payload(SchedulerEventPayload::SchedulerBudgetUpdated { budget }),
+    )
+}
+
+fn append_scheduler_event(
+    root: &Path,
+    config: &ProjectConfig,
+    event: SchedulerEvent,
+) -> Result<()> {
+    scheduler_event_log(root, config).append(&event)
+}
+
+fn acquire_wave_claim(
+    root: &Path,
+    config: &ProjectConfig,
+    wave: &WaveDocument,
+    run_id: &str,
+    created_at_ms: u128,
+) -> Result<WaveClaimRecord> {
+    let claim = WaveClaimRecord {
+        claim_id: WaveClaimId::new(format!("claim-wave-{:02}-{run_id}", wave.metadata.id)),
+        wave_id: wave.metadata.id,
+        state: WaveClaimState::Held,
+        owner: runtime_scheduler_owner(run_id),
+        claimed_at_ms: created_at_ms,
+        released_at_ms: None,
+        detail: Some(format!(
+            "wave {} claimed for runtime launch",
+            wave.metadata.id
+        )),
+    };
+    append_scheduler_event(
+        root,
+        config,
+        SchedulerEvent::new(
+            format!("sched-claim-acquired-{}-{created_at_ms}", wave.metadata.id),
+            SchedulerEventKind::WaveClaimAcquired,
+        )
+        .with_wave_id(wave.metadata.id)
+        .with_claim_id(claim.claim_id.clone())
+        .with_created_at_ms(created_at_ms)
+        .with_correlation_id(run_id.to_string())
+        .with_payload(SchedulerEventPayload::WaveClaimUpdated {
+            claim: claim.clone(),
+        }),
+    )?;
+    Ok(claim)
+}
+
+fn release_wave_claim(
+    root: &Path,
+    config: &ProjectConfig,
+    claim: &WaveClaimRecord,
+    detail: impl Into<String>,
+) -> Result<()> {
+    let released_at_ms = now_epoch_ms()?;
+    let mut released = claim.clone();
+    released.state = WaveClaimState::Released;
+    released.released_at_ms = Some(released_at_ms);
+    released.detail = Some(detail.into());
+    append_scheduler_event(
+        root,
+        config,
+        SchedulerEvent::new(
+            format!("sched-claim-released-{}-{released_at_ms}", claim.wave_id),
+            SchedulerEventKind::WaveClaimReleased,
+        )
+        .with_wave_id(claim.wave_id)
+        .with_claim_id(claim.claim_id.clone())
+        .with_created_at_ms(released_at_ms)
+        .with_correlation_id(
+            released
+                .owner
+                .session_id
+                .clone()
+                .unwrap_or_else(|| claim.claim_id.as_str().to_string()),
+        )
+        .with_payload(SchedulerEventPayload::WaveClaimUpdated { claim: released }),
+    )
+}
+
+fn grant_task_lease(
+    root: &Path,
+    config: &ProjectConfig,
+    run: &WaveRunRecord,
+    agent: &WaveAgent,
+    claim: &WaveClaimRecord,
+) -> Result<TaskLeaseRecord> {
+    let granted_at_ms = now_epoch_ms()?;
+    let lease = TaskLeaseRecord {
+        lease_id: TaskLeaseId::new(format!(
+            "lease-wave-{:02}-{}",
+            run.wave_id,
+            agent.id.to_ascii_lowercase()
+        )),
+        wave_id: run.wave_id,
+        task_id: task_id_for_agent(run.wave_id, agent.id.as_str()),
+        claim_id: Some(claim.claim_id.clone()),
+        state: TaskLeaseState::Granted,
+        owner: runtime_scheduler_owner(run.run_id.clone()),
+        granted_at_ms,
+        heartbeat_at_ms: Some(granted_at_ms),
+        expires_at_ms: None,
+        finished_at_ms: None,
+        detail: Some(format!("lease granted for agent {}", agent.id)),
+    };
+    append_scheduler_event(
+        root,
+        config,
+        SchedulerEvent::new(
+            format!("sched-lease-granted-{}-{granted_at_ms}", lease.task_id),
+            SchedulerEventKind::TaskLeaseGranted,
+        )
+        .with_wave_id(run.wave_id)
+        .with_task_id(lease.task_id.clone())
+        .with_claim_id(claim.claim_id.clone())
+        .with_lease_id(lease.lease_id.clone())
+        .with_created_at_ms(granted_at_ms)
+        .with_correlation_id(run.run_id.clone())
+        .with_payload(SchedulerEventPayload::TaskLeaseUpdated {
+            lease: lease.clone(),
+        }),
+    )?;
+    Ok(lease)
+}
+
+fn close_task_lease(
+    root: &Path,
+    config: &ProjectConfig,
+    lease: &TaskLeaseRecord,
+    state: TaskLeaseState,
+    detail: impl Into<String>,
+) -> Result<()> {
+    let finished_at_ms = now_epoch_ms()?;
+    let mut closed = lease.clone();
+    closed.state = state;
+    closed.finished_at_ms = Some(finished_at_ms);
+    closed.heartbeat_at_ms = Some(finished_at_ms);
+    closed.detail = Some(detail.into());
+    let kind = match state {
+        TaskLeaseState::Granted => SchedulerEventKind::TaskLeaseRenewed,
+        TaskLeaseState::Released => SchedulerEventKind::TaskLeaseReleased,
+        TaskLeaseState::Expired => SchedulerEventKind::TaskLeaseExpired,
+        TaskLeaseState::Revoked => SchedulerEventKind::TaskLeaseRevoked,
+    };
+    let mut event = SchedulerEvent::new(
+        format!(
+            "sched-lease-{}-{}-{finished_at_ms}",
+            lease_state_label(state),
+            lease.task_id
+        ),
+        kind,
+    )
+    .with_wave_id(lease.wave_id)
+    .with_task_id(lease.task_id.clone())
+    .with_lease_id(lease.lease_id.clone())
+    .with_created_at_ms(finished_at_ms)
+    .with_correlation_id(
+        closed
+            .owner
+            .session_id
+            .clone()
+            .unwrap_or_else(|| lease.lease_id.as_str().to_string()),
+    )
+    .with_payload(SchedulerEventPayload::TaskLeaseUpdated {
+        lease: closed.clone(),
+    });
+    if let Some(claim_id) = closed.claim_id.clone() {
+        event = event.with_claim_id(claim_id);
+    }
+    append_scheduler_event(root, config, event)
+}
+
+fn lease_state_label(state: TaskLeaseState) -> &'static str {
+    match state {
+        TaskLeaseState::Granted => "granted",
+        TaskLeaseState::Released => "released",
+        TaskLeaseState::Expired => "expired",
+        TaskLeaseState::Revoked => "revoked",
+    }
 }
 
 fn rerun_request_payload(record: &RerunIntentRecord, state: RerunState) -> RerunRequest {
     RerunRequest {
         request_id: RerunRequestId::new(record.request_id.clone().unwrap_or_else(|| {
-            format!("rerun-wave-{:02}-{}", record.wave_id, record.requested_at_ms)
+            format!(
+                "rerun-wave-{:02}-{}",
+                record.wave_id, record.requested_at_ms
+            )
         })),
         wave_id: record.wave_id,
         task_ids: Vec::new(),
@@ -1043,6 +1393,8 @@ fn finish_failed_launch(
     record: &mut WaveRunRecord,
     agent: &WaveAgent,
     agent_index: usize,
+    claim: &WaveClaimRecord,
+    lease: Option<&TaskLeaseRecord>,
     error: anyhow::Error,
 ) -> Result<LaunchReport> {
     let reason = error.to_string();
@@ -1056,7 +1408,7 @@ fn finish_failed_launch(
     ensure_orphan_agent_artifacts(&record.agents[agent_index], &reason)?;
 
     record.status = WaveRunStatus::Failed;
-    record.error = Some(reason);
+    record.error = Some(reason.clone());
     record.completed_at_ms = Some(now_epoch_ms()?);
     append_attempt_event(
         root,
@@ -1067,6 +1419,16 @@ fn finish_failed_launch(
         record.created_at_ms,
         record.started_at_ms,
     )?;
+    if let Some(lease) = lease {
+        close_task_lease(
+            root,
+            config,
+            lease,
+            TaskLeaseState::Revoked,
+            format!("lease revoked because launch failed: {reason}"),
+        )?;
+    }
+    release_wave_claim(root, config, claim, format!("launch failed: {reason}"))?;
     write_run_record(state_path, record)?;
     write_trace_bundle(trace_path, record)?;
 
@@ -1153,6 +1515,54 @@ fn ensure_orphan_agent_artifacts(agent: &AgentRunRecord, reason: &str) -> Result
     Ok(())
 }
 
+fn cleanup_scheduler_ownership_for_run(
+    root: &Path,
+    config: &ProjectConfig,
+    run: &WaveRunRecord,
+    detail: &str,
+) -> Result<()> {
+    let mut claim = None;
+    let mut leases = HashMap::new();
+    let mut events = scheduler_event_log(root, config).load_all()?;
+    events.sort_by_key(|event| (event.created_at_ms, event.event_id.clone()));
+
+    for event in events {
+        match event.payload {
+            SchedulerEventPayload::WaveClaimUpdated { claim: record }
+                if record.wave_id == run.wave_id
+                    && record.owner.session_id.as_deref() == Some(run.run_id.as_str()) =>
+            {
+                claim = record.state.is_held().then_some(record);
+            }
+            SchedulerEventPayload::TaskLeaseUpdated { lease }
+                if lease.wave_id == run.wave_id
+                    && lease.owner.session_id.as_deref() == Some(run.run_id.as_str()) =>
+            {
+                if lease.state.is_active() {
+                    leases.insert(lease.lease_id.clone(), lease);
+                } else {
+                    leases.remove(&lease.lease_id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for lease in leases.into_values() {
+        close_task_lease(
+            root,
+            config,
+            &lease,
+            TaskLeaseState::Revoked,
+            detail.to_string(),
+        )?;
+    }
+    if let Some(claim) = claim.as_ref() {
+        release_wave_claim(root, config, claim, detail.to_string())?;
+    }
+    Ok(())
+}
+
 fn write_missing_text_artifact(path: &Path, contents: &str) -> Result<()> {
     let Some(parent) = path.parent() else {
         return Ok(());
@@ -1200,7 +1610,8 @@ fn launcher_liveness(record: &WaveRunRecord) -> LauncherLiveness {
     }
 
     let observed_started_at_ms = process_started_at_ms(launcher_pid);
-    if let (Some(expected), Some(observed)) = (record.launcher_started_at_ms, observed_started_at_ms)
+    if let (Some(expected), Some(observed)) =
+        (record.launcher_started_at_ms, observed_started_at_ms)
     {
         if expected.abs_diff(observed) <= START_TIME_TOLERANCE_MS {
             return LauncherLiveness::Alive;
@@ -1679,6 +2090,7 @@ fn bootstrap_authority_roots(root: &Path, config: &ProjectConfig) -> Result<()> 
         authority.state_events_dir,
         authority.state_events_control_dir,
         authority.state_events_coordination_dir,
+        authority.state_events_scheduler_dir,
         authority.state_results_dir,
         authority.state_derived_dir,
         authority.state_projections_dir,
@@ -1747,6 +2159,7 @@ mod tests {
     use wave_config::AuthorityConfig;
     use wave_config::ExecutionMode;
     use wave_control_plane::build_planning_status_with_state;
+    use wave_events::SchedulerEventKind;
     use wave_spec::CompletionLevel;
     use wave_spec::Context7Defaults;
     use wave_spec::DeployEnvironment;
@@ -2180,6 +2593,12 @@ mod tests {
         );
         assert!(!state_runs_dir(&root, &config).exists());
         assert!(!trace_runs_dir(&root, &config).exists());
+        assert!(
+            scheduler_event_log(&root, &config)
+                .load_all()
+                .expect("scheduler events")
+                .is_empty()
+        );
         let build_entries = fs::read_dir(build_specs_dir(&root, &config))
             .expect("build specs dir")
             .collect::<Result<Vec<_>, _>>()
@@ -2352,6 +2771,95 @@ mod tests {
             load_latest_runs(&root, &config)
                 .expect("latest runs")
                 .is_empty()
+        );
+        assert!(
+            scheduler_event_log(&root, &config)
+                .load_all()
+                .expect("scheduler events")
+                .is_empty()
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn default_scheduler_budget_is_emitted_once() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-budget-test-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+
+        ensure_default_scheduler_budget(&root, &config).expect("first budget");
+        ensure_default_scheduler_budget(&root, &config).expect("second budget");
+        let events = scheduler_event_log(&root, &config)
+            .load_all()
+            .expect("scheduler events");
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, SchedulerEventKind::SchedulerBudgetUpdated);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn orphan_cleanup_revokes_active_lease_and_releases_claim() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-scheduler-cleanup-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+        ensure_default_scheduler_budget(&root, &config).expect("budget");
+
+        let wave = launchable_test_wave(3);
+        let run = WaveRunRecord {
+            run_id: "wave-03-run".to_string(),
+            wave_id: 3,
+            slug: wave.metadata.slug.clone(),
+            title: wave.metadata.title.clone(),
+            status: WaveRunStatus::Running,
+            dry_run: false,
+            bundle_dir: root.join(".wave/state/build/specs/wave-03-run"),
+            trace_path: root.join(".wave/traces/runs/wave-03-run.json"),
+            codex_home: root.join(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(1),
+            launcher_pid: Some(std::process::id()),
+            launcher_started_at_ms: current_process_started_at_ms(),
+            completed_at_ms: None,
+            agents: Vec::new(),
+            error: None,
+        };
+
+        let claim = acquire_wave_claim(&root, &config, &wave, &run.run_id, 1).expect("claim");
+        let lease = grant_task_lease(&root, &config, &run, &wave.agents[0], &claim).expect("lease");
+        assert_eq!(lease.state, TaskLeaseState::Granted);
+
+        cleanup_scheduler_ownership_for_run(&root, &config, &run, "repair").expect("cleanup");
+        let events = scheduler_event_log(&root, &config)
+            .load_all()
+            .expect("scheduler events");
+
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == SchedulerEventKind::TaskLeaseRevoked)
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == SchedulerEventKind::WaveClaimReleased)
         );
 
         let _ = fs::remove_dir_all(&root);

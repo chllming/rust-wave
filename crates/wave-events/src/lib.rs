@@ -11,13 +11,19 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use wave_config::DEFAULT_STATE_EVENTS_CONTROL_DIR;
+use wave_config::DEFAULT_STATE_EVENTS_SCHEDULER_DIR;
 use wave_domain::AttemptId;
 use wave_domain::ControlEventPayload;
+use wave_domain::SchedulerEventPayload;
 use wave_domain::TaskId;
+use wave_domain::TaskLeaseId;
+use wave_domain::WaveClaimId;
 
 pub const CONTROL_EVENT_SCHEMA_VERSION: u32 = 1;
 const CONTROL_LOG_FILE_PREFIX: &str = "wave-";
 const CONTROL_LOG_FILE_SUFFIX: &str = ".jsonl";
+pub const SCHEDULER_EVENT_SCHEMA_VERSION: u32 = 1;
+pub const SCHEDULER_LOG_FILE_NAME: &str = "scheduler.jsonl";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -346,6 +352,308 @@ pub fn parse_control_wave_id(path: &Path) -> Option<u32> {
         .and_then(|wave_id| wave_id.parse::<u32>().ok())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SchedulerEventKind {
+    WaveClaimAcquired,
+    WaveClaimReleased,
+    TaskLeaseGranted,
+    TaskLeaseRenewed,
+    TaskLeaseReleased,
+    TaskLeaseExpired,
+    TaskLeaseRevoked,
+    SchedulerBudgetUpdated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchedulerEvent {
+    pub schema_version: u32,
+    pub event_id: String,
+    pub kind: SchedulerEventKind,
+    pub wave_id: Option<u32>,
+    pub task_id: Option<TaskId>,
+    pub claim_id: Option<WaveClaimId>,
+    pub lease_id: Option<TaskLeaseId>,
+    pub created_at_ms: u128,
+    pub causation_event_id: Option<String>,
+    pub correlation_id: Option<String>,
+    #[serde(default)]
+    pub payload: SchedulerEventPayload,
+}
+
+impl SchedulerEvent {
+    pub fn new(event_id: impl Into<String>, kind: SchedulerEventKind) -> Self {
+        Self {
+            schema_version: SCHEDULER_EVENT_SCHEMA_VERSION,
+            event_id: event_id.into(),
+            kind,
+            wave_id: None,
+            task_id: None,
+            claim_id: None,
+            lease_id: None,
+            created_at_ms: 0,
+            causation_event_id: None,
+            correlation_id: None,
+            payload: SchedulerEventPayload::None,
+        }
+    }
+
+    pub fn with_wave_id(mut self, wave_id: u32) -> Self {
+        self.wave_id = Some(wave_id);
+        self
+    }
+
+    pub fn with_task_id(mut self, task_id: TaskId) -> Self {
+        self.task_id = Some(task_id);
+        self
+    }
+
+    pub fn with_claim_id(mut self, claim_id: WaveClaimId) -> Self {
+        self.claim_id = Some(claim_id);
+        self
+    }
+
+    pub fn with_lease_id(mut self, lease_id: TaskLeaseId) -> Self {
+        self.lease_id = Some(lease_id);
+        self
+    }
+
+    pub fn with_created_at_ms(mut self, created_at_ms: u128) -> Self {
+        self.created_at_ms = created_at_ms;
+        self
+    }
+
+    pub fn with_causation_event_id(mut self, causation_event_id: impl Into<String>) -> Self {
+        self.causation_event_id = Some(causation_event_id.into());
+        self
+    }
+
+    pub fn with_correlation_id(mut self, correlation_id: impl Into<String>) -> Self {
+        self.correlation_id = Some(correlation_id.into());
+        self
+    }
+
+    pub fn with_payload(mut self, payload: SchedulerEventPayload) -> Self {
+        self.payload = payload;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SchedulerEventQuery {
+    pub wave_id: Option<u32>,
+    pub task_id: Option<TaskId>,
+    pub claim_id: Option<WaveClaimId>,
+    pub lease_id: Option<TaskLeaseId>,
+    pub owner_path: Option<String>,
+    pub owner_session_id: Option<String>,
+    pub event_id: Option<String>,
+    pub kind: Option<SchedulerEventKind>,
+    pub causation_event_id: Option<String>,
+    pub correlation_id: Option<String>,
+}
+
+impl SchedulerEventQuery {
+    fn matches(&self, event: &SchedulerEvent) -> bool {
+        if let Some(wave_id) = self.wave_id {
+            if event.wave_id != Some(wave_id) {
+                return false;
+            }
+        }
+        if let Some(task_id) = self.task_id.as_ref() {
+            if event.task_id.as_ref() != Some(task_id) {
+                return false;
+            }
+        }
+        if let Some(claim_id) = self.claim_id.as_ref() {
+            if event.claim_id.as_ref() != Some(claim_id) {
+                return false;
+            }
+        }
+        if let Some(lease_id) = self.lease_id.as_ref() {
+            if event.lease_id.as_ref() != Some(lease_id) {
+                return false;
+            }
+        }
+        if let Some(owner_path) = self.owner_path.as_ref() {
+            if scheduler_owner_path(event) != Some(owner_path.as_str()) {
+                return false;
+            }
+        }
+        if let Some(owner_session_id) = self.owner_session_id.as_ref() {
+            if scheduler_owner_session_id(event) != Some(owner_session_id.as_str()) {
+                return false;
+            }
+        }
+        if let Some(event_id) = self.event_id.as_ref() {
+            if &event.event_id != event_id {
+                return false;
+            }
+        }
+        if let Some(kind) = self.kind.as_ref() {
+            if &event.kind != kind {
+                return false;
+            }
+        }
+        if let Some(causation_event_id) = self.causation_event_id.as_ref() {
+            if event.causation_event_id.as_ref() != Some(causation_event_id) {
+                return false;
+            }
+        }
+        if let Some(correlation_id) = self.correlation_id.as_ref() {
+            if event.correlation_id.as_ref() != Some(correlation_id) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchedulerEventLog {
+    root_dir: PathBuf,
+}
+
+impl SchedulerEventLog {
+    pub fn new(root_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            root_dir: root_dir.into(),
+        }
+    }
+
+    pub fn under_repo(repo_root: &Path) -> Self {
+        Self::new(canonical_scheduler_log_root(repo_root))
+    }
+
+    pub fn root_dir(&self) -> &Path {
+        &self.root_dir
+    }
+
+    pub fn path(&self) -> PathBuf {
+        canonical_scheduler_log_path(&self.root_dir)
+    }
+
+    pub fn append(&self, event: &SchedulerEvent) -> Result<()> {
+        append_scheduler_event(&self.path(), event)
+    }
+
+    pub fn append_many(&self, events: &[SchedulerEvent]) -> Result<()> {
+        append_scheduler_events(&self.path(), events)
+    }
+
+    pub fn load_all(&self) -> Result<Vec<SchedulerEvent>> {
+        load_scheduler_events(&self.path())
+    }
+
+    pub fn latest(&self) -> Result<Option<SchedulerEvent>> {
+        latest_scheduler_event(&self.path())
+    }
+
+    pub fn query(&self, query: &SchedulerEventQuery) -> Result<Vec<SchedulerEvent>> {
+        query_scheduler_events(&self.path(), query)
+    }
+}
+
+pub fn canonical_scheduler_log_root(repo_root: &Path) -> PathBuf {
+    repo_root.join(DEFAULT_STATE_EVENTS_SCHEDULER_DIR)
+}
+
+pub fn canonical_scheduler_log_path(dir: &Path) -> PathBuf {
+    dir.join(SCHEDULER_LOG_FILE_NAME)
+}
+
+pub fn canonical_scheduler_log_path_under(repo_root: &Path) -> PathBuf {
+    canonical_scheduler_log_path(&canonical_scheduler_log_root(repo_root))
+}
+
+pub fn append_scheduler_event(path: &Path, event: &SchedulerEvent) -> Result<()> {
+    append_scheduler_events(path, std::slice::from_ref(event))
+}
+
+pub fn append_scheduler_events(path: &Path, events: &[SchedulerEvent]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    for event in events {
+        serde_json::to_writer(&mut file, event)
+            .with_context(|| format!("failed to serialize event into {}", path.display()))?;
+        file.write_all(b"\n")
+            .with_context(|| format!("failed to append newline to {}", path.display()))?;
+    }
+    Ok(())
+}
+
+pub fn load_scheduler_events(path: &Path) -> Result<Vec<SchedulerEvent>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut events = Vec::new();
+    for (line_number, line) in reader.lines().enumerate() {
+        let line = line.with_context(|| format!("failed to read {}", path.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let event = serde_json::from_str::<SchedulerEvent>(&line).with_context(|| {
+            format!(
+                "failed to parse scheduler event {}:{}",
+                path.display(),
+                line_number + 1
+            )
+        })?;
+        events.push(event);
+    }
+    Ok(events)
+}
+
+pub fn latest_scheduler_event(path: &Path) -> Result<Option<SchedulerEvent>> {
+    Ok(load_scheduler_events(path)?.into_iter().last())
+}
+
+pub fn query_scheduler_events(
+    path: &Path,
+    query: &SchedulerEventQuery,
+) -> Result<Vec<SchedulerEvent>> {
+    Ok(load_scheduler_events(path)?
+        .into_iter()
+        .filter(|event| query.matches(event))
+        .collect())
+}
+
+fn scheduler_owner_path(event: &SchedulerEvent) -> Option<&str> {
+    match &event.payload {
+        SchedulerEventPayload::WaveClaimUpdated { claim } => {
+            Some(claim.owner.scheduler_path.as_str())
+        }
+        SchedulerEventPayload::TaskLeaseUpdated { lease } => {
+            Some(lease.owner.scheduler_path.as_str())
+        }
+        SchedulerEventPayload::SchedulerBudgetUpdated { budget } => {
+            Some(budget.owner.scheduler_path.as_str())
+        }
+        SchedulerEventPayload::None => None,
+    }
+}
+
+fn scheduler_owner_session_id(event: &SchedulerEvent) -> Option<&str> {
+    match &event.payload {
+        SchedulerEventPayload::WaveClaimUpdated { claim } => claim.owner.session_id.as_deref(),
+        SchedulerEventPayload::TaskLeaseUpdated { lease } => lease.owner.session_id.as_deref(),
+        SchedulerEventPayload::SchedulerBudgetUpdated { budget } => {
+            budget.owner.session_id.as_deref()
+        }
+        SchedulerEventPayload::None => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,6 +662,14 @@ mod tests {
     use wave_domain::AttemptRecord;
     use wave_domain::AttemptState;
     use wave_domain::ProofBundleId;
+    use wave_domain::SchedulerBudget;
+    use wave_domain::SchedulerBudgetId;
+    use wave_domain::SchedulerBudgetRecord;
+    use wave_domain::SchedulerOwner;
+    use wave_domain::TaskLeaseRecord;
+    use wave_domain::TaskLeaseState;
+    use wave_domain::WaveClaimRecord;
+    use wave_domain::WaveClaimState;
 
     #[test]
     fn appends_and_loads_typed_jsonl_events() {
@@ -462,6 +778,127 @@ mod tests {
         let events = log.query(&query).expect("query all");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].wave_id, 11);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn appends_and_queries_scheduler_events() {
+        let root = temp_root("scheduler");
+        let log = SchedulerEventLog::under_repo(&root);
+        let owner = SchedulerOwner {
+            scheduler_id: "wave-runtime".to_string(),
+            scheduler_path: "wave-runtime/codex".to_string(),
+            runtime: Some("codex".to_string()),
+            executor: Some("codex".to_string()),
+            session_id: Some("wave-13-run".to_string()),
+        };
+        let claim = WaveClaimRecord {
+            claim_id: WaveClaimId::new("claim-wave-13"),
+            wave_id: 13,
+            state: WaveClaimState::Held,
+            owner: owner.clone(),
+            claimed_at_ms: 10,
+            released_at_ms: None,
+            detail: Some("claim acquired".to_string()),
+        };
+        let lease = TaskLeaseRecord {
+            lease_id: TaskLeaseId::new("lease-wave-13-a1"),
+            wave_id: 13,
+            task_id: TaskId::new("wave-13:agent-a1"),
+            claim_id: Some(claim.claim_id.clone()),
+            state: TaskLeaseState::Granted,
+            owner: owner.clone(),
+            granted_at_ms: 11,
+            heartbeat_at_ms: Some(12),
+            expires_at_ms: Some(42),
+            finished_at_ms: None,
+            detail: Some("lease granted".to_string()),
+        };
+
+        log.append_many(&[
+            SchedulerEvent::new("sched-1", SchedulerEventKind::WaveClaimAcquired)
+                .with_wave_id(13)
+                .with_claim_id(claim.claim_id.clone())
+                .with_created_at_ms(10)
+                .with_correlation_id("wave-13-run")
+                .with_payload(SchedulerEventPayload::WaveClaimUpdated {
+                    claim: claim.clone(),
+                }),
+            SchedulerEvent::new("sched-2", SchedulerEventKind::TaskLeaseGranted)
+                .with_wave_id(13)
+                .with_task_id(lease.task_id.clone())
+                .with_claim_id(claim.claim_id.clone())
+                .with_lease_id(lease.lease_id.clone())
+                .with_created_at_ms(11)
+                .with_correlation_id("wave-13-run")
+                .with_payload(SchedulerEventPayload::TaskLeaseUpdated {
+                    lease: lease.clone(),
+                }),
+        ])
+        .expect("append many");
+
+        let path = log.path();
+        assert_eq!(
+            canonical_scheduler_log_path_under(&root),
+            root.join(".wave/state/events/scheduler/scheduler.jsonl")
+        );
+        assert_eq!(load_scheduler_events(&path).expect("load").len(), 2);
+        assert_eq!(
+            log.latest().expect("latest").expect("some").event_id,
+            "sched-2"
+        );
+
+        let query = SchedulerEventQuery {
+            wave_id: Some(13),
+            task_id: Some(lease.task_id.clone()),
+            claim_id: Some(claim.claim_id.clone()),
+            lease_id: Some(lease.lease_id.clone()),
+            owner_path: Some("wave-runtime/codex".to_string()),
+            owner_session_id: Some("wave-13-run".to_string()),
+            event_id: None,
+            kind: Some(SchedulerEventKind::TaskLeaseGranted),
+            causation_event_id: None,
+            correlation_id: Some("wave-13-run".to_string()),
+        };
+        let events = log.query(&query).expect("query");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_id, "sched-2");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scheduler_log_surfaces_budget_updates() {
+        let root = temp_root("scheduler-budget");
+        let log = SchedulerEventLog::new(root.join("scheduler"));
+        let budget = SchedulerBudgetRecord {
+            budget_id: SchedulerBudgetId::new("budget-default"),
+            budget: SchedulerBudget {
+                max_active_wave_claims: Some(1),
+                max_active_task_leases: Some(1),
+            },
+            owner: SchedulerOwner {
+                scheduler_id: "wave-runtime".to_string(),
+                scheduler_path: "wave-runtime/codex".to_string(),
+                runtime: Some("codex".to_string()),
+                executor: Some("codex".to_string()),
+                session_id: Some("budget-bootstrap".to_string()),
+            },
+            updated_at_ms: 1,
+            detail: Some("default serial budget".to_string()),
+        };
+
+        log.append(
+            &SchedulerEvent::new("sched-budget", SchedulerEventKind::SchedulerBudgetUpdated)
+                .with_created_at_ms(1)
+                .with_payload(SchedulerEventPayload::SchedulerBudgetUpdated { budget }),
+        )
+        .expect("append");
+
+        let events = log.load_all().expect("load");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, SchedulerEventKind::SchedulerBudgetUpdated);
 
         let _ = fs::remove_dir_all(root);
     }

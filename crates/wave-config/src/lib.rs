@@ -39,6 +39,7 @@ pub const DEFAULT_COMPONENT_CUTOVER_MATRIX_DOC_PATH: &str =
 pub const DEFAULT_COMPONENT_CUTOVER_MATRIX_JSON_PATH: &str =
     "docs/plans/component-cutover-matrix.json";
 pub const DEFAULT_STATE_EVENTS_DIR: &str = ".wave/state/events";
+pub const DEFAULT_STATE_EVENTS_SCHEDULER_DIR: &str = ".wave/state/events/scheduler";
 pub const DEFAULT_STATE_EVENTS_CONTROL_DIR: &str = ".wave/state/events/control";
 pub const DEFAULT_STATE_EVENTS_COORDINATION_DIR: &str = ".wave/state/events/coordination";
 pub const DEFAULT_STATE_RESULTS_DIR: &str = ".wave/state/results";
@@ -158,6 +159,10 @@ fn default_component_cutover_matrix_json_path() -> PathBuf {
 
 fn default_state_events_dir() -> PathBuf {
     PathBuf::from(DEFAULT_STATE_EVENTS_DIR)
+}
+
+fn default_state_events_scheduler_dir() -> PathBuf {
+    PathBuf::from(DEFAULT_STATE_EVENTS_SCHEDULER_DIR)
 }
 
 fn default_state_events_control_dir() -> PathBuf {
@@ -297,6 +302,8 @@ pub struct AuthorityConfig {
     pub trace_runs_dir: PathBuf,
     #[serde(default = "default_state_events_dir")]
     pub state_events_dir: PathBuf,
+    #[serde(default = "default_state_events_scheduler_dir")]
+    pub state_events_scheduler_dir: PathBuf,
     #[serde(default = "default_state_events_control_dir")]
     pub state_events_control_dir: PathBuf,
     #[serde(default = "default_state_events_coordination_dir")]
@@ -322,6 +329,7 @@ impl Default for AuthorityConfig {
             trace_dir: default_trace_dir(),
             trace_runs_dir: default_trace_runs_dir(),
             state_events_dir: default_state_events_dir(),
+            state_events_scheduler_dir: default_state_events_scheduler_dir(),
             state_events_control_dir: default_state_events_control_dir(),
             state_events_coordination_dir: default_state_events_coordination_dir(),
             state_results_dir: default_state_results_dir(),
@@ -399,6 +407,7 @@ pub struct ResolvedAuthorityPaths {
     pub trace_dir: PathBuf,
     pub trace_runs_dir: PathBuf,
     pub state_events_dir: PathBuf,
+    pub state_events_scheduler_dir: PathBuf,
     pub state_events_control_dir: PathBuf,
     pub state_events_coordination_dir: PathBuf,
     pub state_results_dir: PathBuf,
@@ -458,6 +467,7 @@ impl ProjectConfig {
             trace_dir: repo_root.join(&self.authority.trace_dir),
             trace_runs_dir: repo_root.join(&self.authority.trace_runs_dir),
             state_events_dir: repo_root.join(&self.authority.state_events_dir),
+            state_events_scheduler_dir: repo_root.join(&self.authority.state_events_scheduler_dir),
             state_events_control_dir: repo_root.join(&self.authority.state_events_control_dir),
             state_events_coordination_dir: repo_root
                 .join(&self.authority.state_events_coordination_dir),
@@ -533,10 +543,11 @@ impl ResolvedRolePromptPaths {
 }
 
 impl ResolvedAuthorityPaths {
-    pub fn canonical_root_paths(&self) -> [&Path; 8] {
+    pub fn canonical_root_paths(&self) -> [&Path; 9] {
         [
             self.state_build_specs_dir.as_path(),
             self.state_events_dir.as_path(),
+            self.state_events_scheduler_dir.as_path(),
             self.state_events_control_dir.as_path(),
             self.state_events_coordination_dir.as_path(),
             self.state_results_dir.as_path(),
@@ -558,6 +569,12 @@ impl ResolvedProjectPaths {
         self.authority
             .state_events_control_dir
             .join(format!("wave-{wave_id:02}.jsonl"))
+    }
+
+    pub fn scheduler_events_log_path(&self) -> PathBuf {
+        self.authority
+            .state_events_scheduler_dir
+            .join("scheduler.jsonl")
     }
 
     pub fn coordination_log_path(&self, wave_id: u32) -> PathBuf {
@@ -667,6 +684,10 @@ project_name = "Codex Wave Mode"
         assert_eq!(
             config.authority.state_events_dir,
             PathBuf::from(DEFAULT_STATE_EVENTS_DIR)
+        );
+        assert_eq!(
+            config.authority.state_events_scheduler_dir,
+            PathBuf::from(DEFAULT_STATE_EVENTS_SCHEDULER_DIR)
         );
         assert_eq!(
             config.authority.state_events_control_dir,
@@ -807,6 +828,10 @@ unexpected = true
             PathBuf::from("/home/coder/codex-wave-mode/docs/plans/component-cutover-matrix.json")
         );
         assert_eq!(
+            paths.authority.state_events_scheduler_dir,
+            PathBuf::from("/home/coder/codex-wave-mode/.wave/state/events/scheduler")
+        );
+        assert_eq!(
             paths.authority.state_events_control_dir,
             PathBuf::from("/home/coder/codex-wave-mode/.wave/state/events/control")
         );
@@ -848,6 +873,10 @@ unexpected = true
         assert_eq!(
             paths.authority.state_build_specs_dir,
             PathBuf::from("/repo/.wave/state/build/specs")
+        );
+        assert_eq!(
+            paths.scheduler_events_log_path(),
+            PathBuf::from("/repo/.wave/state/events/scheduler/scheduler.jsonl")
         );
         assert_eq!(
             paths.control_events_log_path(10),

@@ -12,16 +12,18 @@ use wave_config::ExecutionMode;
 use wave_config::ProjectConfig;
 use wave_dark_factory::LintFinding;
 use wave_dark_factory::SkillCatalogIssue;
+use wave_events::SchedulerEvent;
 use wave_gates::CompatibilityRunInput;
 use wave_gates::REQUIRED_CLOSURE_AGENT_IDS;
 use wave_gates::compatibility_run_inputs_by_wave;
 use wave_reducer::PlanningReducerState;
-use wave_reducer::reduce_planning_state;
+use wave_reducer::reduce_planning_state_with_scheduler;
 use wave_spec::WaveDocument;
 use wave_trace::WaveRunRecord;
 use wave_trace::WaveRunStatus;
 
 pub use authority::load_canonical_compatibility_runs;
+pub use authority::load_scheduler_events;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -29,6 +31,9 @@ pub enum WaveBlockerKind {
     Dependency,
     Lint,
     Closure,
+    Ownership,
+    LeaseExpired,
+    Budget,
     ActiveRun,
     AlreadyCompleted,
     Other,
@@ -38,6 +43,7 @@ pub enum WaveBlockerKind {
 #[serde(rename_all = "snake_case")]
 pub enum QueueReadinessState {
     Ready,
+    Claimed,
     Blocked,
     Active,
     Completed,
@@ -53,17 +59,26 @@ pub struct WaveBlockerState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WaveReadinessState {
     pub state: QueueReadinessState,
+    pub planning_ready: bool,
     pub claimable: bool,
     pub reasons: Vec<WaveBlockerState>,
     pub primary_reason: Option<WaveBlockerState>,
 }
+
+pub type SchedulerOwnerState = wave_reducer::SchedulerOwnerState;
+pub type WaveClaimStateView = wave_reducer::WaveClaimStateView;
+pub type TaskLeaseStateView = wave_reducer::TaskLeaseStateView;
+pub type SchedulerBudgetState = wave_reducer::SchedulerBudgetState;
+pub type WaveOwnershipState = wave_reducer::WaveOwnershipState;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct QueueReadinessProjection {
     pub next_ready_wave_ids: Vec<u32>,
     pub next_ready_wave_id: Option<u32>,
     pub claimable_wave_ids: Vec<u32>,
+    pub claimed_wave_ids: Vec<u32>,
     pub ready_wave_count: usize,
+    pub claimed_wave_count: usize,
     pub blocked_wave_count: usize,
     pub active_wave_count: usize,
     pub completed_wave_count: usize,
@@ -81,6 +96,7 @@ pub struct WaveQueueEntry {
     pub blocker_state: Vec<WaveBlockerState>,
     pub lint_errors: usize,
     pub ready: bool,
+    pub ownership: WaveOwnershipState,
     pub agent_count: usize,
     pub implementation_agent_count: usize,
     pub closure_agent_count: usize,
@@ -142,6 +158,9 @@ pub struct WaveBlockerFlags {
     pub dependency: bool,
     pub lint: bool,
     pub closure: bool,
+    pub ownership: bool,
+    pub lease_expired: bool,
+    pub budget: bool,
     pub active_run: bool,
     pub already_completed: bool,
     pub other: bool,
@@ -173,6 +192,7 @@ pub struct WavePlanningProjection {
     pub readiness: WaveReadinessState,
     pub lint_errors: usize,
     pub ready: bool,
+    pub ownership: WaveOwnershipState,
     pub rerun_requested: bool,
     pub completed: bool,
     pub last_run_status: Option<WaveRunStatus>,
@@ -215,6 +235,9 @@ pub struct QueueBlockerSummary {
     pub dependency: usize,
     pub lint: usize,
     pub closure: usize,
+    pub ownership: usize,
+    pub lease_expired: usize,
+    pub budget: usize,
     pub active_run: usize,
     pub already_completed: usize,
     pub other: usize,
@@ -237,6 +260,7 @@ pub struct BlockedWaveProjection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct QueueProjection {
     pub ready: Vec<WaveRef>,
+    pub claimed: Vec<WaveRef>,
     pub active: Vec<WaveRef>,
     pub completed: Vec<WaveRef>,
     pub blocked: Vec<BlockedWaveProjection>,
@@ -250,6 +274,9 @@ pub struct QueueBlockerWaves {
     pub dependency: Vec<WaveRef>,
     pub lint: Vec<WaveRef>,
     pub closure: Vec<WaveRef>,
+    pub ownership: Vec<WaveRef>,
+    pub lease_expired: Vec<WaveRef>,
+    pub budget: Vec<WaveRef>,
     pub active_run: Vec<WaveRef>,
     pub already_completed: Vec<WaveRef>,
     pub other: Vec<WaveRef>,
@@ -349,10 +376,12 @@ pub struct QueuePanelWaveReadModel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct QueuePanelReadModel {
     pub ready_wave_count: usize,
+    pub claimed_wave_count: usize,
     pub blocked_wave_count: usize,
     pub active_wave_count: usize,
     pub completed_wave_count: usize,
     pub ready_wave_ids: Vec<u32>,
+    pub claimed_wave_ids: Vec<u32>,
     pub blocked_wave_ids: Vec<u32>,
     pub active_wave_ids: Vec<u32>,
     pub blocker_summary: QueueBlockerSummary,
@@ -404,6 +433,7 @@ pub struct ProjectionSpine {
 pub struct QueueDecisionReadModel {
     pub next_claimable_wave_id: Option<u32>,
     pub claimable_wave_ids: Vec<u32>,
+    pub claimed_wave_ids: Vec<u32>,
     pub queue_ready_reason: String,
     pub blocker_summary: QueueBlockerSummary,
     pub closure_blocked: Vec<WaveRef>,
@@ -482,8 +512,36 @@ pub fn build_planning_projection_bundle_with_compatibility_state(
     latest_runs: &HashMap<u32, CompatibilityRunInput>,
     rerun_wave_ids: &HashSet<u32>,
 ) -> PlanningProjectionBundle {
-    let reduced =
-        reduce_planning_state(waves, findings, skill_catalog_issues, latest_runs, rerun_wave_ids);
+    let reduced = reduce_planning_state_with_scheduler(
+        waves,
+        findings,
+        skill_catalog_issues,
+        latest_runs,
+        rerun_wave_ids,
+        &[],
+    );
+    let status = build_planning_status_from_reducer(config, &reduced);
+    let projection = build_planning_status_projection(&status);
+    PlanningProjectionBundle { status, projection }
+}
+
+pub fn build_planning_projection_bundle_with_scheduler_state(
+    config: &ProjectConfig,
+    waves: &[WaveDocument],
+    findings: &[LintFinding],
+    skill_catalog_issues: &[SkillCatalogIssue],
+    latest_runs: &HashMap<u32, CompatibilityRunInput>,
+    rerun_wave_ids: &HashSet<u32>,
+    scheduler_events: &[SchedulerEvent],
+) -> PlanningProjectionBundle {
+    let reduced = reduce_planning_state_with_scheduler(
+        waves,
+        findings,
+        skill_catalog_issues,
+        latest_runs,
+        rerun_wave_ids,
+        scheduler_events,
+    );
     let status = build_planning_status_from_reducer(config, &reduced);
     let projection = build_planning_status_projection(&status);
     PlanningProjectionBundle { status, projection }
@@ -519,16 +577,47 @@ pub fn build_projection_spine_with_compatibility_state(
     rerun_wave_ids: &HashSet<u32>,
     launcher_ready: bool,
 ) -> ProjectionSpine {
-    let planning = build_planning_projection_bundle_with_compatibility_state(
+    let planning = build_planning_projection_bundle_with_scheduler_state(
         config,
         waves,
         findings,
         skill_catalog_issues,
         latest_runs,
         rerun_wave_ids,
+        &[],
     );
-    let operator =
-        build_operator_snapshot_inputs_from_compatibility_runs(&planning, latest_runs, launcher_ready);
+    let operator = build_operator_snapshot_inputs_from_compatibility_runs(
+        &planning,
+        latest_runs,
+        launcher_ready,
+    );
+    ProjectionSpine { planning, operator }
+}
+
+pub fn build_projection_spine_with_scheduler_state(
+    config: &ProjectConfig,
+    waves: &[WaveDocument],
+    findings: &[LintFinding],
+    skill_catalog_issues: &[SkillCatalogIssue],
+    latest_runs: &HashMap<u32, CompatibilityRunInput>,
+    rerun_wave_ids: &HashSet<u32>,
+    scheduler_events: &[SchedulerEvent],
+    launcher_ready: bool,
+) -> ProjectionSpine {
+    let planning = build_planning_projection_bundle_with_scheduler_state(
+        config,
+        waves,
+        findings,
+        skill_catalog_issues,
+        latest_runs,
+        rerun_wave_ids,
+        scheduler_events,
+    );
+    let operator = build_operator_snapshot_inputs_from_compatibility_runs(
+        &planning,
+        latest_runs,
+        launcher_ready,
+    );
     ProjectionSpine { planning, operator }
 }
 
@@ -546,14 +635,16 @@ pub fn build_projection_spine_from_authority(
     for (wave_id, run) in compatibility_run_inputs_by_wave(fallback_runs) {
         compatibility_runs.entry(wave_id).or_insert(run);
     }
+    let scheduler_events = load_scheduler_events(root, config)?;
 
-    Ok(build_projection_spine_with_compatibility_state(
+    Ok(build_projection_spine_with_scheduler_state(
         config,
         waves,
         findings,
         skill_catalog_issues,
         &compatibility_runs,
         rerun_wave_ids,
+        &scheduler_events,
         launcher_ready,
     ))
 }
@@ -628,6 +719,7 @@ pub fn build_planning_status_from_authority(
 
 pub fn build_planning_status_projection(status: &PlanningStatus) -> PlanningStatusProjection {
     let mut ready = Vec::new();
+    let mut claimed = Vec::new();
     let mut active = Vec::new();
     let mut completed = Vec::new();
     let mut blocked = Vec::new();
@@ -658,10 +750,11 @@ pub fn build_planning_status_projection(status: &PlanningStatus) -> PlanningStat
             ready.push(wave_ref.clone());
         }
 
-        if matches!(
-            wave.last_run_status,
-            Some(WaveRunStatus::Running | WaveRunStatus::Planned)
-        ) {
+        if matches!(wave.readiness.state, QueueReadinessState::Claimed) {
+            claimed.push(wave_ref.clone());
+        }
+
+        if matches!(wave.readiness.state, QueueReadinessState::Active) {
             active.push(wave_ref.clone());
             active_wave_ids.push(wave.id);
         }
@@ -694,13 +787,7 @@ pub fn build_planning_status_projection(status: &PlanningStatus) -> PlanningStat
             accumulate_blocker_waves(&mut blocker_waves, &wave_ref, &blocker_flags);
         }
 
-        if !wave.ready
-            && !wave.completed
-            && !matches!(
-                wave.last_run_status,
-                Some(WaveRunStatus::Running | WaveRunStatus::Planned)
-            )
-        {
+        if matches!(wave.readiness.state, QueueReadinessState::Blocked) {
             blocked.push(BlockedWaveProjection {
                 id: wave.id,
                 slug: wave.slug.clone(),
@@ -725,6 +812,7 @@ pub fn build_planning_status_projection(status: &PlanningStatus) -> PlanningStat
             readiness: wave.readiness.clone(),
             lint_errors: wave.lint_errors,
             ready: wave.ready,
+            ownership: wave.ownership.clone(),
             rerun_requested: wave.rerun_requested,
             completed: wave.completed,
             last_run_status: wave.last_run_status,
@@ -762,6 +850,7 @@ pub fn build_planning_status_projection(status: &PlanningStatus) -> PlanningStat
         },
         queue: QueueProjection {
             ready,
+            claimed,
             active,
             completed,
             blocked,
@@ -875,7 +964,10 @@ pub fn build_operator_snapshot_inputs_from_compatibility_runs(
     launcher_ready: bool,
 ) -> OperatorSnapshotInputs {
     OperatorSnapshotInputs {
-        dashboard: build_dashboard_read_model_from_compatibility_runs(&planning.status, latest_runs),
+        dashboard: build_dashboard_read_model_from_compatibility_runs(
+            &planning.status,
+            latest_runs,
+        ),
         run: planning.projection.run.clone(),
         agents: planning.projection.agents.clone(),
         queue: build_queue_panel_read_model(&planning.projection),
@@ -886,10 +978,17 @@ pub fn build_operator_snapshot_inputs_from_compatibility_runs(
 pub fn build_queue_panel_read_model(projection: &PlanningStatusProjection) -> QueuePanelReadModel {
     QueuePanelReadModel {
         ready_wave_count: projection.queue.ready.len(),
+        claimed_wave_count: projection.queue.claimed.len(),
         blocked_wave_count: projection.queue.blocked.len(),
         active_wave_count: projection.queue.active.len(),
         completed_wave_count: projection.queue.completed.len(),
         ready_wave_ids: projection.queue.ready.iter().map(|wave| wave.id).collect(),
+        claimed_wave_ids: projection
+            .queue
+            .claimed
+            .iter()
+            .map(|wave| wave.id)
+            .collect(),
         blocked_wave_ids: projection
             .queue
             .blocked
@@ -1033,6 +1132,7 @@ pub fn build_queue_decision_read_model(
     QueueDecisionReadModel {
         next_claimable_wave_id,
         claimable_wave_ids: status.queue.claimable_wave_ids.clone(),
+        claimed_wave_ids: status.queue.claimed_wave_ids.clone(),
         queue_ready_reason: status.queue.queue_ready_reason.clone(),
         blocker_summary: projection.queue.blocker_summary.clone(),
         closure_blocked: closure_blocked.clone(),
@@ -1040,6 +1140,7 @@ pub fn build_queue_decision_read_model(
             next_claimable_wave_id,
             &status.queue.queue_ready_reason,
             &status.queue.claimable_wave_ids,
+            &status.queue.claimed_wave_ids,
             &projection.queue.blocker_summary,
             &closure_blocked,
         ),
@@ -1103,6 +1204,7 @@ fn queue_decision_story_lines(
     next_claimable_wave_id: Option<u32>,
     queue_ready_reason: &str,
     claimable_wave_ids: &[u32],
+    claimed_wave_ids: &[u32],
     blocker_summary: &QueueBlockerSummary,
     closure_blocked: &[WaveRef],
 ) -> Vec<String> {
@@ -1117,12 +1219,19 @@ fn queue_decision_story_lines(
             "queue decision: claimable waves={}",
             format_u32_list(claimable_wave_ids)
         ),
+        format!(
+            "queue decision: claimed waves={}",
+            format_u32_list(claimed_wave_ids)
+        ),
         format!("queue decision: queue ready reason={queue_ready_reason}"),
         format!(
-            "queue decision: blocker story dependency={} lint={} closure={} active_run={}",
+            "queue decision: blocker story dependency={} lint={} closure={} ownership={} lease_expired={} budget={} active_run={}",
             blocker_summary.dependency,
             blocker_summary.lint,
             blocker_summary.closure,
+            blocker_summary.ownership,
+            blocker_summary.lease_expired,
+            blocker_summary.budget,
             blocker_summary.active_run
         ),
         format!(
@@ -1176,6 +1285,7 @@ fn queue_state_label(state: QueueReadinessState, blocked_by: &[String]) -> Strin
     match state {
         QueueReadinessState::Completed => "completed".to_string(),
         QueueReadinessState::Ready => "ready".to_string(),
+        QueueReadinessState::Claimed => "claimed".to_string(),
         QueueReadinessState::Active => "active".to_string(),
         QueueReadinessState::Blocked if blocked_by.is_empty() => "blocked".to_string(),
         QueueReadinessState::Blocked => format!("blocked: {}", blocked_by.join(", ")),
@@ -1227,6 +1337,7 @@ fn build_planning_status_from_reducer(
                     .collect(),
                 lint_errors: wave.lint_errors,
                 ready: wave.ready,
+                ownership: wave.ownership.clone(),
                 agent_count: wave.agents.total,
                 implementation_agent_count: wave.agents.implementation,
                 closure_agent_count: wave.agents.closure,
@@ -1251,7 +1362,9 @@ fn convert_queue_readiness(
         next_ready_wave_ids: projection.next_ready_wave_ids.clone(),
         next_ready_wave_id: projection.next_ready_wave_id,
         claimable_wave_ids: projection.claimable_wave_ids.clone(),
+        claimed_wave_ids: projection.claimed_wave_ids.clone(),
         ready_wave_count: projection.ready_wave_count,
+        claimed_wave_count: projection.claimed_wave_count,
         blocked_wave_count: projection.blocked_wave_count,
         active_wave_count: projection.active_wave_count,
         completed_wave_count: projection.completed_wave_count,
@@ -1263,6 +1376,7 @@ fn convert_queue_readiness(
 fn convert_wave_readiness(readiness: &wave_reducer::WaveReadinessState) -> WaveReadinessState {
     WaveReadinessState {
         state: convert_queue_readiness_state(readiness.state),
+        planning_ready: readiness.planning_ready,
         claimable: readiness.claimable,
         reasons: readiness
             .reasons
@@ -1286,6 +1400,9 @@ fn convert_blocker_kind(kind: wave_reducer::WaveBlockerKind) -> WaveBlockerKind 
         wave_reducer::WaveBlockerKind::Dependency => WaveBlockerKind::Dependency,
         wave_reducer::WaveBlockerKind::Lint => WaveBlockerKind::Lint,
         wave_reducer::WaveBlockerKind::Closure => WaveBlockerKind::Closure,
+        wave_reducer::WaveBlockerKind::Ownership => WaveBlockerKind::Ownership,
+        wave_reducer::WaveBlockerKind::LeaseExpired => WaveBlockerKind::LeaseExpired,
+        wave_reducer::WaveBlockerKind::Budget => WaveBlockerKind::Budget,
         wave_reducer::WaveBlockerKind::ActiveRun => WaveBlockerKind::ActiveRun,
         wave_reducer::WaveBlockerKind::AlreadyCompleted => WaveBlockerKind::AlreadyCompleted,
         wave_reducer::WaveBlockerKind::Other => WaveBlockerKind::Other,
@@ -1295,6 +1412,7 @@ fn convert_blocker_kind(kind: wave_reducer::WaveBlockerKind) -> WaveBlockerKind 
 fn convert_queue_readiness_state(state: wave_reducer::QueueReadinessState) -> QueueReadinessState {
     match state {
         wave_reducer::QueueReadinessState::Ready => QueueReadinessState::Ready,
+        wave_reducer::QueueReadinessState::Claimed => QueueReadinessState::Claimed,
         wave_reducer::QueueReadinessState::Blocked => QueueReadinessState::Blocked,
         wave_reducer::QueueReadinessState::Active => QueueReadinessState::Active,
         wave_reducer::QueueReadinessState::Completed => QueueReadinessState::Completed,
@@ -1309,6 +1427,12 @@ fn accumulate_blockers(summary: &mut QueueBlockerSummary, blocked_by: &[String])
             summary.lint += 1;
         } else if blocker.starts_with("closure:") {
             summary.closure += 1;
+        } else if blocker.starts_with("ownership:") {
+            summary.ownership += 1;
+        } else if blocker.starts_with("lease-expired:") {
+            summary.lease_expired += 1;
+        } else if blocker.starts_with("budget:") {
+            summary.budget += 1;
         } else if blocker.starts_with("active-run:") {
             summary.active_run += 1;
         } else if blocker == "already-completed" {
@@ -1338,6 +1462,24 @@ fn classify_blockers(blocked_by: &[String]) -> Vec<WaveBlockerState> {
             } else if let Some(detail) = blocker.strip_prefix("closure:") {
                 WaveBlockerState {
                     kind: WaveBlockerKind::Closure,
+                    raw: blocker.clone(),
+                    detail: Some(detail.to_string()),
+                }
+            } else if let Some(detail) = blocker.strip_prefix("ownership:") {
+                WaveBlockerState {
+                    kind: WaveBlockerKind::Ownership,
+                    raw: blocker.clone(),
+                    detail: Some(detail.to_string()),
+                }
+            } else if let Some(detail) = blocker.strip_prefix("lease-expired:") {
+                WaveBlockerState {
+                    kind: WaveBlockerKind::LeaseExpired,
+                    raw: blocker.clone(),
+                    detail: Some(detail.to_string()),
+                }
+            } else if let Some(detail) = blocker.strip_prefix("budget:") {
+                WaveBlockerState {
+                    kind: WaveBlockerKind::Budget,
                     raw: blocker.clone(),
                     detail: Some(detail.to_string()),
                 }
@@ -1371,6 +1513,9 @@ fn classify_blocker_flags(blocker_state: &[WaveBlockerState]) -> WaveBlockerFlag
             WaveBlockerKind::Dependency => flags.dependency = true,
             WaveBlockerKind::Lint => flags.lint = true,
             WaveBlockerKind::Closure => flags.closure = true,
+            WaveBlockerKind::Ownership => flags.ownership = true,
+            WaveBlockerKind::LeaseExpired => flags.lease_expired = true,
+            WaveBlockerKind::Budget => flags.budget = true,
             WaveBlockerKind::ActiveRun => flags.active_run = true,
             WaveBlockerKind::AlreadyCompleted => flags.already_completed = true,
             WaveBlockerKind::Other => flags.other = true,
@@ -1393,6 +1538,15 @@ fn accumulate_blocker_waves(
     if flags.closure {
         summary.closure.push(wave.clone());
     }
+    if flags.ownership {
+        summary.ownership.push(wave.clone());
+    }
+    if flags.lease_expired {
+        summary.lease_expired.push(wave.clone());
+    }
+    if flags.budget {
+        summary.budget.push(wave.clone());
+    }
     if flags.active_run {
         summary.active_run.push(wave.clone());
     }
@@ -1413,6 +1567,19 @@ mod tests {
     use wave_config::DarkFactoryPolicy;
     use wave_config::LaneConfig;
     use wave_dark_factory::FindingSeverity;
+    use wave_domain::SchedulerBudget;
+    use wave_domain::SchedulerBudgetId;
+    use wave_domain::SchedulerBudgetRecord;
+    use wave_domain::SchedulerEventPayload;
+    use wave_domain::SchedulerOwner;
+    use wave_domain::TaskLeaseId;
+    use wave_domain::TaskLeaseRecord;
+    use wave_domain::TaskLeaseState;
+    use wave_domain::WaveClaimId;
+    use wave_domain::WaveClaimRecord;
+    use wave_domain::WaveClaimState;
+    use wave_events::SchedulerEvent;
+    use wave_events::SchedulerEventKind;
     use wave_spec::CompletionLevel;
     use wave_spec::ComponentPromotion;
     use wave_spec::Context7Defaults;
@@ -1754,7 +1921,7 @@ mod tests {
         let status_surface = build_control_status_read_model_from_spine(&spine);
 
         assert_eq!(
-            status_surface.queue_decision.lines[4],
+            status_surface.queue_decision.lines[5],
             "queue decision: closure-blocked=1:wave-1"
         );
         assert_eq!(
@@ -1814,7 +1981,7 @@ mod tests {
             "queue decision: next claimable wave=none"
         );
         assert_eq!(
-            status_surface.queue_decision.lines[4],
+            status_surface.queue_decision.lines[5],
             "queue decision: closure-blocked=1:wave-1"
         );
         assert_eq!(status_surface.closure_attention_lines.len(), 1);
@@ -1841,9 +2008,66 @@ mod tests {
         let queue_story = build_queue_decision_read_model_from_status(&status);
 
         assert_eq!(
-            queue_story.lines[4],
+            queue_story.lines[5],
             "queue decision: closure-blocked=1:wave-1"
         );
+    }
+
+    #[test]
+    fn scheduler_ownership_state_is_projected_for_claimed_and_stale_waves() {
+        let config = test_config();
+        let waves = vec![test_wave(0, Vec::new()), test_wave(1, Vec::new())];
+        let scheduler_events = vec![
+            budget_event(1, 1),
+            claim_event(0, "claim-wave-0", "wave-0-run", 10),
+            claim_event(1, "claim-wave-1", "wave-1-run", 20),
+            lease_event(
+                1,
+                "claim-wave-1",
+                "wave-1-run",
+                "A1",
+                TaskLeaseState::Expired,
+                21,
+                Some(22),
+            ),
+        ];
+
+        let bundle = build_planning_projection_bundle_with_scheduler_state(
+            &config,
+            &waves,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashSet::new(),
+            &scheduler_events,
+        );
+        let queue = build_queue_panel_read_model(&bundle.projection);
+        let control_status = build_control_status_read_model(&bundle.status, &bundle.projection);
+
+        assert_eq!(bundle.projection.queue.claimed.len(), 2);
+        assert_eq!(
+            bundle.projection.queue.readiness.claimed_wave_ids,
+            vec![0, 1]
+        );
+        assert_eq!(
+            bundle.status.waves[0].readiness.state,
+            QueueReadinessState::Claimed
+        );
+        assert_eq!(
+            bundle.status.waves[0]
+                .ownership
+                .claim
+                .as_ref()
+                .unwrap()
+                .owner
+                .scheduler_path,
+            "wave-runtime/codex"
+        );
+        assert_eq!(bundle.status.waves[1].ownership.stale_leases.len(), 1);
+        assert!(bundle.projection.waves[1].blockers.lease_expired);
+        assert_eq!(queue.claimed_wave_count, 2);
+        assert_eq!(queue.waves[0].queue_state, "claimed");
+        assert_eq!(control_status.queue_decision.claimed_wave_ids, vec![0, 1]);
     }
 
     fn test_config() -> ProjectConfig {
@@ -1873,6 +2097,100 @@ mod tests {
             lanes: BTreeMap::<String, LaneConfig>::new(),
             ..ProjectConfig::default()
         }
+    }
+
+    fn scheduler_owner(session_id: &str) -> SchedulerOwner {
+        SchedulerOwner {
+            scheduler_id: "wave-runtime".to_string(),
+            scheduler_path: "wave-runtime/codex".to_string(),
+            runtime: Some("codex".to_string()),
+            executor: Some("codex".to_string()),
+            session_id: Some(session_id.to_string()),
+        }
+    }
+
+    fn claim_event(
+        wave_id: u32,
+        claim_id: &str,
+        session_id: &str,
+        created_at_ms: u128,
+    ) -> SchedulerEvent {
+        let claim = WaveClaimRecord {
+            claim_id: WaveClaimId::new(claim_id),
+            wave_id,
+            state: WaveClaimState::Held,
+            owner: scheduler_owner(session_id),
+            claimed_at_ms: created_at_ms,
+            released_at_ms: None,
+            detail: Some("claim acquired".to_string()),
+        };
+        SchedulerEvent::new(
+            format!("sched-claim-{wave_id}-{claim_id}"),
+            SchedulerEventKind::WaveClaimAcquired,
+        )
+        .with_wave_id(wave_id)
+        .with_claim_id(claim.claim_id.clone())
+        .with_created_at_ms(created_at_ms)
+        .with_correlation_id(session_id)
+        .with_payload(SchedulerEventPayload::WaveClaimUpdated { claim })
+    }
+
+    fn lease_event(
+        wave_id: u32,
+        claim_id: &str,
+        session_id: &str,
+        agent_id: &str,
+        state: TaskLeaseState,
+        granted_at_ms: u128,
+        finished_at_ms: Option<u128>,
+    ) -> SchedulerEvent {
+        let task_id = wave_domain::task_id_for_agent(wave_id, agent_id);
+        let lease = TaskLeaseRecord {
+            lease_id: TaskLeaseId::new(format!("lease-wave-{wave_id}-{agent_id}")),
+            wave_id,
+            task_id: task_id.clone(),
+            claim_id: Some(WaveClaimId::new(claim_id)),
+            state,
+            owner: scheduler_owner(session_id),
+            granted_at_ms,
+            heartbeat_at_ms: Some(granted_at_ms),
+            expires_at_ms: finished_at_ms,
+            finished_at_ms,
+            detail: Some("lease update".to_string()),
+        };
+        let kind = match state {
+            TaskLeaseState::Granted => SchedulerEventKind::TaskLeaseGranted,
+            TaskLeaseState::Released => SchedulerEventKind::TaskLeaseReleased,
+            TaskLeaseState::Expired => SchedulerEventKind::TaskLeaseExpired,
+            TaskLeaseState::Revoked => SchedulerEventKind::TaskLeaseRevoked,
+        };
+        SchedulerEvent::new(format!("sched-lease-{wave_id}-{agent_id}"), kind)
+            .with_wave_id(wave_id)
+            .with_task_id(task_id)
+            .with_claim_id(WaveClaimId::new(claim_id))
+            .with_lease_id(lease.lease_id.clone())
+            .with_created_at_ms(finished_at_ms.unwrap_or(granted_at_ms))
+            .with_correlation_id(session_id)
+            .with_payload(SchedulerEventPayload::TaskLeaseUpdated { lease })
+    }
+
+    fn budget_event(max_active_wave_claims: u32, updated_at_ms: u128) -> SchedulerEvent {
+        let budget = SchedulerBudgetRecord {
+            budget_id: SchedulerBudgetId::new("budget-default"),
+            budget: SchedulerBudget {
+                max_active_wave_claims: Some(max_active_wave_claims),
+                max_active_task_leases: Some(1),
+            },
+            owner: scheduler_owner("budget-bootstrap"),
+            updated_at_ms,
+            detail: Some("serial budget".to_string()),
+        };
+        SchedulerEvent::new(
+            format!("sched-budget-{updated_at_ms}"),
+            SchedulerEventKind::SchedulerBudgetUpdated,
+        )
+        .with_created_at_ms(updated_at_ms)
+        .with_payload(SchedulerEventPayload::SchedulerBudgetUpdated { budget })
     }
 
     fn test_wave(id: u32, depends_on: Vec<u32>) -> WaveDocument {

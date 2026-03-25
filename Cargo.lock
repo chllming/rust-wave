@@ -2529,6 +2529,7 @@ dependencies = [
  "wave-config",
  "wave-dark-factory",
  "wave-domain",
+ "wave-events",
  "wave-gates",
  "wave-spec",
  "wave-trace",

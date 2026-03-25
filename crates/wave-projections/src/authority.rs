@@ -7,6 +7,8 @@ use wave_domain::AttemptState;
 use wave_domain::ControlEventPayload;
 use wave_domain::task_id_for_agent;
 use wave_events::ControlEventLog;
+use wave_events::SchedulerEvent;
+use wave_events::SchedulerEventLog;
 use wave_gates::CompatibilityAgentRunInput;
 use wave_gates::CompatibilityRunInput;
 use wave_spec::WaveAgent;
@@ -135,12 +137,12 @@ pub fn load_canonical_compatibility_runs(
                         continue;
                     };
                     let authored_agent = authored_agents.get(result.agent_id.as_str());
-                    let expected_final_markers = if result.closure_input.final_markers.required.is_empty()
-                    {
-                        authored_expected_markers(authored_agent, &result.agent_id)
-                    } else {
-                        result.closure_input.final_markers.required.clone()
-                    };
+                    let expected_final_markers =
+                        if result.closure_input.final_markers.required.is_empty() {
+                            authored_expected_markers(authored_agent, &result.agent_id)
+                        } else {
+                            result.closure_input.final_markers.required.clone()
+                        };
                     let run = runs_by_id.entry(run_id.clone()).or_insert_with(|| {
                         CanonicalRunAccumulator::new(run_id, wave.metadata.id, result.created_at_ms)
                     });
@@ -164,10 +166,8 @@ pub fn load_canonical_compatibility_runs(
                     };
                     agent.last_updated_at_ms = agent.last_updated_at_ms.max(result.created_at_ms);
                     if result.attempt_state.is_terminal() {
-                        agent.finished_at_ms = max_option(
-                            agent.finished_at_ms,
-                            Some(result.created_at_ms),
-                        );
+                        agent.finished_at_ms =
+                            max_option(agent.finished_at_ms, Some(result.created_at_ms));
                     }
                 }
                 _ => {}
@@ -186,6 +186,11 @@ pub fn load_canonical_compatibility_runs(
     }
 
     Ok(canonical_runs)
+}
+
+pub fn load_scheduler_events(root: &Path, config: &ProjectConfig) -> Result<Vec<SchedulerEvent>> {
+    let resolved_paths = config.resolved_paths(root);
+    SchedulerEventLog::new(resolved_paths.authority.state_events_scheduler_dir).load_all()
 }
 
 fn authored_agents_by_id<'a>(wave: &'a WaveDocument) -> HashMap<String, &'a WaveAgent> {

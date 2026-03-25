@@ -8,10 +8,11 @@ publish = false
 [dependencies]
 serde.workspace = true
 wave-dark-factory.workspace = true
+wave-domain.workspace = true
+wave-events.workspace = true
 wave-gates.workspace = true
 wave-spec.workspace = true
 wave-trace.workspace = true
 
 [dev-dependencies]
 wave-config.workspace = true
-wave-domain.workspace = true

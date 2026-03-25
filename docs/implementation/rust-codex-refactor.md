@@ -9,7 +9,7 @@ This repository now has a working local operator/runtime slice of the refactor:
 - repo-specific skills for Rust workspace, control-plane, Codex runtime, TUI, and closure-marker work
 - pinned and vendored upstream baselines for Codex OSS and the Wave control-plane docs branch
 - live Codex-backed launcher state under the repo-local `.wave/codex/`
-- canonical authority roots under `.wave/state/events/control/`, `.wave/state/events/coordination/`, `.wave/state/results/`, `.wave/state/derived/`, `.wave/state/projections/`, and `.wave/state/traces/`
+- canonical authority roots under `.wave/state/events/control/`, `.wave/state/events/coordination/`, `.wave/state/events/scheduler/`, `.wave/state/results/`, `.wave/state/derived/`, `.wave/state/projections/`, and `.wave/state/traces/`
 - compatibility run outputs under `.wave/state/runs/` and replay-aware compatibility trace bundles under `.wave/traces/runs/` until later cutover waves replace them
 
 This is still a bootstrap slice. The docs should describe what the control-plane can already prove, not imply that every live operator feature has shipped.
@@ -43,7 +43,7 @@ Wave 0.2 authority work is now present in-tree as typed Rust crates and config, 
 - `wave-domain`
   typed task ids, attempt ids, closure roles, gate dispositions, fact and contradiction records, rerun requests, human-input requests, and declaration-to-task-seed mapping from authored waves
 - `wave-events`
-  append/query primitives for canonical control-event logs under `.wave/state/events/control/`
+  append/query primitives for canonical control-event logs under `.wave/state/events/control/` plus scheduler-authority logs under `.wave/state/events/scheduler/`
 - `wave-coordination`
   append/query primitives for durable coordination records under `.wave/state/events/coordination/`
 - `wave-projections`
@@ -57,12 +57,13 @@ The canonical Wave 0.2 authority roots under `.wave/state/` are:
 
 - control events: `.wave/state/events/control/`
 - coordination records: `.wave/state/events/coordination/`
+- scheduler authority events: `.wave/state/events/scheduler/`
 - structured results: `.wave/state/results/`
 - derived state: `.wave/state/derived/`
 - projections: `.wave/state/projections/`
 - canonical traces: `.wave/state/traces/`
 
-This is now an authority-core plus projection-spine landing. Wave 0.2 still keeps compatibility run and trace artifacts under `.wave/state/runs/` and `.wave/traces/runs/` as adapter inputs, but planning status, queue truth, control status, and operator snapshot inputs now derive from reducer-backed projections rather than an ad hoc compatibility-only planner.
+This is now an authority-core plus projection-spine landing. Scheduler ownership is canonical in the reducer through explicit claim, lease, and budget events, so readiness is no longer treated as ownership. Wave 0.2 still keeps compatibility run and trace artifacts under `.wave/state/runs/` and `.wave/traces/runs/` as adapter inputs, and the live runtime still executes serially. True parallel waves, per-wave worktrees, and multi-runtime execution remain later work.
 
 ## Authored-Wave Contract
 
@@ -124,7 +125,7 @@ That same model feeds the operator surfaces today:
 - `wave-dark-factory`
   rejects underspecified or inconsistent authored waves
 - `wave-projections`
-  computes reducer-backed planning status, queue readiness, closure coverage, control/status views, and operator snapshot inputs from the typed wave model plus compatibility-backed run adapters; this is the authoritative projection/read-model crate
+  computes reducer-backed planning status, queue readiness, scheduler-owned claim and lease visibility, closure coverage, control/status views, and operator snapshot inputs from the typed wave model plus compatibility-backed run adapters; this is the authoritative projection/read-model crate
 - `wave-control-plane`
   forwards the projection contract so existing runtime and CLI callers compile while the manifests still point at the older crate name
 - `wave-cli`
@@ -160,7 +161,7 @@ The current status model should be read as:
 - `Agents`
   per-agent state, proof or marker completeness, and deliverables
 - `Queue`
-  readiness, blockers, dependency-driven ordering, and whether a wave is claimable
+  readiness, blockers, dependency-driven ordering, and the reducer-owned distinction between ready, claimed, active, stale-lease, and claimable waves
 - `Control`
   rerun intents, replay/proof state, and operator actions
 

@@ -307,6 +307,7 @@ struct ConfiguredCanonicalAuthoritySurface {
     events: PathBuf,
     control_events: PathBuf,
     coordination: PathBuf,
+    scheduler_events: PathBuf,
     results: PathBuf,
     derived: PathBuf,
     projections: PathBuf,
@@ -319,6 +320,7 @@ struct MaterializedCanonicalAuthoritySurface {
     events: MaterializedPathSurface,
     control_events: MaterializedPathSurface,
     coordination: MaterializedPathSurface,
+    scheduler_events: MaterializedPathSurface,
     results: MaterializedPathSurface,
     derived: MaterializedPathSurface,
     projections: MaterializedPathSurface,
@@ -340,12 +342,13 @@ struct CompatibilityAuthoritySurface {
 }
 
 impl MaterializedCanonicalAuthoritySurface {
-    fn entries(&self) -> [&MaterializedPathSurface; 8] {
+    fn entries(&self) -> [&MaterializedPathSurface; 9] {
         [
             &self.build_specs,
             &self.events,
             &self.control_events,
             &self.coordination,
+            &self.scheduler_events,
             &self.results,
             &self.derived,
             &self.projections,
@@ -573,6 +576,7 @@ fn authority_surface(config: &ProjectConfig, root: &Path) -> AuthoritySurface {
         events: resolved.authority.state_events_dir.clone(),
         control_events: resolved.authority.state_events_control_dir.clone(),
         coordination: resolved.authority.state_events_coordination_dir.clone(),
+        scheduler_events: resolved.authority.state_events_scheduler_dir.clone(),
         results: resolved.authority.state_results_dir.clone(),
         derived: resolved.authority.state_derived_dir.clone(),
         projections: resolved.authority.state_projections_dir.clone(),
@@ -593,6 +597,9 @@ fn authority_surface(config: &ProjectConfig, root: &Path) -> AuthoritySurface {
             coordination: materialized_path_surface(
                 resolved.authority.state_events_coordination_dir.clone(),
             ),
+            scheduler_events: materialized_path_surface(
+                resolved.authority.state_events_scheduler_dir.clone(),
+            ),
             results: materialized_path_surface(resolved.authority.state_results_dir.clone()),
             derived: materialized_path_surface(resolved.authority.state_derived_dir.clone()),
             projections: materialized_path_surface(
@@ -606,7 +613,7 @@ fn authority_surface(config: &ProjectConfig, root: &Path) -> AuthoritySurface {
             trace_root: resolved.authority.trace_dir,
             trace_runs: resolved.authority.trace_runs_dir,
         },
-        projection_source: "planning status, queue/control JSON, and operator-facing status surfaces are reducer-backed projections over compatibility run records; proof and closure surfaces are envelope-first, and replay remains compatibility-backed",
+        projection_source: "planning status, queue/control JSON, and operator-facing status surfaces are reducer-backed projections over canonical scheduler authority plus compatibility run records; proof and closure surfaces are envelope-first, and replay remains compatibility-backed",
     }
 }
 
@@ -648,7 +655,7 @@ fn render_project(config: &ProjectConfig, root: &Path, json: bool) -> Result<()>
             report.authority.state_dir.display()
         );
         println!(
-            "configured canonical roots: build_specs={} events={} control_events={} coordination={} results={} derived={} projections={} state_traces={}",
+            "configured canonical roots: build_specs={} events={} control_events={} coordination={} scheduler_events={} results={} derived={} projections={} state_traces={}",
             report.authority.configured_canonical.build_specs.display(),
             report.authority.configured_canonical.events.display(),
             report
@@ -657,17 +664,23 @@ fn render_project(config: &ProjectConfig, root: &Path, json: bool) -> Result<()>
                 .control_events
                 .display(),
             report.authority.configured_canonical.coordination.display(),
+            report
+                .authority
+                .configured_canonical
+                .scheduler_events
+                .display(),
             report.authority.configured_canonical.results.display(),
             report.authority.configured_canonical.derived.display(),
             report.authority.configured_canonical.projections.display(),
             report.authority.configured_canonical.state_traces.display()
         );
         println!(
-            "materialized canonical roots: build_specs={} events={} control_events={} coordination={} results={} derived={} projections={} state_traces={}",
+            "materialized canonical roots: build_specs={} events={} control_events={} coordination={} scheduler_events={} results={} derived={} projections={} state_traces={}",
             format_materialized_path(&report.authority.materialized_canonical.build_specs),
             format_materialized_path(&report.authority.materialized_canonical.events),
             format_materialized_path(&report.authority.materialized_canonical.control_events),
             format_materialized_path(&report.authority.materialized_canonical.coordination),
+            format_materialized_path(&report.authority.materialized_canonical.scheduler_events),
             format_materialized_path(&report.authority.materialized_canonical.results),
             format_materialized_path(&report.authority.materialized_canonical.derived),
             format_materialized_path(&report.authority.materialized_canonical.projections),
@@ -717,13 +730,14 @@ fn render_doctor(
         "runtime bootstrap has not materialized canonical roots yet".to_string()
     } else {
         format!(
-            "{} of {} canonical roots materialized | build_specs={} events={} control_events={} coordination={} results={} derived={} projections={} state_traces={}",
+            "{} of {} canonical roots materialized | build_specs={} events={} control_events={} coordination={} scheduler_events={} results={} derived={} projections={} state_traces={}",
             materialized_root_count,
             materialized_root_total,
             format_materialized_path(&authority.materialized_canonical.build_specs),
             format_materialized_path(&authority.materialized_canonical.events),
             format_materialized_path(&authority.materialized_canonical.control_events),
             format_materialized_path(&authority.materialized_canonical.coordination),
+            format_materialized_path(&authority.materialized_canonical.scheduler_events),
             format_materialized_path(&authority.materialized_canonical.results),
             format_materialized_path(&authority.materialized_canonical.derived),
             format_materialized_path(&authority.materialized_canonical.projections),
@@ -834,11 +848,12 @@ fn render_doctor(
             name: "typed-authority-roots",
             ok: authority_roots_ok,
             detail: format!(
-                "state_root={} | build_specs={} control_events={} coordination={} results={} derived={} projections={} state_traces={} | compatibility truth remains state_runs={} trace_runs={}",
+                "state_root={} | build_specs={} control_events={} coordination={} scheduler_events={} results={} derived={} projections={} state_traces={} | compatibility truth remains state_runs={} trace_runs={}",
                 authority.state_dir.display(),
                 authority.configured_canonical.build_specs.display(),
                 authority.configured_canonical.control_events.display(),
                 authority.configured_canonical.coordination.display(),
+                authority.configured_canonical.scheduler_events.display(),
                 authority.configured_canonical.results.display(),
                 authority.configured_canonical.derived.display(),
                 authority.configured_canonical.projections.display(),
@@ -951,7 +966,7 @@ fn render_doctor(
             report.authority.state_dir.display()
         );
         println!(
-            "configured canonical roots: build_specs={} events={} control_events={} coordination={} results={} derived={} projections={} state_traces={}",
+            "configured canonical roots: build_specs={} events={} control_events={} coordination={} scheduler_events={} results={} derived={} projections={} state_traces={}",
             report.authority.configured_canonical.build_specs.display(),
             report.authority.configured_canonical.events.display(),
             report
@@ -960,17 +975,23 @@ fn render_doctor(
                 .control_events
                 .display(),
             report.authority.configured_canonical.coordination.display(),
+            report
+                .authority
+                .configured_canonical
+                .scheduler_events
+                .display(),
             report.authority.configured_canonical.results.display(),
             report.authority.configured_canonical.derived.display(),
             report.authority.configured_canonical.projections.display(),
             report.authority.configured_canonical.state_traces.display()
         );
         println!(
-            "materialized canonical roots: build_specs={} events={} control_events={} coordination={} results={} derived={} projections={} state_traces={}",
+            "materialized canonical roots: build_specs={} events={} control_events={} coordination={} scheduler_events={} results={} derived={} projections={} state_traces={}",
             format_materialized_path(&report.authority.materialized_canonical.build_specs),
             format_materialized_path(&report.authority.materialized_canonical.events),
             format_materialized_path(&report.authority.materialized_canonical.control_events),
             format_materialized_path(&report.authority.materialized_canonical.coordination),
+            format_materialized_path(&report.authority.materialized_canonical.scheduler_events),
             format_materialized_path(&report.authority.materialized_canonical.results),
             format_materialized_path(&report.authority.materialized_canonical.derived),
             format_materialized_path(&report.authority.materialized_canonical.projections),
@@ -1768,6 +1789,23 @@ mod tests {
     use wave_spec::WaveDocument;
     use wave_spec::WaveMetadata;
 
+    fn empty_ownership() -> wave_control_plane::WaveOwnershipState {
+        wave_control_plane::WaveOwnershipState {
+            claim: None,
+            active_leases: Vec::new(),
+            stale_leases: Vec::new(),
+            contention_reasons: Vec::new(),
+            blocked_by_owner: None,
+            budget: wave_control_plane::SchedulerBudgetState {
+                max_active_wave_claims: None,
+                max_active_task_leases: None,
+                active_wave_claims: 0,
+                active_task_leases: 0,
+                budget_blocked: false,
+            },
+        }
+    }
+
     #[test]
     fn config_root_uses_parent() {
         let root = config_root(Path::new("/tmp/example/wave.toml"));
@@ -1799,6 +1837,10 @@ mod tests {
                 path: PathBuf::from("/repo/.wave/state/events/coordination"),
                 exists: true,
             },
+            scheduler_events: MaterializedPathSurface {
+                path: PathBuf::from("/repo/.wave/state/events/scheduler"),
+                exists: true,
+            },
             results: MaterializedPathSurface {
                 path: PathBuf::from("/repo/.wave/state/results"),
                 exists: true,
@@ -1817,7 +1859,7 @@ mod tests {
             },
         };
 
-        assert_eq!(surface.present_count(), 7);
+        assert_eq!(surface.present_count(), 8);
         assert!(!surface.all_exist());
     }
 
@@ -1850,7 +1892,9 @@ mod tests {
                 next_ready_wave_ids: vec![11],
                 next_ready_wave_id: Some(11),
                 claimable_wave_ids: vec![11],
+                claimed_wave_ids: Vec::new(),
                 ready_wave_count: 1,
+                claimed_wave_count: 0,
                 blocked_wave_count: 0,
                 active_wave_count: 0,
                 completed_wave_count: 0,
@@ -1867,6 +1911,7 @@ mod tests {
                 blocker_state: Vec::new(),
                 lint_errors: 0,
                 ready: true,
+                ownership: empty_ownership(),
                 agent_count: 3,
                 implementation_agent_count: 1,
                 closure_agent_count: 2,
@@ -1876,6 +1921,7 @@ mod tests {
                 missing_closure_agents: Vec::new(),
                 readiness: WaveReadinessReadModel {
                     state: QueueReadinessStateReadModel::Ready,
+                    planning_ready: true,
                     claimable: true,
                     reasons: Vec::new(),
                     primary_reason: None,

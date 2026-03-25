@@ -38,6 +38,9 @@ string_id!(ProofBundleId);
 string_id!(RerunRequestId);
 string_id!(HumanInputRequestId);
 string_id!(ResultEnvelopeId);
+string_id!(WaveClaimId);
+string_id!(TaskLeaseId);
+string_id!(SchedulerBudgetId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -143,6 +146,98 @@ pub enum RerunState {
     Approved,
     Cancelled,
     Completed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveClaimState {
+    Held,
+    Released,
+}
+
+impl WaveClaimState {
+    pub fn is_held(self) -> bool {
+        matches!(self, Self::Held)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskLeaseState {
+    Granted,
+    Released,
+    Expired,
+    Revoked,
+}
+
+impl TaskLeaseState {
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Granted)
+    }
+
+    pub fn is_terminal(self) -> bool {
+        !self.is_active()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SchedulerOwner {
+    pub scheduler_id: String,
+    pub scheduler_path: String,
+    pub runtime: Option<String>,
+    pub executor: Option<String>,
+    pub session_id: Option<String>,
+}
+
+impl SchedulerOwner {
+    pub fn display_label(&self) -> &str {
+        if self.scheduler_path.is_empty() {
+            self.scheduler_id.as_str()
+        } else {
+            self.scheduler_path.as_str()
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaveClaimRecord {
+    pub claim_id: WaveClaimId,
+    pub wave_id: u32,
+    pub state: WaveClaimState,
+    pub owner: SchedulerOwner,
+    pub claimed_at_ms: u128,
+    pub released_at_ms: Option<u128>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskLeaseRecord {
+    pub lease_id: TaskLeaseId,
+    pub wave_id: u32,
+    pub task_id: TaskId,
+    pub claim_id: Option<WaveClaimId>,
+    pub state: TaskLeaseState,
+    pub owner: SchedulerOwner,
+    pub granted_at_ms: u128,
+    pub heartbeat_at_ms: Option<u128>,
+    pub expires_at_ms: Option<u128>,
+    pub finished_at_ms: Option<u128>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SchedulerBudget {
+    pub max_active_wave_claims: Option<u32>,
+    pub max_active_task_leases: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchedulerBudgetRecord {
+    pub budget_id: SchedulerBudgetId,
+    pub budget: SchedulerBudget,
+    pub owner: SchedulerOwner,
+    pub updated_at_ms: u128,
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -769,6 +864,22 @@ impl AttemptState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+pub enum SchedulerEventPayload {
+    #[default]
+    None,
+    WaveClaimUpdated {
+        claim: WaveClaimRecord,
+    },
+    TaskLeaseUpdated {
+        lease: TaskLeaseRecord,
+    },
+    SchedulerBudgetUpdated {
+        budget: SchedulerBudgetRecord,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum ControlEventPayload {
     #[default]
     None,
@@ -1390,6 +1501,60 @@ mod tests {
             ResultDisposition::from_attempt_state(AttemptState::Refused, 0),
             ResultDisposition::Refused
         );
+    }
+
+    #[test]
+    fn scheduler_claim_and_lease_helpers_track_current_state() {
+        let owner = SchedulerOwner {
+            scheduler_id: "wave-runtime".to_string(),
+            scheduler_path: "wave-runtime/codex".to_string(),
+            runtime: Some("codex".to_string()),
+            executor: Some("codex".to_string()),
+            session_id: Some("wave-13-run".to_string()),
+        };
+        assert_eq!(owner.display_label(), "wave-runtime/codex");
+        assert!(WaveClaimState::Held.is_held());
+        assert!(!WaveClaimState::Released.is_held());
+        assert!(TaskLeaseState::Granted.is_active());
+        assert!(!TaskLeaseState::Expired.is_active());
+        assert!(TaskLeaseState::Revoked.is_terminal());
+
+        let claim = WaveClaimRecord {
+            claim_id: WaveClaimId::new("claim-wave-13"),
+            wave_id: 13,
+            state: WaveClaimState::Held,
+            owner: owner.clone(),
+            claimed_at_ms: 10,
+            released_at_ms: None,
+            detail: Some("launcher claimed wave".to_string()),
+        };
+        let lease = TaskLeaseRecord {
+            lease_id: TaskLeaseId::new("lease-wave-13-a1"),
+            wave_id: 13,
+            task_id: task_id_for_agent(13, "A1"),
+            claim_id: Some(claim.claim_id.clone()),
+            state: TaskLeaseState::Granted,
+            owner: owner.clone(),
+            granted_at_ms: 11,
+            heartbeat_at_ms: Some(12),
+            expires_at_ms: Some(42),
+            finished_at_ms: None,
+            detail: Some("task lease granted".to_string()),
+        };
+        let budget = SchedulerBudgetRecord {
+            budget_id: SchedulerBudgetId::new("budget-default"),
+            budget: SchedulerBudget {
+                max_active_wave_claims: Some(1),
+                max_active_task_leases: Some(1),
+            },
+            owner,
+            updated_at_ms: 9,
+            detail: Some("default serial safety budget".to_string()),
+        };
+
+        assert_eq!(claim.owner.display_label(), "wave-runtime/codex");
+        assert_eq!(lease.expires_at_ms, Some(42));
+        assert_eq!(budget.budget.max_active_wave_claims, Some(1));
     }
 
     #[test]
