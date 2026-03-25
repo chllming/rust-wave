@@ -288,6 +288,7 @@ struct RolePromptSurface {
     cont_eval: PathBuf,
     integration: PathBuf,
     documentation: PathBuf,
+    design: PathBuf,
     security: PathBuf,
 }
 
@@ -565,6 +566,7 @@ fn role_prompt_surface(config: &ProjectConfig, root: &Path) -> RolePromptSurface
         cont_eval: resolved.role_prompts.cont_eval,
         integration: resolved.role_prompts.integration,
         documentation: resolved.role_prompts.documentation,
+        design: resolved.role_prompts.design,
         security: resolved.role_prompts.security,
     }
 }
@@ -617,7 +619,15 @@ fn authority_surface(config: &ProjectConfig, root: &Path) -> AuthoritySurface {
     }
 }
 
+fn ensure_authority_roots_materialized(config: &ProjectConfig, root: &Path) -> Result<()> {
+    config
+        .resolved_paths(root)
+        .authority
+        .materialize_canonical_state_tree()
+}
+
 fn render_project(config: &ProjectConfig, root: &Path, json: bool) -> Result<()> {
+    ensure_authority_roots_materialized(config, root)?;
     let resolved = config.resolved_paths(root);
     let report = ProjectShowReport {
         project_name: config.project_name.clone(),
@@ -641,12 +651,13 @@ fn render_project(config: &ProjectConfig, root: &Path, json: bool) -> Result<()>
         println!("skills dir: {}", report.skills_dir.display());
         println!("codex vendor dir: {}", report.codex_vendor_dir.display());
         println!(
-            "role prompts: dir={} | cont_qa={} cont_eval={} integration={} documentation={} security={}",
+            "role prompts: dir={} | cont_qa={} cont_eval={} integration={} documentation={} design={} security={}",
             report.role_prompts.dir.display(),
             report.role_prompts.cont_qa.display(),
             report.role_prompts.cont_eval.display(),
             report.role_prompts.integration.display(),
             report.role_prompts.documentation.display(),
+            report.role_prompts.design.display(),
             report.role_prompts.security.display()
         );
         println!(
@@ -708,6 +719,140 @@ fn render_doctor(
     spine: &ProjectionSpine,
     json: bool,
 ) -> Result<()> {
+    let report = build_doctor_report(
+        config_path,
+        config,
+        root,
+        waves,
+        findings,
+        latest_runs,
+        spine,
+    )?;
+    if json {
+        return print_json(&report);
+    }
+    let status = &report.status;
+    let projection = &report.projection;
+    let control_status = &report.control_status;
+    println!("doctor: {}", if report.ok { "ok" } else { "error" });
+    println!(
+        "authored waves: {} (agents={} implementation={} closure={})",
+        status.summary.total_waves,
+        status.summary.total_agents,
+        status.summary.implementation_agents,
+        status.summary.closure_agents
+    );
+    println!(
+        "queue: ready={} blocked={} active={} completed={}",
+        status.summary.ready_waves,
+        status.summary.blocked_waves,
+        status.summary.active_waves,
+        status.summary.completed_waves
+    );
+    println!(
+        "closure coverage: complete={} missing={} missing_agents={}",
+        status.summary.waves_with_complete_closure,
+        status.summary.waves_missing_closure,
+        status.summary.total_missing_closure_agents
+    );
+    println!(
+        "skill catalog: {} ({} issues)",
+        if projection.skill_catalog.ok {
+            "ok"
+        } else {
+            "error"
+        },
+        projection.skill_catalog.issue_count
+    );
+    for line in &control_status.queue_decision.lines {
+        println!("{line}");
+    }
+    println!(
+        "skill issue paths: {}",
+        format_string_list(&control_status.skill_issue_paths)
+    );
+    println!(
+        "typed role prompts: dir={} | cont_qa={} cont_eval={} integration={} documentation={} design={} security={}",
+        report.role_prompts.dir.display(),
+        report.role_prompts.cont_qa.display(),
+        report.role_prompts.cont_eval.display(),
+        report.role_prompts.integration.display(),
+        report.role_prompts.documentation.display(),
+        report.role_prompts.design.display(),
+        report.role_prompts.security.display()
+    );
+    println!(
+        "typed authority roots: project_codex_home={} state_root={}",
+        report.authority.project_codex_home.display(),
+        report.authority.state_dir.display()
+    );
+    println!(
+        "configured canonical roots: build_specs={} events={} control_events={} coordination={} scheduler_events={} results={} derived={} projections={} state_traces={}",
+        report.authority.configured_canonical.build_specs.display(),
+        report.authority.configured_canonical.events.display(),
+        report
+            .authority
+            .configured_canonical
+            .control_events
+            .display(),
+        report.authority.configured_canonical.coordination.display(),
+        report
+            .authority
+            .configured_canonical
+            .scheduler_events
+            .display(),
+        report.authority.configured_canonical.results.display(),
+        report.authority.configured_canonical.derived.display(),
+        report.authority.configured_canonical.projections.display(),
+        report.authority.configured_canonical.state_traces.display()
+    );
+    println!(
+        "materialized canonical roots: build_specs={} events={} control_events={} coordination={} scheduler_events={} results={} derived={} projections={} state_traces={}",
+        format_materialized_path(&report.authority.materialized_canonical.build_specs),
+        format_materialized_path(&report.authority.materialized_canonical.events),
+        format_materialized_path(&report.authority.materialized_canonical.control_events),
+        format_materialized_path(&report.authority.materialized_canonical.coordination),
+        format_materialized_path(&report.authority.materialized_canonical.scheduler_events),
+        format_materialized_path(&report.authority.materialized_canonical.results),
+        format_materialized_path(&report.authority.materialized_canonical.derived),
+        format_materialized_path(&report.authority.materialized_canonical.projections),
+        format_materialized_path(&report.authority.materialized_canonical.state_traces)
+    );
+    println!(
+        "compatibility truth: state_control={} state_runs={} trace_root={} trace_runs={}",
+        report.authority.compatibility.state_control.display(),
+        report.authority.compatibility.state_runs.display(),
+        report.authority.compatibility.trace_root.display(),
+        report.authority.compatibility.trace_runs.display()
+    );
+    println!("projection source: {}", report.authority.projection_source);
+    for check in &report.checks {
+        println!(
+            "- {}: {} ({})",
+            check.name,
+            if check.ok { "ok" } else { "error" },
+            check.detail
+        );
+    }
+    for line in &control_status.closure_attention_lines {
+        println!("{line}");
+    }
+    for line in &control_status.skill_issue_lines {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+fn build_doctor_report(
+    config_path: &Path,
+    config: &ProjectConfig,
+    root: &Path,
+    waves: &[WaveDocument],
+    findings: &[LintFinding],
+    latest_runs: &HashMap<u32, WaveRunRecord>,
+    spine: &ProjectionSpine,
+) -> Result<DoctorReport> {
+    ensure_authority_roots_materialized(config, root)?;
     let status = &spine.planning.status;
     let projection = &spine.planning.projection;
     let control_status = build_control_status_read_model_from_spine(spine);
@@ -835,12 +980,13 @@ fn render_doctor(
             name: "typed-role-prompts",
             ok: role_prompt_checks.iter().all(|ok| *ok),
             detail: format!(
-                "dir={} | cont_qa={} cont_eval={} integration={} documentation={} security={}",
+                "dir={} | cont_qa={} cont_eval={} integration={} documentation={} design={} security={}",
                 role_prompts.dir.display(),
                 role_prompts.cont_qa.display(),
                 role_prompts.cont_eval.display(),
                 role_prompts.integration.display(),
                 role_prompts.documentation.display(),
+                role_prompts.design.display(),
                 role_prompts.security.display()
             ),
         },
@@ -901,7 +1047,7 @@ fn render_doctor(
             ),
         },
     ];
-    let report = DoctorReport {
+    Ok(DoctorReport {
         ok: checks.iter().all(|check| check.ok),
         status: status.clone(),
         projection: projection.clone(),
@@ -910,120 +1056,7 @@ fn render_doctor(
         checks,
         role_prompts,
         authority,
-    };
-    if json {
-        print_json(&report)
-    } else {
-        println!("doctor: {}", if report.ok { "ok" } else { "error" });
-        println!(
-            "authored waves: {} (agents={} implementation={} closure={})",
-            status.summary.total_waves,
-            status.summary.total_agents,
-            status.summary.implementation_agents,
-            status.summary.closure_agents
-        );
-        println!(
-            "queue: ready={} blocked={} active={} completed={}",
-            status.summary.ready_waves,
-            status.summary.blocked_waves,
-            status.summary.active_waves,
-            status.summary.completed_waves
-        );
-        println!(
-            "closure coverage: complete={} missing={} missing_agents={}",
-            status.summary.waves_with_complete_closure,
-            status.summary.waves_missing_closure,
-            status.summary.total_missing_closure_agents
-        );
-        println!(
-            "skill catalog: {} ({} issues)",
-            if projection.skill_catalog.ok {
-                "ok"
-            } else {
-                "error"
-            },
-            projection.skill_catalog.issue_count
-        );
-        for line in &control_status.queue_decision.lines {
-            println!("{line}");
-        }
-        println!(
-            "skill issue paths: {}",
-            format_string_list(&control_status.skill_issue_paths)
-        );
-        println!(
-            "typed role prompts: dir={} | cont_qa={} cont_eval={} integration={} documentation={} security={}",
-            report.role_prompts.dir.display(),
-            report.role_prompts.cont_qa.display(),
-            report.role_prompts.cont_eval.display(),
-            report.role_prompts.integration.display(),
-            report.role_prompts.documentation.display(),
-            report.role_prompts.security.display()
-        );
-        println!(
-            "typed authority roots: project_codex_home={} state_root={}",
-            report.authority.project_codex_home.display(),
-            report.authority.state_dir.display()
-        );
-        println!(
-            "configured canonical roots: build_specs={} events={} control_events={} coordination={} scheduler_events={} results={} derived={} projections={} state_traces={}",
-            report.authority.configured_canonical.build_specs.display(),
-            report.authority.configured_canonical.events.display(),
-            report
-                .authority
-                .configured_canonical
-                .control_events
-                .display(),
-            report.authority.configured_canonical.coordination.display(),
-            report
-                .authority
-                .configured_canonical
-                .scheduler_events
-                .display(),
-            report.authority.configured_canonical.results.display(),
-            report.authority.configured_canonical.derived.display(),
-            report.authority.configured_canonical.projections.display(),
-            report.authority.configured_canonical.state_traces.display()
-        );
-        println!(
-            "materialized canonical roots: build_specs={} events={} control_events={} coordination={} scheduler_events={} results={} derived={} projections={} state_traces={}",
-            format_materialized_path(&report.authority.materialized_canonical.build_specs),
-            format_materialized_path(&report.authority.materialized_canonical.events),
-            format_materialized_path(&report.authority.materialized_canonical.control_events),
-            format_materialized_path(&report.authority.materialized_canonical.coordination),
-            format_materialized_path(&report.authority.materialized_canonical.scheduler_events),
-            format_materialized_path(&report.authority.materialized_canonical.results),
-            format_materialized_path(&report.authority.materialized_canonical.derived),
-            format_materialized_path(&report.authority.materialized_canonical.projections),
-            format_materialized_path(&report.authority.materialized_canonical.state_traces)
-        );
-        println!(
-            "compatibility truth: state_control={} state_runs={} trace_root={} trace_runs={}",
-            report.authority.compatibility.state_control.display(),
-            report.authority.compatibility.state_runs.display(),
-            report.authority.compatibility.trace_root.display(),
-            report.authority.compatibility.trace_runs.display()
-        );
-        println!("projection source: {}", report.authority.projection_source);
-        for check in &report.checks {
-            println!(
-                "- {}: {} ({})",
-                check.name,
-                if check.ok { "ok" } else { "error" },
-                check.detail
-            );
-        }
-        for line in &control_status.closure_attention_lines {
-            println!("{line}");
-        }
-        for line in &control_status.skill_issue_lines {
-            println!("{line}");
-        }
-        for issue in &context7_catalog_issues {
-            println!("context7 issue: {} ({})", issue.path, issue.message);
-        }
-        Ok(())
-    }
+    })
 }
 
 fn render_lint(findings: &[LintFinding], json: bool) -> Result<()> {
@@ -1612,6 +1645,20 @@ fn render_trace_latest(
         println!("recorded: {}", report.recorded);
         println!("replay ok: {}", report.replay.ok);
         println!("operator help required: {}", report.operator_help_required);
+        if let Some(worktree) = &report.worktree {
+            println!("worktree: {}", worktree.path);
+            println!("worktree state: {:?}", worktree.state);
+        }
+        if let Some(promotion) = &report.promotion {
+            println!("promotion state: {:?}", promotion.state);
+            if !promotion.conflict_paths.is_empty() {
+                println!("promotion conflicts: {}", promotion.conflict_paths.join(", "));
+            }
+        }
+        if let Some(scheduling) = &report.scheduling {
+            println!("scheduler phase: {:?}", scheduling.phase);
+            println!("scheduler state: {:?}", scheduling.state);
+        }
         for item in report.help_items {
             println!(
                 "- {}: {} ({})",
@@ -1799,10 +1846,25 @@ mod tests {
             budget: wave_control_plane::SchedulerBudgetState {
                 max_active_wave_claims: None,
                 max_active_task_leases: None,
+                reserved_closure_task_leases: None,
                 active_wave_claims: 0,
                 active_task_leases: 0,
+                active_implementation_task_leases: 0,
+                active_closure_task_leases: 0,
+                closure_capacity_reserved: false,
+                preemption_enabled: false,
                 budget_blocked: false,
             },
+        }
+    }
+
+    fn empty_execution() -> wave_control_plane::WaveExecutionState {
+        wave_control_plane::WaveExecutionState {
+            worktree: None,
+            promotion: None,
+            scheduling: None,
+            merge_blocked: false,
+            closure_blocked_by_promotion: false,
         }
     }
 
@@ -1912,6 +1974,7 @@ mod tests {
                 lint_errors: 0,
                 ready: true,
                 ownership: empty_ownership(),
+                execution: empty_execution(),
                 agent_count: 3,
                 implementation_agent_count: 1,
                 closure_agent_count: 2,
@@ -2044,6 +2107,9 @@ mod tests {
             started_at_ms: Some(2),
             launcher_pid: None,
             launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: Some(3),
             agents: vec![wave_trace::AgentRunRecord {
                 id: "A1".to_string(),
@@ -2077,6 +2143,136 @@ mod tests {
             "structured-envelope"
         );
         assert!(report.replay.is_some());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn doctor_report_materializes_missing_scheduler_root() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-cli-doctor-roots-{}-{}",
+            std::process::id(),
+            wave_trace::now_epoch_ms().expect("timestamp")
+        ));
+        std::fs::create_dir_all(&root).expect("create temp root");
+
+        let config = ProjectConfig::default();
+        let resolved = config.resolved_paths(&root);
+        for path in [
+            resolved.authority.state_dir.clone(),
+            resolved.authority.state_build_specs_dir.clone(),
+            resolved.authority.state_events_dir.clone(),
+            resolved.authority.state_events_control_dir.clone(),
+            resolved.authority.state_events_coordination_dir.clone(),
+            resolved.authority.state_results_dir.clone(),
+            resolved.authority.state_derived_dir.clone(),
+            resolved.authority.state_projections_dir.clone(),
+            resolved.authority.state_traces_dir.clone(),
+        ] {
+            std::fs::create_dir_all(path).expect("create authority path");
+        }
+
+        let status = PlanningStatusReadModel {
+            project_name: "Test".to_string(),
+            default_mode: wave_config::ExecutionMode::DarkFactory,
+            summary: PlanningStatusSummary {
+                total_waves: 1,
+                ready_waves: 1,
+                blocked_waves: 0,
+                active_waves: 0,
+                completed_waves: 0,
+                total_agents: 3,
+                implementation_agents: 1,
+                closure_agents: 2,
+                waves_with_complete_closure: 1,
+                waves_missing_closure: 0,
+                total_missing_closure_agents: 0,
+                lint_error_waves: 0,
+                skill_catalog_issue_count: 0,
+            },
+            skill_catalog: SkillCatalogHealth {
+                ok: true,
+                issue_count: 0,
+                issues: Vec::new(),
+            },
+            queue: QueueReadinessReadModel {
+                next_ready_wave_ids: vec![12],
+                next_ready_wave_id: Some(12),
+                claimable_wave_ids: vec![12],
+                claimed_wave_ids: Vec::new(),
+                ready_wave_count: 1,
+                claimed_wave_count: 0,
+                blocked_wave_count: 0,
+                active_wave_count: 0,
+                completed_wave_count: 0,
+                queue_ready: true,
+                queue_ready_reason: "ready waves are available to claim".to_string(),
+            },
+            next_ready_wave_ids: vec![12],
+            waves: vec![WaveStatusReadModel {
+                id: 12,
+                slug: "result-envelope".to_string(),
+                title: "Result Envelope".to_string(),
+                depends_on: Vec::new(),
+                blocked_by: Vec::new(),
+                blocker_state: Vec::new(),
+                lint_errors: 0,
+                ready: true,
+                ownership: empty_ownership(),
+                execution: empty_execution(),
+                agent_count: 3,
+                implementation_agent_count: 1,
+                closure_agent_count: 2,
+                closure_complete: true,
+                required_closure_agents: vec!["A0".to_string(), "A8".to_string(), "A9".to_string()],
+                present_closure_agents: vec!["A0".to_string(), "A8".to_string(), "A9".to_string()],
+                missing_closure_agents: Vec::new(),
+                readiness: WaveReadinessReadModel {
+                    state: QueueReadinessStateReadModel::Ready,
+                    planning_ready: true,
+                    claimable: true,
+                    reasons: Vec::new(),
+                    primary_reason: None,
+                },
+                rerun_requested: false,
+                completed: false,
+                last_run_status: None,
+            }],
+            has_errors: false,
+        };
+        let projection = build_planning_status_projection(&status);
+        let planning = PlanningProjectionBundle {
+            status: status.clone(),
+            projection,
+        };
+        let operator = build_operator_snapshot_inputs(&planning, &HashMap::new(), true);
+        let spine = ProjectionSpine { planning, operator };
+
+        let report = build_doctor_report(
+            &root.join("wave.toml"),
+            &config,
+            &root,
+            &[proof_test_wave()],
+            &[],
+            &HashMap::new(),
+            &spine,
+        )
+        .expect("build doctor report");
+
+        let materialized_check = report
+            .checks
+            .iter()
+            .find(|check| check.name == "materialized-authority-roots")
+            .expect("materialized check");
+        assert!(materialized_check.ok, "{}", materialized_check.detail);
+        assert!(
+            report
+                .authority
+                .materialized_canonical
+                .scheduler_events
+                .exists
+        );
+        assert!(resolved.authority.state_events_scheduler_dir.exists());
 
         let _ = std::fs::remove_dir_all(&root);
     }

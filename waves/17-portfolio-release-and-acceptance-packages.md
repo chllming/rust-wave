@@ -7,7 +7,7 @@ owners = ["architecture", "delivery"]
 depends_on = [16]
 validation = ["cargo test -p wave-domain -p wave-reducer -p wave-projections --locked", "cargo test -p wave-cli -p wave-app-server -p wave-tui --locked", "cargo run -p wave-cli -- doctor --json", "cargo run -p wave-cli -- control show --wave 17 --json", "cargo run -p wave-cli -- project show --json"]
 rollback = ["Collapse portfolio, release, and acceptance-package state back into informational projections or docs-only summaries, and treat ship or no-ship reasoning as operator procedure until the delivery layer regains parity."]
-proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-reducer/src/lib.rs", "crates/wave-projections/src/lib.rs", "crates/wave-cli/src/main.rs", "crates/wave-app-server/src/lib.rs", "crates/wave-tui/src/lib.rs", "docs/implementation/parallel-wave-multi-runtime-architecture.md", "docs/plans/master-plan.md", "docs/plans/current-state.md", "docs/plans/full-cycle-waves.md"]
+proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-reducer/src/lib.rs", "crates/wave-projections/src/lib.rs", "crates/wave-cli/src/main.rs", "crates/wave-app-server/src/lib.rs", "crates/wave-tui/src/lib.rs", "docs/implementation/parallel-wave-multi-runtime-architecture.md", "docs/implementation/design.md", "docs/plans/master-plan.md", "docs/plans/current-state.md", "docs/plans/full-cycle-waves.md"]
 +++
 # Wave 17 - Land portfolio, release, and acceptance packages
 
@@ -35,6 +35,18 @@ proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-reducer/src
 - Show one release or promotion object moving through explicit readiness states.
 - Show one acceptance package explaining why something is or is not ready to ship.
 - Show known risk and outstanding debt as durable delivery state, not only prose.
+- Show proof, acceptance, risk, and debt visibility that fits the `Proof` and delivery-facing `Overview` UX in `docs/implementation/design.md`.
+
+## Quality control expectations
+- Add deterministic tests for initiative aggregation, release-state transitions, acceptance-package assembly, and known-risk or debt propagation.
+- Prove that ship or no-ship state is derived from durable delivery objects rather than inferred from a single wave completion bit.
+- Require at least one operator-facing proof surface that can explain why a release is blocked, ready, or rejected.
+- Treat any delivery-layer design that leaves ship reasoning as undocumented operator procedure as a failure of this wave.
+
+## Documentation closure expectations
+- Update architecture and full-cycle docs to explain why waves are necessary but not sufficient for delivery truth.
+- Record the initiative, release, and acceptance-package model clearly enough that later waves can build on it without reinterpreting the delivery layer.
+- Include one live proof walkthrough showing multiple waves rolled up into one delivery or release decision.
 
 ## Agent A0: Running cont-QA
 
@@ -57,7 +69,7 @@ proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-reducer/src
 - repo-wave-closure-markers
 
 ### File ownership
-- .wave/reviews/wave-16-cont-qa.md
+- .wave/reviews/wave-17-cont-qa.md
 
 ### Final markers
 - [wave-gate]
@@ -80,7 +92,53 @@ Specific expectations:
 - emit the final [wave-gate] marker as a plain last line before Verdict: ...
 
 File ownership (only touch these paths):
-- .wave/reviews/wave-16-cont-qa.md
+- .wave/reviews/wave-17-cont-qa.md
+```
+
+## Agent A6: Design Review Steward
+
+### Role prompts
+- docs/agents/wave-design-role.md
+
+### Executor
+- profile: review-codex
+- model: gpt-5.4
+- codex.config: model_reasoning_effort=high,model_verbosity=low
+
+### Context7
+- bundle: none
+- query: "Repository docs remain canonical for design review"
+
+### Skills
+- wave-core
+- role-design
+- tui-design
+- repo-wave-closure-markers
+
+### File ownership
+- .wave/design/wave-17.md
+
+### Final markers
+- [wave-design]
+
+### Prompt
+```text
+Primary goal:
+- Review Wave 17 against docs/implementation/design.md and judge whether proof, acceptance, release readiness, risk, and debt are surfaced clearly enough for delivery-facing operator UX.
+
+Required context before coding:
+- Read docs/implementation/design.md.
+- Read docs/plans/full-cycle-waves.md.
+- Read docs/implementation/parallel-wave-multi-runtime-architecture.md.
+
+Specific expectations:
+- treat docs/implementation/design.md as the canonical review source
+- require the operator surface to distinguish wave success from release readiness, and to show proof, acceptance, risk, and debt in a way that matches the Proof and delivery-facing Overview UX
+- treat missing or misleading delivery-facing acceptance visibility as a blocking design defect
+- keep the review report concise and end with the final [wave-design] state=<aligned|concerns|blocked> findings=<n> detail=<text> marker as a plain last line
+
+File ownership (only touch these paths):
+- .wave/design/wave-17.md
 ```
 
 ## Agent A8: Integration Steward
@@ -104,8 +162,8 @@ File ownership (only touch these paths):
 - repo-wave-closure-markers
 
 ### File ownership
-- .wave/integration/wave-16.md
-- .wave/integration/wave-16.json
+- .wave/integration/wave-17.md
+- .wave/integration/wave-17.json
 
 ### Final markers
 - [wave-integration]
@@ -127,8 +185,8 @@ Specific expectations:
 - emit the final [wave-integration] state=<ready-for-doc-closure|needs-more-work> claims=<n> conflicts=<n> blockers=<n> detail=<text> marker as a plain last line
 
 File ownership (only touch these paths):
-- .wave/integration/wave-16.md
-- .wave/integration/wave-16.json
+- .wave/integration/wave-17.md
+- .wave/integration/wave-17.json
 ```
 
 ## Agent A9: Wave Documentation Steward

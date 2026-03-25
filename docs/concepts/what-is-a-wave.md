@@ -88,7 +88,7 @@ Inside each agent block, the important sections are:
 
 ## Standard Roles
 
-The starter runtime expects three standard closure roles plus up to two optional review specialists:
+The starter runtime expects three standard closure roles plus optional review specialists:
 
 - `A8`
   Integration steward
@@ -98,6 +98,8 @@ The starter runtime expects three standard closure roles plus up to two optional
   cont-QA
 - `E0`
   Optional `cont-EVAL` for iterative benchmark or output tuning; report-only by default, implementation-owning only when explicitly assigned non-report files
+- `A6`
+  Optional design reviewer; report-only by default and used to review operator-facing UX against `docs/implementation/design.md` before integration closure
 - `A7`
   Optional security reviewer; report-only by default and used to publish a threat-model-first security review before integration closure
 
@@ -111,7 +113,7 @@ Implementation or specialist agents own the actual work slices. Closure roles do
 4. A live run launches implementation agents first when implementation work remains.
 5. Agents write structured coordination events instead of relying on ad hoc terminal output.
 6. The launcher checks implementation contracts, promoted-component proof, helper assignments, dependencies, and clarification state.
-7. If implementation is ready, closure runs in order: optional `cont-EVAL`, optional security review, integration, documentation, then cont-QA.
+7. If implementation is ready, closure runs in order: optional `cont-EVAL`, optional specialist review such as design or security, integration, documentation, then cont-QA.
 8. The attempt is captured in per-wave traces, ledgers, inboxes, summaries, and copied artifacts.
 
 ## Runtime And Operating Posture
@@ -144,6 +146,7 @@ If you need the narrower supporting pages, see [runtime-agnostic-orchestration.m
 Current live waves are strict about closure artifacts:
 
 - `cont-EVAL` must emit a structured `[wave-eval]` marker whose `target_ids` matches the declared eval targets and whose `benchmark_ids` enumerates the executed benchmark set.
+- Design reviewers must leave a design review report and emit a final `[wave-design]` marker with `state=<aligned|concerns|blocked>` and finding count.
 - Security reviewers must leave a security review report and emit a final `[wave-security]` marker with `state=<clear|concerns|blocked>`, finding count, and approval count.
 - `cont-QA` must emit both a final `Verdict:` line and a final `[wave-gate]` marker.
 - Replay keeps read-only compatibility with older traces and older evaluator-era artifacts, but live waves do not pass on verdict-only or underspecified closure markers.
@@ -176,6 +179,7 @@ A wave is not done because an agent said so. It is done only when the runtime su
 - required dependency tickets are resolved
 - clarification follow-ups or escalations are resolved
 - if present, `cont-EVAL` satisfies its declared eval targets
+- if present, the design reviewer publishes a report plus a final `[wave-design]` marker; `blocked` stops closure while `concerns` stays advisory
 - if present, the security reviewer publishes a report plus a final `[wave-security]` marker; `blocked` stops closure while `concerns` stays advisory
 - integration recommends closure
 - documentation and cont-QA closure pass

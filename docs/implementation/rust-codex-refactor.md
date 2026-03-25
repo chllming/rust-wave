@@ -209,13 +209,15 @@ Wave closure is staged even in this bootstrap slice:
 
 1. implementation agents land owned changes and proof
 2. optional `E0` eval runs before integration when the wave declares it
-3. `A8` integration determines whether the slices reconcile
-4. `A9` documentation records the doc closure state
-5. `A0` cont-QA makes the final gate decision
+3. optional specialist review such as `A6` design review may run before integration when the wave declares it
+4. `A8` integration determines whether the slices reconcile
+5. `A9` documentation records the doc closure state
+6. `A0` cont-QA makes the final gate decision
 
 Marker ownership is fixed:
 
 - implementation agents emit `[wave-proof]`, `[wave-doc-delta]`, and `[wave-component]`
+- optional `A6` emits `[wave-design]`
 - optional `E0` emits `[wave-eval]`
 - `A8` emits `[wave-integration]`
 - `A9` emits `[wave-doc-closure]`

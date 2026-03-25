@@ -16,6 +16,7 @@ use wave_domain::ClosureInputEnvelope;
 use wave_domain::ClosureState;
 use wave_domain::ClosureVerdictPayload;
 use wave_domain::ContQaClosureVerdict;
+use wave_domain::DesignClosureVerdict;
 use wave_domain::DocDeltaEnvelope;
 use wave_domain::DocumentationClosureVerdict;
 use wave_domain::FinalMarkerEnvelope;
@@ -28,6 +29,7 @@ use wave_domain::ResultEnvelope;
 use wave_domain::ResultEnvelopeId;
 use wave_domain::ResultEnvelopeSource;
 use wave_domain::ResultPayloadStatus;
+use wave_domain::SecurityClosureVerdict;
 use wave_domain::TaskId;
 use wave_domain::inferred_closure_role_for_agent;
 use wave_domain::inferred_task_role_for_agent;
@@ -424,6 +426,18 @@ pub fn closure_contract_error(agent_id: &str, closure: &ClosureState) -> Option<
             None
         }
         ("A0", _) => Some("cont-QA report is missing structured closure verdict".to_string()),
+        ("A6", ClosureVerdictPayload::Design(verdict)) => match verdict.state.as_deref() {
+            Some("aligned") | Some("concerns") => None,
+            Some(state) => Some(format!("design review state is {state}, not aligned or concerns")),
+            None => Some("design review report is missing state=<...>".to_string()),
+        },
+        ("A6", _) => Some("design review report is missing structured closure verdict".to_string()),
+        ("A7", ClosureVerdictPayload::Security(verdict)) => match verdict.state.as_deref() {
+            Some("clear") | Some("concerns") => None,
+            Some(state) => Some(format!("security review state is {state}, not clear or concerns")),
+            None => Some("security review report is missing state=<...>".to_string()),
+        },
+        ("A7", _) => Some("security review report is missing structured closure verdict".to_string()),
         ("A8", ClosureVerdictPayload::Integration(verdict)) => match verdict.state.as_deref() {
             Some("ready-for-doc-closure") => None,
             Some(state) => Some(format!(
@@ -1184,6 +1198,8 @@ fn derive_closure_verdict_payload(
 
     match agent_id {
         "A0" => ClosureVerdictPayload::ContQa(parse_cont_qa_verdict(text_artifacts)),
+        "A6" => ClosureVerdictPayload::Design(parse_design_verdict(text_artifacts)),
+        "A7" => ClosureVerdictPayload::Security(parse_security_verdict(text_artifacts)),
         "A8" => ClosureVerdictPayload::Integration(parse_integration_verdict(text_artifacts)),
         "A9" => ClosureVerdictPayload::Documentation(parse_documentation_verdict(text_artifacts)),
         _ => ClosureVerdictPayload::None,
@@ -1255,6 +1271,29 @@ fn parse_integration_verdict(text_artifacts: &[ClosureTextArtifact]) -> Integrat
         claims: parse_marker_u32(&fields, "claims"),
         conflicts: parse_marker_u32(&fields, "conflicts"),
         blockers: parse_marker_u32(&fields, "blockers"),
+        detail: fields.get("detail").cloned(),
+    }
+}
+
+fn parse_design_verdict(text_artifacts: &[ClosureTextArtifact]) -> DesignClosureVerdict {
+    let fields = find_marker_fields_in_texts(text_artifacts, "[wave-design]")
+        .map(|(_, fields)| fields)
+        .unwrap_or_default();
+    DesignClosureVerdict {
+        state: fields.get("state").cloned(),
+        findings: parse_marker_u32(&fields, "findings"),
+        detail: fields.get("detail").cloned(),
+    }
+}
+
+fn parse_security_verdict(text_artifacts: &[ClosureTextArtifact]) -> SecurityClosureVerdict {
+    let fields = find_marker_fields_in_texts(text_artifacts, "[wave-security]")
+        .map(|(_, fields)| fields)
+        .unwrap_or_default();
+    SecurityClosureVerdict {
+        state: fields.get("state").cloned(),
+        findings: parse_marker_u32(&fields, "findings"),
+        approvals: parse_marker_u32(&fields, "approvals"),
         detail: fields.get("detail").cloned(),
     }
 }

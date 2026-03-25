@@ -158,6 +158,10 @@ The Rust/Codex rewrite adds repo-specific bundles so waves do not have to restat
   For the right-side operator panel, status tabs, and narrow-terminal fallback behavior.
   Attach this for `ratatui` operator surfaces and status rendering behavior.
 
+- `tui-design`
+  For world-class terminal UX heuristics, operator-surface trust, keyboard flow, information architecture, and recovery-first TUI review.
+  Attach this for TUI design work or design review that needs deeper terminal UX guidance.
+
 ### Closure
 
 - `repo-wave-closure-markers`
@@ -190,6 +194,7 @@ Most implementation agents in this repo should start from:
 - `role-implementation`
 - `role-integration`
 - `role-documentation`
+- `role-design`
 - `role-cont-qa`
 - `role-cont-eval`
 
@@ -216,6 +221,7 @@ Closure agents usually stay narrower:
 
 - integration: `wave-core`, `role-integration`, `repo-wave-closure-markers`
 - documentation: `wave-core`, `role-documentation`, `repo-wave-closure-markers`
+- design review: `wave-core`, `role-design`, `tui-design`, `repo-wave-closure-markers`
 - cont-QA: `wave-core`, `role-cont-qa`, `repo-wave-closure-markers`
 
 Add more only when the closure task actually needs subsystem-specific procedure.

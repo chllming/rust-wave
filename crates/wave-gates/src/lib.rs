@@ -15,6 +15,7 @@ use wave_trace::WaveRunRecord;
 use wave_trace::WaveRunStatus;
 
 pub const REQUIRED_CLOSURE_AGENT_IDS: [&str; 3] = ["A0", "A8", "A9"];
+const OPTIONAL_CLOSURE_AGENT_IDS: [&str; 3] = ["E0", "A6", "A7"];
 pub type PlanningGateVerdict = GateVerdict;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -413,7 +414,17 @@ pub fn wave_closure_facts_with_run(
     wave: &WaveDocument,
     latest_run: Option<&CompatibilityRunInput>,
 ) -> WaveClosureFacts {
-    let agents = REQUIRED_CLOSURE_AGENT_IDS
+    let declared_optional_agents = OPTIONAL_CLOSURE_AGENT_IDS
+        .iter()
+        .filter(|agent_id| wave.agents.iter().any(|agent| agent.id == **agent_id))
+        .copied()
+        .collect::<Vec<_>>();
+    let closure_contract_agent_ids = REQUIRED_CLOSURE_AGENT_IDS
+        .iter()
+        .copied()
+        .chain(declared_optional_agents)
+        .collect::<Vec<_>>();
+    let agents = closure_contract_agent_ids
         .iter()
         .map(|agent_id| {
             let present = wave.agents.iter().any(|agent| agent.id == *agent_id);
@@ -566,8 +577,11 @@ fn dependency_gate_id(wave_id: u32, dependency_wave_id: u32) -> GateId {
 fn required_closure_markers(agent_id: &str) -> Vec<String> {
     match agent_id {
         "A0" => vec!["[wave-gate]".to_string()],
+        "A6" => vec!["[wave-design]".to_string()],
+        "A7" => vec!["[wave-security]".to_string()],
         "A8" => vec!["[wave-integration]".to_string()],
         "A9" => vec!["[wave-doc-closure]".to_string()],
+        "E0" => vec!["[wave-eval]".to_string()],
         _ => Vec::new(),
     }
 }

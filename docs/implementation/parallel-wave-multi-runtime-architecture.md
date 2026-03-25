@@ -613,6 +613,14 @@ That is the difference between a multi-agent coding harness and a full-cycle mul
 
 The TUI and app-server should stay thin, but the architecture should anticipate richer operator visibility than the current bootstrap shell.
 
+This document only defines the operator-surface architecture and authority boundaries.
+
+It does **not** by itself define the detailed TUI ergonomics for layout, keyboard flow, action-state UX, blocker triage, orchestrator approvals, or proof drill-down.
+
+That detailed terminal UX now lives in:
+
+- `docs/implementation/design.md`
+
 Useful full-cycle operator surfaces include:
 
 - portfolio

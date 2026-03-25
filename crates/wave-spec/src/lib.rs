@@ -139,7 +139,7 @@ impl PromptContract {
 
 impl WaveAgent {
     pub fn is_closure_agent(&self) -> bool {
-        matches!(self.id.as_str(), "A0" | "A8" | "A9" | "E0")
+        matches!(self.id.as_str(), "A0" | "A6" | "A7" | "A8" | "A9" | "E0")
     }
 
     pub fn is_required_closure_agent(&self) -> bool {
@@ -149,6 +149,8 @@ impl WaveAgent {
     pub fn expected_final_markers(&self) -> &'static [&'static str] {
         match self.id.as_str() {
             "A0" => &["[wave-gate]"],
+            "A6" => &["[wave-design]"],
+            "A7" => &["[wave-security]"],
             "A8" => &["[wave-integration]"],
             "A9" => &["[wave-doc-closure]"],
             "E0" => &["[wave-eval]"],
@@ -159,6 +161,8 @@ impl WaveAgent {
     pub fn expected_role_prompts(&self) -> &'static [&'static str] {
         match self.id.as_str() {
             "A0" => &["docs/agents/wave-cont-qa-role.md"],
+            "A6" => &["docs/agents/wave-design-role.md"],
+            "A7" => &["docs/agents/wave-security-role.md"],
             "A8" => &["docs/agents/wave-integration-role.md"],
             "A9" => &["docs/agents/wave-documentation-role.md"],
             "E0" => &["docs/agents/wave-cont-eval-role.md"],

@@ -47,6 +47,17 @@ use wave_domain::TaskLeaseState;
 use wave_domain::WaveClaimId;
 use wave_domain::WaveClaimRecord;
 use wave_domain::WaveClaimState;
+use wave_domain::WaveExecutionPhase;
+use wave_domain::WavePromotionId;
+use wave_domain::WavePromotionRecord;
+use wave_domain::WavePromotionState;
+use wave_domain::WaveSchedulerPriority;
+use wave_domain::WaveSchedulingRecord;
+use wave_domain::WaveSchedulingState;
+use wave_domain::WaveWorktreeId;
+use wave_domain::WaveWorktreeRecord;
+use wave_domain::WaveWorktreeScope;
+use wave_domain::WaveWorktreeState;
 use wave_domain::task_id_for_agent;
 use wave_events::ControlEvent;
 use wave_events::ControlEventKind;
@@ -102,6 +113,9 @@ pub struct DogfoodEvidenceReport {
     pub replay: wave_trace::ReplayReport,
     pub operator_help_required: bool,
     pub help_items: Vec<wave_trace::SelfHostEvidenceItem>,
+    pub worktree: Option<WaveWorktreeRecord>,
+    pub promotion: Option<WavePromotionRecord>,
+    pub scheduling: Option<WaveSchedulingRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -250,13 +264,17 @@ impl fmt::Display for SchedulerAdmissionError {
 impl std::error::Error for SchedulerAdmissionError {}
 
 pub fn codex_binary_available() -> bool {
-    Command::new("codex")
+    Command::new(resolved_codex_binary())
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+fn resolved_codex_binary() -> String {
+    env::var("WAVE_CODEX_BIN").unwrap_or_else(|_| "codex".to_string())
 }
 
 pub fn load_latest_runs(
@@ -390,6 +408,9 @@ pub fn dogfood_evidence_report(record: &WaveRunRecord) -> DogfoodEvidenceReport 
         replay: evidence.replay,
         operator_help_required: evidence.operator_help_required,
         help_items: evidence.help_items,
+        worktree: record.worktree.clone(),
+        promotion: record.promotion.clone(),
+        scheduling: record.scheduling.clone(),
     }
 }
 
@@ -636,6 +657,69 @@ pub fn launch_wave(
 
     let created_at_ms = now_epoch_ms()?;
     let claim = claim_wave_for_launch(root, config, waves, wave, &run_id, created_at_ms)?;
+    let worktree = match allocate_wave_worktree(root, config, wave, &run_id, created_at_ms) {
+        Ok(worktree) => worktree,
+        Err(error) => {
+            release_wave_claim(root, config, &claim, "launch aborted while allocating worktree")?;
+            return Err(error);
+        }
+    };
+    let promotion = match initial_promotion_record(root, wave, &worktree)
+        .and_then(|promotion| publish_promotion_record(root, config, promotion, &run_id))
+    {
+        Ok(promotion) => promotion,
+        Err(error) => {
+            let _ = release_wave_worktree(
+                root,
+                config,
+                &worktree,
+                &run_id,
+                "launch aborted while recording promotion state",
+            );
+            release_wave_claim(
+                root,
+                config,
+                &claim,
+                "launch aborted while recording promotion state",
+            )?;
+            return Err(error);
+        }
+    };
+    let scheduling = match publish_scheduling_record(
+        root,
+        config,
+        WaveSchedulingRecord {
+            wave_id: wave.metadata.id,
+            phase: WaveExecutionPhase::Implementation,
+            priority: WaveSchedulerPriority::Implementation,
+            state: WaveSchedulingState::Admitted,
+            fairness_rank: 0,
+            waiting_since_ms: None,
+            protected_closure_capacity: false,
+            preemptible: true,
+            last_decision: Some("wave admitted for repo-local execution".to_string()),
+            updated_at_ms: created_at_ms,
+        },
+        &run_id,
+    ) {
+        Ok(scheduling) => scheduling,
+        Err(error) => {
+            let _ = release_wave_worktree(
+                root,
+                config,
+                &worktree,
+                &run_id,
+                "launch aborted while recording scheduling state",
+            );
+            release_wave_claim(
+                root,
+                config,
+                &claim,
+                "launch aborted while recording scheduling state",
+            )?;
+            return Err(error);
+        }
+    };
     let launcher_pid = std::process::id();
     let mut record = WaveRunRecord {
         run_id: run_id.clone(),
@@ -651,6 +735,9 @@ pub fn launch_wave(
         started_at_ms: None,
         launcher_pid: Some(launcher_pid),
         launcher_started_at_ms: current_process_started_at_ms(),
+        worktree: Some(worktree.clone()),
+        promotion: Some(promotion.clone()),
+        scheduling: Some(scheduling.clone()),
         completed_at_ms: None,
         agents: bundle
             .agents
@@ -673,6 +760,13 @@ pub fn launch_wave(
         error: None,
     };
     if let Err(error) = write_run_record(&state_path, &record) {
+        let _ = release_wave_worktree(
+            root,
+            config,
+            &worktree,
+            &run_id,
+            "launch aborted before run state could be recorded",
+        );
         release_wave_claim(
             root,
             config,
@@ -684,6 +778,13 @@ pub fn launch_wave(
     if let Err(error) =
         clear_rerun_with_state(root, config, wave.metadata.id, RerunState::Completed)
     {
+        let _ = release_wave_worktree(
+            root,
+            config,
+            &worktree,
+            &run_id,
+            "launch aborted while clearing rerun intent",
+        );
         release_wave_claim(
             root,
             config,
@@ -695,7 +796,128 @@ pub fn launch_wave(
 
     let execution_agents = ordered_agents(wave);
     let lease_timing = LeaseTiming::default();
+    let execution_root = PathBuf::from(
+        record
+            .worktree
+            .as_ref()
+            .map(|worktree| worktree.path.clone())
+            .unwrap_or_else(|| root.to_string_lossy().into_owned()),
+    );
+    let mut promotion_checked = false;
     for (index, agent) in execution_agents.iter().enumerate() {
+        if is_closure_agent(agent.id.as_str()) && !promotion_checked {
+            let promotion_scheduling = publish_scheduling_record(
+                root,
+                config,
+                WaveSchedulingRecord {
+                    wave_id: record.wave_id,
+                    phase: WaveExecutionPhase::Promotion,
+                    priority: WaveSchedulerPriority::Closure,
+                    state: WaveSchedulingState::Running,
+                    fairness_rank: 0,
+                    waiting_since_ms: None,
+                    protected_closure_capacity: true,
+                    preemptible: false,
+                    last_decision: Some(
+                        "implementation complete; evaluating promotion candidate".to_string(),
+                    ),
+                    updated_at_ms: now_epoch_ms()?,
+                },
+                &record.run_id,
+            )?;
+            record.scheduling = Some(promotion_scheduling);
+            let evaluated = evaluate_wave_promotion(
+                root,
+                config,
+                record
+                    .worktree
+                    .as_ref()
+                    .context("missing worktree while evaluating promotion")?,
+                record
+                    .promotion
+                    .as_ref()
+                    .context("missing promotion record while evaluating promotion")?,
+                &record.run_id,
+            )?;
+            record.promotion = Some(evaluated.clone());
+            write_run_record(&state_path, &record)?;
+            promotion_checked = true;
+            if evaluated.state != WavePromotionState::Ready {
+                record.status = WaveRunStatus::Failed;
+                record.error = evaluated.detail.clone();
+                record.completed_at_ms = Some(now_epoch_ms()?);
+                let released_worktree = release_wave_worktree(
+                    root,
+                    config,
+                    record
+                        .worktree
+                        .as_ref()
+                        .context("missing worktree while closing conflicted promotion")?,
+                    &record.run_id,
+                    "promotion blocked before closure",
+                )?;
+                record.worktree = Some(released_worktree);
+                record.scheduling = Some(publish_scheduling_record(
+                    root,
+                    config,
+                    WaveSchedulingRecord {
+                        wave_id: record.wave_id,
+                        phase: WaveExecutionPhase::Promotion,
+                        priority: WaveSchedulerPriority::Closure,
+                        state: WaveSchedulingState::Released,
+                        fairness_rank: 0,
+                        waiting_since_ms: None,
+                        protected_closure_capacity: true,
+                        preemptible: false,
+                        last_decision: Some(
+                            "closure blocked because promotion is not ready".to_string(),
+                        ),
+                        updated_at_ms: now_epoch_ms()?,
+                    },
+                    &record.run_id,
+                )?);
+                write_run_record(&state_path, &record)?;
+                write_trace_bundle(&trace_path, &record)?;
+                release_wave_claim(root, config, &claim, "promotion blocked; claim released")?;
+                return Ok(LaunchReport {
+                    run_id,
+                    wave_id: wave.metadata.id,
+                    status: record.status,
+                    state_path,
+                    trace_path,
+                    bundle_dir: bundle.bundle_dir,
+                    preflight_path,
+                });
+            }
+        }
+        record.scheduling = Some(publish_scheduling_record(
+            root,
+            config,
+            WaveSchedulingRecord {
+                wave_id: record.wave_id,
+                phase: if is_closure_agent(agent.id.as_str()) {
+                    WaveExecutionPhase::Closure
+                } else {
+                    WaveExecutionPhase::Implementation
+                },
+                priority: if is_closure_agent(agent.id.as_str()) {
+                    WaveSchedulerPriority::Closure
+                } else {
+                    WaveSchedulerPriority::Implementation
+                },
+                state: WaveSchedulingState::Running,
+                fairness_rank: 0,
+                waiting_since_ms: None,
+                protected_closure_capacity: is_closure_agent(agent.id.as_str()),
+                preemptible: !is_closure_agent(agent.id.as_str()),
+                last_decision: Some(format!(
+                    "running {} in shared wave worktree",
+                    agent.id
+                )),
+                updated_at_ms: now_epoch_ms()?,
+            },
+            &record.run_id,
+        )?);
         let lease = match grant_task_lease(root, config, &record, agent, &claim, lease_timing) {
             Ok(lease) => lease,
             Err(error) => {
@@ -763,6 +985,7 @@ pub fn launch_wave(
         let (agent_record, lease) = match execute_agent(
             root,
             config,
+            &execution_root,
             &record,
             agent,
             &record.agents[index],
@@ -848,6 +1071,40 @@ pub fn launch_wave(
             record.status = WaveRunStatus::Failed;
             record.error = agent_record.error.clone();
             record.completed_at_ms = Some(now_epoch_ms()?);
+            if let Some(worktree) = record.worktree.clone() {
+                record.worktree = Some(release_wave_worktree(
+                    root,
+                    config,
+                    &worktree,
+                    &record.run_id,
+                    "wave failed; worktree released",
+                )?);
+            }
+            record.scheduling = Some(publish_scheduling_record(
+                root,
+                config,
+                WaveSchedulingRecord {
+                    wave_id: record.wave_id,
+                    phase: if is_closure_agent(agent.id.as_str()) {
+                        WaveExecutionPhase::Closure
+                    } else {
+                        WaveExecutionPhase::Implementation
+                    },
+                    priority: if is_closure_agent(agent.id.as_str()) {
+                        WaveSchedulerPriority::Closure
+                    } else {
+                        WaveSchedulerPriority::Implementation
+                    },
+                    state: WaveSchedulingState::Released,
+                    fairness_rank: 0,
+                    waiting_since_ms: None,
+                    protected_closure_capacity: is_closure_agent(agent.id.as_str()),
+                    preemptible: false,
+                    last_decision: Some(format!("{} failed; run released", agent.id)),
+                    updated_at_ms: now_epoch_ms()?,
+                },
+                &record.run_id,
+            )?);
             write_run_record(&state_path, &record)?;
             write_trace_bundle(&trace_path, &record)?;
             release_wave_claim(root, config, &claim, "wave failed; claim released")?;
@@ -864,6 +1121,40 @@ pub fn launch_wave(
         write_run_record(&state_path, &record)?;
     }
 
+    if let Some(worktree) = record.worktree.clone() {
+        record.worktree = Some(release_wave_worktree(
+            root,
+            config,
+            &worktree,
+            &record.run_id,
+            "wave completed; worktree released",
+        )?);
+    }
+    record.scheduling = Some(publish_scheduling_record(
+        root,
+        config,
+        WaveSchedulingRecord {
+            wave_id: record.wave_id,
+            phase: if promotion_checked {
+                WaveExecutionPhase::Closure
+            } else {
+                WaveExecutionPhase::Implementation
+            },
+            priority: if promotion_checked {
+                WaveSchedulerPriority::Closure
+            } else {
+                WaveSchedulerPriority::Implementation
+            },
+            state: WaveSchedulingState::Released,
+            fairness_rank: 0,
+            waiting_since_ms: None,
+            protected_closure_capacity: promotion_checked,
+            preemptible: false,
+            last_decision: Some("wave completed and released".to_string()),
+            updated_at_ms: now_epoch_ms()?,
+        },
+        &record.run_id,
+    )?);
     release_wave_claim(root, config, &claim, "wave completed; claim released")?;
     record.status = WaveRunStatus::Succeeded;
     record.completed_at_ms = Some(now_epoch_ms()?);
@@ -896,40 +1187,99 @@ pub fn autonomous_launch(
         let _ = repair_orphaned_runs(root, config)?;
         status = refresh_planning_status(root, config, waves)?;
     }
-    while let Some(selection) = next_claimable_wave_selection(&status) {
+    loop {
         if let Some(limit) = options.limit {
             if launched.len() >= limit {
                 break;
             }
         }
-
-        let wave_id = selection.wave_id;
-        let report = match launch_wave(
-            root,
-            config,
-            waves,
-            &status,
-            LaunchOptions {
-                wave_id: Some(wave_id),
-                dry_run: options.dry_run,
-            },
-        ) {
-            Ok(report) => report,
-            Err(error)
-                if error
-                    .chain()
-                    .any(|cause| cause.downcast_ref::<SchedulerAdmissionError>().is_some()) =>
-            {
-                status = refresh_planning_status(root, config, waves)?;
-                continue;
+        let batch_limit = options
+            .limit
+            .map(|limit| limit.saturating_sub(launched.len()))
+            .unwrap_or(2)
+            .min(2);
+        let batch = next_parallel_wave_batch(waves, &status, batch_limit);
+        if batch.is_empty() {
+            break;
+        }
+        if options.dry_run || batch.len() == 1 {
+            let wave_id = batch[0].wave_id;
+            let report = match launch_wave(
+                root,
+                config,
+                waves,
+                &status,
+                LaunchOptions {
+                    wave_id: Some(wave_id),
+                    dry_run: options.dry_run,
+                },
+            ) {
+                Ok(report) => report,
+                Err(error)
+                    if error
+                        .chain()
+                        .any(|cause| cause.downcast_ref::<SchedulerAdmissionError>().is_some()) =>
+                {
+                    status = refresh_planning_status(root, config, waves)?;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let failed = report.status == WaveRunStatus::Failed;
+            launched.push(report);
+            status = refresh_planning_status(root, config, waves)?;
+            if options.dry_run || failed {
+                break;
             }
-            Err(error) => return Err(error),
-        };
-        let failed = report.status == WaveRunStatus::Failed;
-        launched.push(report);
+            continue;
+        }
 
+        let mut reports = Vec::new();
+        let mut admission_retry = false;
+        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for selection in &batch {
+                let root = root.to_path_buf();
+                let config = config.clone();
+                let waves = waves.to_vec();
+                let status = status.clone();
+                let wave_id = selection.wave_id;
+                handles.push(scope.spawn(move || {
+                    launch_wave(
+                        &root,
+                        &config,
+                        &waves,
+                        &status,
+                        LaunchOptions {
+                            wave_id: Some(wave_id),
+                            dry_run: false,
+                        },
+                    )
+                }));
+            }
+            for handle in handles {
+                match handle.join().expect("parallel wave launch thread panicked") {
+                    Ok(report) => reports.push(report),
+                    Err(error)
+                        if error
+                            .chain()
+                            .any(|cause| cause.downcast_ref::<SchedulerAdmissionError>().is_some()) =>
+                    {
+                        admission_retry = true;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        })?;
+        if admission_retry && reports.is_empty() {
+            status = refresh_planning_status(root, config, waves)?;
+            continue;
+        }
+        let failed = reports.iter().any(|report| report.status == WaveRunStatus::Failed);
+        launched.extend(reports);
         status = refresh_planning_status(root, config, waves)?;
-        if options.dry_run || failed {
+        if failed {
             break;
         }
     }
@@ -958,6 +1308,76 @@ fn next_claimable_wave_selection(status: &PlanningStatus) -> Option<AutonomousWa
                 blocked_by: entry.blocked_by.clone(),
             })
         })
+}
+
+fn next_parallel_wave_batch(
+    waves: &[WaveDocument],
+    status: &PlanningStatus,
+    max_batch_size: usize,
+) -> Vec<AutonomousWaveSelection> {
+    if max_batch_size == 0 {
+        return Vec::new();
+    }
+    let mut selected = Vec::new();
+    for wave_id in &status.queue.claimable_wave_ids {
+        let Some(entry) = status.waves.iter().find(|entry| entry.id == *wave_id) else {
+            continue;
+        };
+        let Some(candidate) = waves.iter().find(|wave| wave.metadata.id == *wave_id) else {
+            continue;
+        };
+        if selected.iter().any(|selection: &AutonomousWaveSelection| {
+            let selected_wave = waves
+                .iter()
+                .find(|wave| wave.metadata.id == selection.wave_id)
+                .expect("selected wave definition");
+            waves_conflict_for_parallel_admission(selected_wave, candidate)
+        }) {
+            continue;
+        }
+        selected.push(AutonomousWaveSelection {
+            wave_id: entry.id,
+            slug: entry.slug.clone(),
+            title: entry.title.clone(),
+            blocked_by: entry.blocked_by.clone(),
+        });
+        if selected.len() >= max_batch_size {
+            break;
+        }
+    }
+    selected
+}
+
+fn waves_conflict_for_parallel_admission(left: &WaveDocument, right: &WaveDocument) -> bool {
+    let left_paths = implementation_owned_paths(left);
+    let right_paths = implementation_owned_paths(right);
+    left_paths.iter().any(|left_path| {
+        right_paths
+            .iter()
+            .any(|right_path| path_scopes_conflict(left_path, right_path))
+    })
+}
+
+fn implementation_owned_paths(wave: &WaveDocument) -> Vec<String> {
+    let mut paths = Vec::new();
+    for agent in wave.implementation_agents() {
+        for path in &agent.file_ownership {
+            let normalized = path.trim_matches('/');
+            if normalized.is_empty() {
+                continue;
+            }
+            paths.push(normalized.to_string());
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn path_scopes_conflict(left: &str, right: &str) -> bool {
+    left == right
+        || left.starts_with(&format!("{right}/"))
+        || right.starts_with(&format!("{left}/"))
 }
 
 fn queue_unavailable_reason(status: &PlanningStatus) -> String {
@@ -1133,12 +1553,14 @@ fn ensure_default_scheduler_budget_in_log(log: &SchedulerEventLog) -> Result<()>
     let budget = SchedulerBudgetRecord {
         budget_id: SchedulerBudgetId::new("budget-default"),
         budget: SchedulerBudget {
-            max_active_wave_claims: Some(1),
-            max_active_task_leases: Some(1),
+            max_active_wave_claims: Some(2),
+            max_active_task_leases: Some(2),
+            reserved_closure_task_leases: Some(1),
+            preemption_enabled: true,
         },
         owner: runtime_scheduler_owner("budget-bootstrap"),
         updated_at_ms: created_at_ms,
-        detail: Some("default serial scheduler budget".to_string()),
+        detail: Some("default parallel-wave scheduler budget".to_string()),
     };
     append_scheduler_event_in_log(
         log,
@@ -1150,6 +1572,318 @@ fn ensure_default_scheduler_budget_in_log(log: &SchedulerEventLog) -> Result<()>
         .with_correlation_id("scheduler-budget-default")
         .with_payload(SchedulerEventPayload::SchedulerBudgetUpdated { budget }),
     )
+}
+
+fn publish_worktree_record(
+    root: &Path,
+    config: &ProjectConfig,
+    worktree: WaveWorktreeRecord,
+    correlation_id: &str,
+) -> Result<WaveWorktreeRecord> {
+    append_scheduler_event(
+        root,
+        config,
+        SchedulerEvent::new(
+            format!(
+                "sched-worktree-{}-{}-{}",
+                worktree.wave_id,
+                worktree_state_label(worktree.state),
+                worktree.allocated_at_ms
+            ),
+            SchedulerEventKind::WaveWorktreeUpdated,
+        )
+        .with_wave_id(worktree.wave_id)
+        .with_created_at_ms(now_epoch_ms()?)
+        .with_correlation_id(correlation_id.to_string())
+        .with_payload(SchedulerEventPayload::WaveWorktreeUpdated {
+            worktree: worktree.clone(),
+        }),
+    )?;
+    Ok(worktree)
+}
+
+fn publish_promotion_record(
+    root: &Path,
+    config: &ProjectConfig,
+    promotion: WavePromotionRecord,
+    correlation_id: &str,
+) -> Result<WavePromotionRecord> {
+    append_scheduler_event(
+        root,
+        config,
+        SchedulerEvent::new(
+            format!(
+                "sched-promotion-{}-{}-{}",
+                promotion.wave_id,
+                promotion_state_label(promotion.state),
+                promotion.checked_at_ms
+            ),
+            SchedulerEventKind::WavePromotionUpdated,
+        )
+        .with_wave_id(promotion.wave_id)
+        .with_created_at_ms(now_epoch_ms()?)
+        .with_correlation_id(correlation_id.to_string())
+        .with_payload(SchedulerEventPayload::WavePromotionUpdated {
+            promotion: promotion.clone(),
+        }),
+    )?;
+    Ok(promotion)
+}
+
+fn publish_scheduling_record(
+    root: &Path,
+    config: &ProjectConfig,
+    scheduling: WaveSchedulingRecord,
+    correlation_id: &str,
+) -> Result<WaveSchedulingRecord> {
+    append_scheduler_event(
+        root,
+        config,
+        SchedulerEvent::new(
+            format!(
+                "sched-wave-scheduling-{}-{}-{}",
+                scheduling.wave_id,
+                scheduling_state_label(scheduling.state),
+                scheduling.updated_at_ms
+            ),
+            SchedulerEventKind::WaveSchedulingUpdated,
+        )
+        .with_wave_id(scheduling.wave_id)
+        .with_created_at_ms(now_epoch_ms()?)
+        .with_correlation_id(correlation_id.to_string())
+        .with_payload(SchedulerEventPayload::WaveSchedulingUpdated {
+            scheduling: scheduling.clone(),
+        }),
+    )?;
+    Ok(scheduling)
+}
+
+fn allocate_wave_worktree(
+    root: &Path,
+    config: &ProjectConfig,
+    wave: &WaveDocument,
+    run_id: &str,
+    allocated_at_ms: u128,
+) -> Result<WaveWorktreeRecord> {
+    let snapshot_ref = create_workspace_snapshot_commit(root, config, run_id, "base")?;
+    let worktree_path = state_worktrees_dir(root, config)
+        .join(format!("wave-{:02}-{run_id}", wave.metadata.id));
+    if let Some(parent) = worktree_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    if worktree_path.exists() {
+        let _ = run_git(
+            root,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                worktree_path.to_string_lossy().as_ref(),
+            ],
+        );
+        let _ = fs::remove_dir_all(&worktree_path);
+    }
+    run_git(
+        root,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            worktree_path.to_string_lossy().as_ref(),
+            snapshot_ref.as_str(),
+        ],
+    )?;
+    publish_worktree_record(
+        root,
+        config,
+        WaveWorktreeRecord {
+            worktree_id: WaveWorktreeId::new(format!(
+                "worktree-wave-{:02}-{run_id}",
+                wave.metadata.id
+            )),
+            wave_id: wave.metadata.id,
+            state: WaveWorktreeState::Allocated,
+            path: worktree_path.to_string_lossy().into_owned(),
+            base_ref: current_head_label(root)?,
+            snapshot_ref,
+            branch_ref: None,
+            shared_scope: WaveWorktreeScope::Wave,
+            allocated_at_ms,
+            released_at_ms: None,
+            detail: Some("shared wave-local worktree".to_string()),
+        },
+        run_id,
+    )
+}
+
+fn release_wave_worktree(
+    root: &Path,
+    config: &ProjectConfig,
+    worktree: &WaveWorktreeRecord,
+    correlation_id: &str,
+    detail: impl Into<String>,
+) -> Result<WaveWorktreeRecord> {
+    publish_worktree_record(
+        root,
+        config,
+        WaveWorktreeRecord {
+            state: WaveWorktreeState::Released,
+            released_at_ms: Some(now_epoch_ms()?),
+            detail: Some(detail.into()),
+            ..worktree.clone()
+        },
+        correlation_id,
+    )
+}
+
+fn initial_promotion_record(
+    root: &Path,
+    wave: &WaveDocument,
+    worktree: &WaveWorktreeRecord,
+) -> Result<WavePromotionRecord> {
+    Ok(WavePromotionRecord {
+        promotion_id: WavePromotionId::new(format!(
+            "promotion-wave-{:02}-{}",
+            wave.metadata.id, worktree.snapshot_ref
+        )),
+        wave_id: wave.metadata.id,
+        worktree_id: Some(worktree.worktree_id.clone()),
+        state: WavePromotionState::NotStarted,
+        target_ref: current_head_label(root)?,
+        snapshot_ref: worktree.snapshot_ref.clone(),
+        candidate_ref: None,
+        candidate_tree: None,
+        conflict_paths: Vec::new(),
+        checked_at_ms: worktree.allocated_at_ms,
+        completed_at_ms: None,
+        detail: Some("promotion not yet evaluated".to_string()),
+    })
+}
+
+fn evaluate_wave_promotion(
+    root: &Path,
+    config: &ProjectConfig,
+    worktree: &WaveWorktreeRecord,
+    promotion: &WavePromotionRecord,
+    correlation_id: &str,
+) -> Result<WavePromotionRecord> {
+    let checked_at_ms = now_epoch_ms()?;
+    let pending = publish_promotion_record(
+        root,
+        config,
+        WavePromotionRecord {
+            state: WavePromotionState::Pending,
+            checked_at_ms,
+            completed_at_ms: None,
+            detail: Some("evaluating promotion candidate".to_string()),
+            ..promotion.clone()
+        },
+        correlation_id,
+    )?;
+    let worktree_root = Path::new(worktree.path.as_str());
+    let candidate_ref = create_workspace_snapshot_commit(worktree_root, config, correlation_id, "candidate")?;
+    let target_snapshot_ref = create_workspace_snapshot_commit(root, config, correlation_id, "target")?;
+    let candidate_tree =
+        git_output(worktree_root, &["rev-parse", &format!("{candidate_ref}^{{tree}}")])?;
+    let candidate_paths = git_diff_name_only(root, &pending.snapshot_ref, &candidate_ref)?;
+    let target_changed: HashSet<String> = git_diff_name_only(root, &pending.snapshot_ref, &target_snapshot_ref)?
+        .into_iter()
+        .collect();
+    let mut conflict_paths = Vec::new();
+    for path in candidate_paths {
+        if target_changed.contains(&path)
+            && !git_status(
+                root,
+                &["diff", "--quiet", &target_snapshot_ref, &candidate_ref, "--", &path],
+            )?
+        {
+            conflict_paths.push(path);
+        }
+    }
+    conflict_paths.sort();
+    conflict_paths.dedup();
+    let state = if conflict_paths.is_empty() {
+        WavePromotionState::Ready
+    } else {
+        WavePromotionState::Conflicted
+    };
+    publish_promotion_record(
+        root,
+        config,
+        WavePromotionRecord {
+            state,
+            target_ref: current_head_label(root)?,
+            candidate_ref: Some(candidate_ref),
+            candidate_tree: Some(candidate_tree),
+            conflict_paths: conflict_paths.clone(),
+            checked_at_ms,
+            completed_at_ms: Some(now_epoch_ms()?),
+            detail: Some(if conflict_paths.is_empty() {
+                "promotion candidate is ready".to_string()
+            } else {
+                format!("promotion blocked by {}", conflict_paths.join(", "))
+            }),
+            ..pending
+        },
+        correlation_id,
+    )
+}
+
+fn create_workspace_snapshot_commit(
+    workspace_root: &Path,
+    config: &ProjectConfig,
+    run_id: &str,
+    label: &str,
+) -> Result<String> {
+    let derived_dir = config
+        .resolved_paths(workspace_root)
+        .authority
+        .state_derived_dir
+        .join("git");
+    fs::create_dir_all(&derived_dir)
+        .with_context(|| format!("failed to create {}", derived_dir.display()))?;
+    let index_path = derived_dir.join(format!("{run_id}-{label}.index"));
+    if index_path.exists() {
+        let _ = fs::remove_file(&index_path);
+    }
+    let envs = [("GIT_INDEX_FILE", index_path.as_path())];
+    run_git_with_env(workspace_root, &["read-tree", "HEAD"], &envs)?;
+    run_git_with_env(workspace_root, &["add", "-A"], &envs)?;
+    let tree = git_output_with_env(workspace_root, &["write-tree"], &envs)?;
+    let parent = git_output(workspace_root, &["rev-parse", "HEAD"])?;
+    let commit = git_output_with_env(
+        workspace_root,
+        &[
+            "commit-tree",
+            tree.as_str(),
+            "-p",
+            parent.as_str(),
+            "-m",
+            &format!("wave snapshot {run_id} {label}"),
+        ],
+        &envs,
+    )?;
+    let _ = fs::remove_file(index_path);
+    Ok(commit)
+}
+
+fn current_head_label(root: &Path) -> Result<String> {
+    let branch = git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    if branch == "HEAD" {
+        git_output(root, &["rev-parse", "HEAD"])
+    } else {
+        Ok(branch)
+    }
+}
+
+fn git_diff_name_only(root: &Path, base: &str, other: &str) -> Result<Vec<String>> {
+    Ok(git_output(root, &["diff", "--name-only", base, other])?
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
 }
 
 fn append_scheduler_event(
@@ -1398,6 +2132,38 @@ fn lease_state_label(state: TaskLeaseState) -> &'static str {
     }
 }
 
+fn worktree_state_label(state: WaveWorktreeState) -> &'static str {
+    match state {
+        WaveWorktreeState::Allocated => "allocated",
+        WaveWorktreeState::Released => "released",
+    }
+}
+
+fn promotion_state_label(state: WavePromotionState) -> &'static str {
+    match state {
+        WavePromotionState::NotStarted => "not_started",
+        WavePromotionState::Pending => "pending",
+        WavePromotionState::Ready => "ready",
+        WavePromotionState::Conflicted => "conflicted",
+        WavePromotionState::Failed => "failed",
+    }
+}
+
+fn scheduling_state_label(state: WaveSchedulingState) -> &'static str {
+    match state {
+        WaveSchedulingState::Waiting => "waiting",
+        WaveSchedulingState::Admitted => "admitted",
+        WaveSchedulingState::Running => "running",
+        WaveSchedulingState::Protected => "protected",
+        WaveSchedulingState::Preempted => "preempted",
+        WaveSchedulingState::Released => "released",
+    }
+}
+
+fn is_closure_agent(agent_id: &str) -> bool {
+    matches!(agent_id, "A0" | "A8" | "A9")
+}
+
 fn lease_expiry_ms(heartbeat_at_ms: u128, timing: LeaseTiming) -> u128 {
     heartbeat_at_ms + u128::from(timing.ttl_ms)
 }
@@ -1547,6 +2313,29 @@ fn finish_failed_launch(
     record.status = WaveRunStatus::Failed;
     record.error = Some(reason.clone());
     record.completed_at_ms = Some(now_epoch_ms()?);
+    if let Some(worktree) = record.worktree.clone() {
+        record.worktree = Some(release_wave_worktree(
+            root,
+            config,
+            &worktree,
+            &record.run_id,
+            format!("launch failed: {reason}"),
+        )?);
+    }
+    if let Some(scheduling) = record.scheduling.clone() {
+        record.scheduling = Some(publish_scheduling_record(
+            root,
+            config,
+            WaveSchedulingRecord {
+                state: WaveSchedulingState::Released,
+                preemptible: false,
+                last_decision: Some(format!("launch failed: {reason}")),
+                updated_at_ms: now_epoch_ms()?,
+                ..scheduling
+            },
+            &record.run_id,
+        )?);
+    }
     append_attempt_event(
         root,
         config,
@@ -1812,6 +2601,7 @@ fn persist_agent_result_envelope(
 fn execute_agent(
     root: &Path,
     config: &ProjectConfig,
+    execution_root: &Path,
     run: &WaveRunRecord,
     agent: &WaveAgent,
     base_record: &AgentRunRecord,
@@ -1831,7 +2621,7 @@ fn execute_agent(
     let stderr = File::create(&base_record.stderr_path)
         .with_context(|| format!("failed to create {}", base_record.stderr_path.display()))?;
 
-    let mut command = Command::new("codex");
+    let mut command = Command::new(resolved_codex_binary());
     command
         .arg("exec")
         .arg("--json")
@@ -1840,7 +2630,7 @@ fn execute_agent(
         .arg("--color")
         .arg("never")
         .arg("-C")
-        .arg(root)
+        .arg(execution_root)
         .arg("-o")
         .arg(&base_record.last_message_path);
 
@@ -2032,9 +2822,11 @@ fn ordered_agents(wave: &WaveDocument) -> Vec<&WaveAgent> {
     let mut agents = wave.agents.iter().collect::<Vec<_>>();
     agents.sort_by_key(|agent| match agent.id.as_str() {
         "E0" => (1_u8, agent.id.as_str()),
-        "A8" => (2_u8, agent.id.as_str()),
-        "A9" => (3_u8, agent.id.as_str()),
-        "A0" => (4_u8, agent.id.as_str()),
+        "A6" => (2_u8, agent.id.as_str()),
+        "A7" => (3_u8, agent.id.as_str()),
+        "A8" => (4_u8, agent.id.as_str()),
+        "A9" => (5_u8, agent.id.as_str()),
+        "A0" => (6_u8, agent.id.as_str()),
         _ => (0_u8, agent.id.as_str()),
     });
     agents
@@ -2300,23 +3092,10 @@ fn bootstrap_project_codex_home(root: &Path, config: &ProjectConfig) -> Result<P
 }
 
 fn bootstrap_authority_roots(root: &Path, config: &ProjectConfig) -> Result<()> {
-    let authority = config.resolved_paths(root).authority;
-    for path in [
-        authority.state_dir,
-        authority.state_build_specs_dir,
-        authority.state_events_dir,
-        authority.state_events_control_dir,
-        authority.state_events_coordination_dir,
-        authority.state_events_scheduler_dir,
-        authority.state_results_dir,
-        authority.state_derived_dir,
-        authority.state_projections_dir,
-        authority.state_traces_dir,
-    ] {
-        fs::create_dir_all(&path)
-            .with_context(|| format!("failed to create {}", path.display()))?;
-    }
-    Ok(())
+    config
+        .resolved_paths(root)
+        .authority
+        .materialize_canonical_state_tree()
 }
 
 fn global_codex_home() -> PathBuf {
@@ -2341,8 +3120,83 @@ fn trace_runs_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
     config.resolved_paths(root).authority.trace_runs_dir
 }
 
+fn state_worktrees_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    config.resolved_paths(root).authority.state_worktrees_dir
+}
+
 fn state_control_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
     config.resolved_paths(root).authority.state_control_dir
+}
+
+fn git_output(root: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn git_status(root: &Path, args: &[&str]) -> Result<bool> {
+    Ok(Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .status()
+        .with_context(|| format!("failed to run git {}", args.join(" ")))?
+        .success())
+}
+
+fn git_output_with_env(root: &Path, args: &[&str], envs: &[(&str, &Path)]) -> Result<String> {
+    let mut command = Command::new("git");
+    command.current_dir(root).args(args);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let output = command
+        .output()
+        .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn run_git(root: &Path, args: &[&str]) -> Result<()> {
+    let status = Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .status()
+        .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+    if !status.success() {
+        bail!("git {} failed with status {status}", args.join(" "));
+    }
+    Ok(())
+}
+
+fn run_git_with_env(root: &Path, args: &[&str], envs: &[(&str, &Path)]) -> Result<()> {
+    let mut command = Command::new("git");
+    command.current_dir(root).args(args);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let status = command
+        .status()
+        .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+    if !status.success() {
+        bail!("git {} failed with status {status}", args.join(" "));
+    }
+    Ok(())
 }
 
 fn control_reruns_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
@@ -2373,8 +3227,11 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::collections::HashSet;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
     use std::sync::Barrier;
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
     use wave_config::AuthorityConfig;
     use wave_config::ExecutionMode;
     use wave_control_plane::build_planning_status_with_state;
@@ -2389,6 +3246,8 @@ mod tests {
     use wave_spec::ExitContract;
     use wave_spec::ProofLevel;
     use wave_spec::WaveMetadata;
+
+    static FAKE_CODEX_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     #[test]
     fn closure_agents_run_after_implementation_agents() {
@@ -2473,6 +3332,9 @@ mod tests {
             started_at_ms: Some(2),
             launcher_pid: None,
             launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: None,
             agents: Vec::new(),
             error: None,
@@ -2558,6 +3420,9 @@ mod tests {
             started_at_ms: Some(2),
             launcher_pid: None,
             launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: None,
             agents: Vec::new(),
             error: None,
@@ -2856,6 +3721,9 @@ mod tests {
             started_at_ms: Some(2),
             launcher_pid: Some(u32::MAX),
             launcher_started_at_ms: Some(0),
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: None,
             agents: vec![AgentRunRecord {
                 id: "A1".to_string(),
@@ -2919,6 +3787,9 @@ mod tests {
             started_at_ms: Some(2),
             launcher_pid: Some(std::process::id()),
             launcher_started_at_ms: current_process_started_at_ms(),
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: None,
             agents: vec![AgentRunRecord {
                 id: "A1".to_string(),
@@ -3120,7 +3991,7 @@ mod tests {
     }
 
     #[test]
-    fn second_wave_claim_is_budget_blocked_until_first_claim_releases() {
+    fn third_wave_claim_is_budget_blocked_until_a_parallel_claim_releases() {
         let root = std::env::temp_dir().join(format!(
             "wave-runtime-budget-block-test-{}-{}",
             std::process::id(),
@@ -3136,18 +4007,227 @@ mod tests {
 
         let wave_a = launchable_test_wave(5);
         let wave_b = launchable_test_wave(6);
-        let waves = vec![wave_a.clone(), wave_b.clone()];
+        let wave_c = launchable_test_wave(7);
+        let waves = vec![wave_a.clone(), wave_b.clone(), wave_c.clone()];
 
         let claim_a = claim_wave_for_launch(&root, &config, &waves, &wave_a, "wave-05-run", 1)
             .expect("claim a");
-        let error = claim_wave_for_launch(&root, &config, &waves, &wave_b, "wave-06-run", 2)
-            .expect_err("budget should block second claim");
+        let claim_b = claim_wave_for_launch(&root, &config, &waves, &wave_b, "wave-06-run", 2)
+            .expect("claim b");
+        let error = claim_wave_for_launch(&root, &config, &waves, &wave_c, "wave-07-run", 3)
+            .expect_err("budget should block third claim");
         assert!(error.to_string().contains("budget"));
 
         release_wave_claim(&root, &config, &claim_a, "wave complete").expect("release claim a");
-        let claim_b = claim_wave_for_launch(&root, &config, &waves, &wave_b, "wave-06-run", 3)
-            .expect("claim b");
+        let claim_c = claim_wave_for_launch(&root, &config, &waves, &wave_c, "wave-07-run", 4)
+            .expect("claim c");
         assert_eq!(claim_b.wave_id, 6);
+        assert_eq!(claim_c.wave_id, 7);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn wave_scoped_worktree_allocation_is_distinct_per_wave() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-worktree-allocation-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(root.join("src")).expect("create src dir");
+        seed_lint_context(&root);
+        fs::write(root.join("src/wave5.rs"), "fn wave5() {}\n").expect("write wave5");
+        fs::write(root.join("src/wave6.rs"), "fn wave6() {}\n").expect("write wave6");
+        init_git_repo(&root);
+
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let wave_a = parallel_launchable_test_wave(5, "src/wave5.rs");
+        let wave_b = parallel_launchable_test_wave(6, "src/wave6.rs");
+        let worktree_a =
+            allocate_wave_worktree(&root, &config, &wave_a, "wave-05-proof", 1).expect("worktree a");
+        let worktree_b =
+            allocate_wave_worktree(&root, &config, &wave_b, "wave-06-proof", 2).expect("worktree b");
+
+        assert_ne!(worktree_a.path, worktree_b.path);
+        assert_eq!(worktree_a.shared_scope, WaveWorktreeScope::Wave);
+        assert_eq!(worktree_b.shared_scope, WaveWorktreeScope::Wave);
+        assert!(Path::new(&worktree_a.path).is_dir());
+        assert!(Path::new(&worktree_b.path).is_dir());
+
+        let events = scheduler_event_log(&root, &config)
+            .load_all()
+            .expect("scheduler events");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == SchedulerEventKind::WaveWorktreeUpdated)
+                .count(),
+            2
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn promotion_conflict_is_explicit_before_closure() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-promotion-conflict-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create root");
+        seed_lint_context(&root);
+        init_git_repo(&root);
+
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+        let wave = launchable_test_wave(12);
+        let worktree =
+            allocate_wave_worktree(&root, &config, &wave, "wave-12-proof", 1).expect("worktree");
+        let initial = publish_promotion_record(
+            &root,
+            &config,
+            initial_promotion_record(&root, &wave, &worktree).expect("initial promotion"),
+            "wave-12-proof",
+        )
+        .expect("publish initial promotion");
+
+        fs::write(root.join("README.md"), "# root changed\n").expect("change root readme");
+        fs::write(
+            Path::new(&worktree.path).join("README.md"),
+            "# worktree changed\n",
+        )
+        .expect("change worktree readme");
+
+        let evaluated =
+            evaluate_wave_promotion(&root, &config, &worktree, &initial, "wave-12-proof")
+                .expect("evaluate promotion");
+        assert_eq!(evaluated.state, WavePromotionState::Conflicted);
+        assert_eq!(evaluated.conflict_paths, vec!["README.md".to_string()]);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn autonomous_launch_runs_two_non_conflicting_waves_in_parallel_with_distinct_worktrees() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-parallel-autonomous-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(root.join("src")).expect("create src dir");
+        fs::create_dir_all(root.join("waves")).expect("create waves dir");
+        seed_lint_context(&root);
+        fs::write(root.join("src/wave5.rs"), "fn wave5() {}\n").expect("write wave5");
+        fs::write(root.join("src/wave6.rs"), "fn wave6() {}\n").expect("write wave6");
+        fs::write(root.join("waves/05.md"), "# Wave 5\n").expect("write wave 05");
+        fs::write(root.join("waves/06.md"), "# Wave 6\n").expect("write wave 06");
+        init_git_repo(&root);
+
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let waves = vec![
+            parallel_launchable_test_wave(5, "src/wave5.rs"),
+            parallel_launchable_test_wave(6, "src/wave6.rs"),
+        ];
+        let status = build_planning_status_with_state(
+            &config,
+            &waves,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+        let lint_messages = wave_dark_factory::lint_project(&root, &waves)
+            .into_iter()
+            .map(|finding| (finding.wave_id, finding.rule, finding.message))
+            .collect::<Vec<_>>();
+        let refreshed = refresh_planning_status(&root, &config, &waves).expect("refresh status");
+        assert!(
+            refreshed.queue.claimable_wave_ids.len() >= 2,
+            "refreshed status blocked waves: {:?}; lint={:?}",
+            refreshed
+                .waves
+                .iter()
+                .map(|wave| (wave.id, wave.blocked_by.clone()))
+                .collect::<Vec<_>>(),
+            lint_messages
+        );
+        let reports = with_fake_codex(&root, "parallel", || {
+            autonomous_launch(
+                &root,
+                &config,
+                &waves,
+                status.clone(),
+                AutonomousOptions {
+                    limit: Some(2),
+                    dry_run: false,
+                },
+            )
+        })
+        .expect("parallel autonomous launch");
+        assert_eq!(reports.len(), 2);
+        assert!(reports.iter().all(|report| report.status == WaveRunStatus::Succeeded));
+
+        let latest_runs = load_latest_runs(&root, &config).expect("latest runs");
+        let run_a = latest_runs.get(&5).expect("run a");
+        let run_b = latest_runs.get(&6).expect("run b");
+        let worktree_a = run_a.worktree.as_ref().expect("run a worktree");
+        let worktree_b = run_b.worktree.as_ref().expect("run b worktree");
+        assert_ne!(worktree_a.path, worktree_b.path);
+        assert_eq!(
+            run_a.promotion.as_ref().map(|promotion| promotion.state),
+            Some(WavePromotionState::Ready)
+        );
+        assert_eq!(
+            run_b.promotion.as_ref().map(|promotion| promotion.state),
+            Some(WavePromotionState::Ready)
+        );
+        assert!(
+            run_a
+                .scheduling
+                .as_ref()
+                .map(|record| record.protected_closure_capacity)
+                .unwrap_or(false)
+        );
+        assert!(
+            run_b
+                .scheduling
+                .as_ref()
+                .map(|record| record.protected_closure_capacity)
+                .unwrap_or(false)
+        );
+
+        for (worktree, run) in [(worktree_a, run_a), (worktree_b, run_b)] {
+            for agent in ["A1", "A8", "A9", "A0"] {
+                let seen = fs::read_to_string(
+                    Path::new(&worktree.path).join(format!(".wave-{agent}-worktree.txt")),
+                )
+                .expect("agent worktree marker");
+                assert_eq!(seen.trim(), worktree.path);
+            }
+            assert_eq!(
+                events_for_wave_worktree_allocations(&root, &config, run.wave_id),
+                1,
+                "each wave should allocate exactly one shared worktree"
+            );
+        }
+
+        let timing_a = read_agent_timing(Path::new(&worktree_a.path).join(".wave-A1-timing.txt"));
+        let timing_b = read_agent_timing(Path::new(&worktree_b.path).join(".wave-A1-timing.txt"));
+        assert!(timing_a.0 < timing_b.1 && timing_b.0 < timing_a.1);
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -3182,6 +4262,9 @@ mod tests {
             started_at_ms: Some(1),
             launcher_pid: Some(std::process::id()),
             launcher_started_at_ms: current_process_started_at_ms(),
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: None,
             agents: Vec::new(),
             error: None,
@@ -3279,6 +4362,9 @@ mod tests {
             started_at_ms: Some(1),
             launcher_pid: Some(std::process::id()),
             launcher_started_at_ms: current_process_started_at_ms(),
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: None,
             agents: Vec::new(),
             error: None,
@@ -3355,6 +4441,9 @@ mod tests {
             started_at_ms: Some(1),
             launcher_pid: Some(std::process::id()),
             launcher_started_at_ms: current_process_started_at_ms(),
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: None,
             agents: Vec::new(),
             error: None,
@@ -3394,7 +4483,7 @@ mod tests {
 
     fn test_agent(id: &str) -> WaveAgent {
         match id {
-            "A0" | "A8" | "A9" => closure_test_agent(id),
+            "A0" | "A6" | "A7" | "A8" | "A9" | "E0" => closure_test_agent(id),
             _ => WaveAgent {
                 id: id.to_string(),
                 title: format!("Implementation {id}"),
@@ -3432,6 +4521,21 @@ mod tests {
 
     fn closure_test_agent(id: &str) -> WaveAgent {
         let (role_prompt, owned_path, final_marker) = match id {
+            "E0" => (
+                "docs/agents/wave-cont-eval-role.md",
+                ".wave/eval/test-wave.md",
+                "[wave-eval]",
+            ),
+            "A6" => (
+                "docs/agents/wave-design-role.md",
+                ".wave/design/test-wave.md",
+                "[wave-design]",
+            ),
+            "A7" => (
+                "docs/agents/wave-security-role.md",
+                ".wave/security/test-wave.md",
+                "[wave-security]",
+            ),
             "A0" => (
                 "docs/agents/wave-cont-qa-role.md",
                 ".wave/reviews/test-cont-qa.md",
@@ -3571,6 +4675,179 @@ mod tests {
         ] {
             fs::write(agent_dir.join(path), "# role prompt\n").expect("write role prompt");
         }
+    }
+
+    fn init_git_repo(root: &Path) {
+        run_git(root, &["init", "-b", "main"]).expect("git init");
+        run_git(root, &["config", "user.email", "wave-tests@example.com"]).expect("git email");
+        run_git(root, &["config", "user.name", "Wave Tests"]).expect("git name");
+        run_git(root, &["add", "-A"]).expect("git add");
+        run_git(root, &["commit", "-m", "initial fixture"]).expect("git commit");
+    }
+
+    fn fake_codex_env_lock() -> &'static Mutex<()> {
+        FAKE_CODEX_ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn install_fake_codex(root: &Path) -> PathBuf {
+        let bin_dir = root.join(".wave/test-bin");
+        fs::create_dir_all(&bin_dir).expect("create fake codex bin dir");
+        let script_path = bin_dir.join("codex");
+        fs::write(
+            &script_path,
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--version" ]]; then
+  echo "codex-test"
+  exit 0
+fi
+workdir=""
+output=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -C)
+      workdir="$2"
+      shift 2
+      ;;
+    -o)
+      output="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+agent="$(basename "$(dirname "$output")")"
+wave_tag="$(basename "$workdir" | cut -d- -f1-2)"
+mkdir -p "$(dirname "$output")"
+mkdir -p "$workdir"
+if [[ "${WAVE_FAKE_CODEX_SCENARIO:-}" == "parallel" && "$agent" == "A1" ]]; then
+  printf 'start=%s\n' "$(date +%s%3N)" > "$workdir/.wave-${agent}-timing.txt"
+  sleep 0.5
+  printf 'end=%s\n' "$(date +%s%3N)" >> "$workdir/.wave-${agent}-timing.txt"
+fi
+echo "$workdir" > "$workdir/.wave-${agent}-worktree.txt"
+case "$agent" in
+  A8)
+    mkdir -p "$workdir/.wave/integration"
+    printf '%s\n' '[wave-integration] state=ready-for-doc-closure claims=1 conflicts=0 blockers=0 detail=ok' > "$workdir/.wave/integration/${wave_tag}.md"
+    printf '%s\n' '[wave-integration] state=ready-for-doc-closure claims=1 conflicts=0 blockers=0 detail=ok' > "$output"
+    ;;
+  A9)
+    mkdir -p "$workdir/.wave/docs"
+    printf '%s\n' '[wave-doc-closure] state=closed paths=docs/implementation/live.md detail=ok' > "$workdir/.wave/docs/${wave_tag}.md"
+    printf '%s\n' '[wave-doc-closure] state=closed paths=docs/implementation/live.md detail=ok' > "$output"
+    ;;
+  A0)
+    mkdir -p "$workdir/.wave/reviews"
+    cat > "$workdir/.wave/reviews/${wave_tag}.md" <<'EOF'
+[wave-gate] architecture=pass integration=pass durability=pass live=pass docs=pass detail=ok
+Verdict: PASS
+EOF
+    cat > "$output" <<'EOF'
+[wave-gate] architecture=pass integration=pass durability=pass live=pass docs=pass detail=ok
+Verdict: PASS
+EOF
+    ;;
+  *)
+    printf 'touched by %s\n' "$agent" >> "$workdir/README.md"
+    cat > "$output" <<'EOF'
+[wave-proof]
+[wave-doc-delta]
+[wave-component]
+EOF
+    ;;
+esac
+printf '{"event":"ok","agent":"%s"}\n' "$agent"
+"#,
+        )
+        .expect("write fake codex script");
+        let mut permissions = fs::metadata(&script_path)
+            .expect("fake codex metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("chmod fake codex");
+        script_path
+    }
+
+    fn with_fake_codex<T>(
+        root: &Path,
+        scenario: &str,
+        f: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let _guard = fake_codex_env_lock().lock().expect("fake codex env lock");
+        let binary = install_fake_codex(root);
+        let previous_binary = env::var("WAVE_CODEX_BIN").ok();
+        let previous_scenario = env::var("WAVE_FAKE_CODEX_SCENARIO").ok();
+        unsafe {
+            env::set_var("WAVE_CODEX_BIN", &binary);
+            env::set_var("WAVE_FAKE_CODEX_SCENARIO", scenario);
+        }
+        let result = f();
+        match previous_binary {
+            Some(value) => unsafe { env::set_var("WAVE_CODEX_BIN", value) },
+            None => unsafe { env::remove_var("WAVE_CODEX_BIN") },
+        }
+        match previous_scenario {
+            Some(value) => unsafe { env::set_var("WAVE_FAKE_CODEX_SCENARIO", value) },
+            None => unsafe { env::remove_var("WAVE_FAKE_CODEX_SCENARIO") },
+        }
+        result
+    }
+
+    fn parallel_launchable_test_wave(id: u32, owned_path: &str) -> WaveDocument {
+        let mut wave = launchable_test_wave(id);
+        wave.agents[0].deliverables = vec![owned_path.to_string()];
+        wave.agents[0].file_ownership = vec![owned_path.to_string()];
+        wave.agents[0].prompt = format!(
+            "Primary goal:\n- land the runtime fixture\n\nRequired context before coding:\n- Read README.md.\n\nSpecific expectations:\n- Emit the final [wave-proof], [wave-doc-delta], and [wave-component] markers as plain lines by themselves at the end of the output.\n\nFile ownership (only touch these paths):\n- {owned_path}"
+        );
+        wave.agents[1].file_ownership = vec![format!(".wave/integration/wave-{id:02}.md")];
+        wave.agents[1].prompt = format!(
+            "Primary goal:\n- integration close the fixture wave\n\nRequired context before coding:\n- Read README.md.\n\nSpecific expectations:\n- Emit the final [wave-integration] marker as a plain last line.\n\nFile ownership (only touch these paths):\n- .wave/integration/wave-{id:02}.md"
+        );
+        wave.agents[2].file_ownership = vec![format!(".wave/docs/wave-{id:02}.md")];
+        wave.agents[2].prompt = format!(
+            "Primary goal:\n- documentation close the fixture wave\n\nRequired context before coding:\n- Read README.md.\n\nSpecific expectations:\n- Emit the final [wave-doc-closure] marker as a plain last line.\n\nFile ownership (only touch these paths):\n- .wave/docs/wave-{id:02}.md"
+        );
+        wave.agents[3].file_ownership = vec![format!(".wave/reviews/wave-{id:02}.md")];
+        wave.agents[3].prompt = format!(
+            "Primary goal:\n- qa close the fixture wave\n\nRequired context before coding:\n- Read README.md.\n\nSpecific expectations:\n- Emit the final [wave-gate] marker as a plain last line before Verdict: PASS.\n\nFile ownership (only touch these paths):\n- .wave/reviews/wave-{id:02}.md"
+        );
+        wave.metadata.proof = vec![owned_path.to_string()];
+        wave
+    }
+
+    fn events_for_wave_worktree_allocations(root: &Path, config: &ProjectConfig, wave_id: u32) -> usize {
+        scheduler_event_log(root, config)
+            .load_all()
+            .expect("scheduler events")
+            .into_iter()
+            .filter(|event| match &event.payload {
+                SchedulerEventPayload::WaveWorktreeUpdated { worktree } => {
+                    worktree.wave_id == wave_id
+                        && event.kind == SchedulerEventKind::WaveWorktreeUpdated
+                        && worktree.state == WaveWorktreeState::Allocated
+                }
+                _ => false,
+            })
+            .count()
+    }
+
+    fn read_agent_timing(path: PathBuf) -> (u128, u128) {
+        let raw = fs::read_to_string(path).expect("read timing");
+        let mut start = None;
+        let mut end = None;
+        for line in raw.lines() {
+            if let Some(value) = line.strip_prefix("start=") {
+                start = value.parse::<u128>().ok();
+            }
+            if let Some(value) = line.strip_prefix("end=") {
+                end = value.parse::<u128>().ok();
+            }
+        }
+        (start.expect("start"), end.expect("end"))
     }
 
     #[test]

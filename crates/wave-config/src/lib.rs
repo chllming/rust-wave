@@ -27,6 +27,7 @@ pub const DEFAULT_CONT_QA_AGENT_ID: &str = "A0";
 pub const DEFAULT_CONT_EVAL_AGENT_ID: &str = "E0";
 pub const DEFAULT_INTEGRATION_AGENT_ID: &str = "A8";
 pub const DEFAULT_DOCUMENTATION_AGENT_ID: &str = "A9";
+pub const DEFAULT_DESIGN_ROLE_PROMPT_PATH: &str = "docs/agents/wave-design-role.md";
 pub const DEFAULT_CONT_QA_ROLE_PROMPT_PATH: &str = "docs/agents/wave-cont-qa-role.md";
 pub const DEFAULT_CONT_EVAL_ROLE_PROMPT_PATH: &str = "docs/agents/wave-cont-eval-role.md";
 pub const DEFAULT_INTEGRATION_ROLE_PROMPT_PATH: &str = "docs/agents/wave-integration-role.md";
@@ -46,6 +47,7 @@ pub const DEFAULT_STATE_RESULTS_DIR: &str = ".wave/state/results";
 pub const DEFAULT_STATE_DERIVED_DIR: &str = ".wave/state/derived";
 pub const DEFAULT_STATE_PROJECTIONS_DIR: &str = ".wave/state/projections";
 pub const DEFAULT_STATE_TRACES_DIR: &str = ".wave/state/traces";
+pub const DEFAULT_STATE_WORKTREES_DIR: &str = ".wave/state/worktrees";
 pub const DEFAULT_CODEX_VENDOR_DIR: &str = "third_party/codex-rs";
 pub const DEFAULT_REFERENCE_WAVE_REPO_DIR: &str = "third_party/agent-wave-orchestrator";
 
@@ -137,6 +139,10 @@ fn default_documentation_role_prompt_path() -> PathBuf {
     PathBuf::from(DEFAULT_DOCUMENTATION_ROLE_PROMPT_PATH)
 }
 
+fn default_design_role_prompt_path() -> PathBuf {
+    PathBuf::from(DEFAULT_DESIGN_ROLE_PROMPT_PATH)
+}
+
 fn default_security_role_prompt_path() -> PathBuf {
     PathBuf::from(DEFAULT_SECURITY_ROLE_PROMPT_PATH)
 }
@@ -187,6 +193,10 @@ fn default_state_projections_dir() -> PathBuf {
 
 fn default_state_traces_dir() -> PathBuf {
     PathBuf::from(DEFAULT_STATE_TRACES_DIR)
+}
+
+fn default_state_worktrees_dir() -> PathBuf {
+    PathBuf::from(DEFAULT_STATE_WORKTREES_DIR)
 }
 
 fn default_codex_vendor_dir() -> PathBuf {
@@ -266,6 +276,8 @@ pub struct RolePromptConfig {
     pub integration: PathBuf,
     #[serde(default = "default_documentation_role_prompt_path")]
     pub documentation: PathBuf,
+    #[serde(default = "default_design_role_prompt_path")]
+    pub design: PathBuf,
     #[serde(default = "default_security_role_prompt_path")]
     pub security: PathBuf,
 }
@@ -278,6 +290,7 @@ impl Default for RolePromptConfig {
             cont_eval: default_cont_eval_role_prompt_path(),
             integration: default_integration_role_prompt_path(),
             documentation: default_documentation_role_prompt_path(),
+            design: default_design_role_prompt_path(),
             security: default_security_role_prompt_path(),
         }
     }
@@ -316,6 +329,8 @@ pub struct AuthorityConfig {
     pub state_projections_dir: PathBuf,
     #[serde(default = "default_state_traces_dir")]
     pub state_traces_dir: PathBuf,
+    #[serde(default = "default_state_worktrees_dir")]
+    pub state_worktrees_dir: PathBuf,
 }
 
 impl Default for AuthorityConfig {
@@ -336,6 +351,7 @@ impl Default for AuthorityConfig {
             state_derived_dir: default_state_derived_dir(),
             state_projections_dir: default_state_projections_dir(),
             state_traces_dir: default_state_traces_dir(),
+            state_worktrees_dir: default_state_worktrees_dir(),
         }
     }
 }
@@ -394,6 +410,7 @@ pub struct ResolvedRolePromptPaths {
     pub cont_eval: PathBuf,
     pub integration: PathBuf,
     pub documentation: PathBuf,
+    pub design: PathBuf,
     pub security: PathBuf,
 }
 
@@ -414,6 +431,7 @@ pub struct ResolvedAuthorityPaths {
     pub state_derived_dir: PathBuf,
     pub state_projections_dir: PathBuf,
     pub state_traces_dir: PathBuf,
+    pub state_worktrees_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -456,6 +474,7 @@ impl ProjectConfig {
             cont_eval: repo_root.join(&self.role_prompts.cont_eval),
             integration: repo_root.join(&self.role_prompts.integration),
             documentation: repo_root.join(&self.role_prompts.documentation),
+            design: repo_root.join(&self.role_prompts.design),
             security: repo_root.join(&self.role_prompts.security),
         };
         let authority = ResolvedAuthorityPaths {
@@ -475,6 +494,7 @@ impl ProjectConfig {
             state_derived_dir: repo_root.join(&self.authority.state_derived_dir),
             state_projections_dir: repo_root.join(&self.authority.state_projections_dir),
             state_traces_dir: repo_root.join(&self.authority.state_traces_dir),
+            state_worktrees_dir: repo_root.join(&self.authority.state_worktrees_dir),
         };
         let context7_bundle_index_path = repo_root.join(&self.context7_bundle_index_path);
         let benchmark_catalog_path = repo_root.join(&self.benchmark_catalog_path);
@@ -531,19 +551,28 @@ impl Default for ProjectConfig {
 }
 
 impl ResolvedRolePromptPaths {
-    pub fn all_files(&self) -> [&Path; 5] {
+    pub fn all_files(&self) -> [&Path; 6] {
         [
             self.cont_qa.as_path(),
             self.cont_eval.as_path(),
             self.integration.as_path(),
             self.documentation.as_path(),
+            self.design.as_path(),
             self.security.as_path(),
         ]
     }
 }
 
 impl ResolvedAuthorityPaths {
-    pub fn canonical_root_paths(&self) -> [&Path; 9] {
+    pub fn materialize_canonical_state_tree(&self) -> Result<()> {
+        for path in std::iter::once(self.state_dir.as_path()).chain(self.canonical_root_paths()) {
+            fs::create_dir_all(path)
+                .with_context(|| format!("failed to create {}", path.display()))?;
+        }
+        Ok(())
+    }
+
+    pub fn canonical_root_paths(&self) -> [&Path; 10] {
         [
             self.state_build_specs_dir.as_path(),
             self.state_events_dir.as_path(),
@@ -554,6 +583,7 @@ impl ResolvedAuthorityPaths {
             self.state_derived_dir.as_path(),
             self.state_projections_dir.as_path(),
             self.state_traces_dir.as_path(),
+            self.state_worktrees_dir.as_path(),
         ]
     }
 
@@ -714,6 +744,10 @@ project_name = "Codex Wave Mode"
             PathBuf::from(DEFAULT_STATE_TRACES_DIR)
         );
         assert_eq!(
+            config.authority.state_worktrees_dir,
+            PathBuf::from(DEFAULT_STATE_WORKTREES_DIR)
+        );
+        assert_eq!(
             config.codex_vendor_dir,
             PathBuf::from(DEFAULT_CODEX_VENDOR_DIR)
         );
@@ -856,6 +890,10 @@ unexpected = true
             PathBuf::from("/home/coder/codex-wave-mode/.wave/state/traces")
         );
         assert_eq!(
+            paths.authority.state_worktrees_dir,
+            PathBuf::from("/home/coder/codex-wave-mode/.wave/state/worktrees")
+        );
+        assert_eq!(
             paths.codex_vendor_dir,
             PathBuf::from("/home/coder/codex-wave-mode/third_party/codex-rs")
         );
@@ -894,5 +932,32 @@ unexpected = true
             paths.wave_attempt_results_dir(10, "attempt-1"),
             PathBuf::from("/repo/.wave/state/results/wave-10/attempt-1")
         );
+    }
+
+    #[test]
+    fn materializes_canonical_state_tree() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_millis();
+        let root = std::env::temp_dir().join(format!(
+            "wave-config-materialize-roots-{}-{}",
+            std::process::id(),
+            unique
+        ));
+        let config = ProjectConfig::default();
+        let paths = config.resolved_paths(&root);
+
+        paths
+            .authority
+            .materialize_canonical_state_tree()
+            .expect("materialize authority roots");
+
+        assert!(paths.authority.state_dir.exists());
+        for path in paths.authority.canonical_root_paths() {
+            assert!(path.exists(), "expected {} to exist", path.display());
+        }
+
+        let _ = fs::remove_dir_all(root);
     }
 }

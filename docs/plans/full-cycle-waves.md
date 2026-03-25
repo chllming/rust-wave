@@ -656,6 +656,32 @@ That will give you racey, non-replayable chaos.
 
 Keep it thin. It should be a window into the reducer/scheduler, not another source of truth.
 
+## Operator UX Design Gap
+
+The control-plane architecture is now strong enough that operator UX needs its own explicit design artifact.
+
+We already have the right broad surface model:
+
+- portfolio, wave, tasks, questions, contradictions, leases, proof, and control views
+- operator actions such as claim, release, pause, resume, reopen, escalate, reroute, and priority change
+- scheduler-visible state for worktrees, fairness, merge state, and closure capacity
+
+What we still need is the concrete interaction model:
+
+- exact layout and panel hierarchy
+- keyboard model and navigation flow
+- action-state UX
+- blocker triage UX
+- orchestrator recommendation and approval UX
+- per-agent live activity UX
+- proof and acceptance drill-down UX
+
+That detailed design now lives in:
+
+- `docs/implementation/design.md`
+
+Before the repo claims a mature parallel-wave operator surface, it should land a dedicated future TUI/control-plane ergonomics wave that implements that document directly while keeping the TUI thin and projection-backed.
+
 ## 17. Final recommendation
 
 If I were steering this repo, I would do the next three waves like this:

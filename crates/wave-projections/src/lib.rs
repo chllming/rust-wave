@@ -70,6 +70,7 @@ pub type WaveClaimStateView = wave_reducer::WaveClaimStateView;
 pub type TaskLeaseStateView = wave_reducer::TaskLeaseStateView;
 pub type SchedulerBudgetState = wave_reducer::SchedulerBudgetState;
 pub type WaveOwnershipState = wave_reducer::WaveOwnershipState;
+pub type WaveExecutionState = wave_reducer::WaveExecutionState;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct QueueReadinessProjection {
@@ -97,6 +98,7 @@ pub struct WaveQueueEntry {
     pub lint_errors: usize,
     pub ready: bool,
     pub ownership: WaveOwnershipState,
+    pub execution: WaveExecutionState,
     pub agent_count: usize,
     pub implementation_agent_count: usize,
     pub closure_agent_count: usize,
@@ -193,6 +195,7 @@ pub struct WavePlanningProjection {
     pub lint_errors: usize,
     pub ready: bool,
     pub ownership: WaveOwnershipState,
+    pub execution: WaveExecutionState,
     pub rerun_requested: bool,
     pub completed: bool,
     pub last_run_status: Option<WaveRunStatus>,
@@ -813,6 +816,7 @@ pub fn build_planning_status_projection(status: &PlanningStatus) -> PlanningStat
             lint_errors: wave.lint_errors,
             ready: wave.ready,
             ownership: wave.ownership.clone(),
+            execution: wave.execution.clone(),
             rerun_requested: wave.rerun_requested,
             completed: wave.completed,
             last_run_status: wave.last_run_status,
@@ -1338,6 +1342,7 @@ fn build_planning_status_from_reducer(
                 lint_errors: wave.lint_errors,
                 ready: wave.ready,
                 ownership: wave.ownership.clone(),
+                execution: wave.execution.clone(),
                 agent_count: wave.agents.total,
                 implementation_agent_count: wave.agents.implementation,
                 closure_agent_count: wave.agents.closure,
@@ -1637,6 +1642,9 @@ mod tests {
                 started_at_ms: Some(1),
                 launcher_pid: None,
                 launcher_started_at_ms: None,
+                worktree: None,
+                promotion: None,
+                scheduling: None,
                 completed_at_ms: Some(2),
                 agents: Vec::new(),
                 error: None,
@@ -1685,6 +1693,9 @@ mod tests {
                     started_at_ms: Some(1),
                     launcher_pid: None,
                     launcher_started_at_ms: None,
+                    worktree: None,
+                    promotion: None,
+                    scheduling: None,
                     completed_at_ms: None,
                     agents: Vec::new(),
                     error: None,
@@ -1706,6 +1717,9 @@ mod tests {
                     started_at_ms: Some(1),
                     launcher_pid: None,
                     launcher_started_at_ms: None,
+                    worktree: None,
+                    promotion: None,
+                    scheduling: None,
                     completed_at_ms: Some(2),
                     agents: Vec::new(),
                     error: None,
@@ -1768,6 +1782,9 @@ mod tests {
                 started_at_ms: Some(1),
                 launcher_pid: None,
                 launcher_started_at_ms: None,
+                worktree: None,
+                promotion: None,
+                scheduling: None,
                 completed_at_ms: None,
                 agents: Vec::new(),
                 error: None,
@@ -1821,6 +1838,9 @@ mod tests {
                     started_at_ms: Some(1),
                     launcher_pid: None,
                     launcher_started_at_ms: None,
+                    worktree: None,
+                    promotion: None,
+                    scheduling: None,
                     completed_at_ms: None,
                     agents: Vec::new(),
                     error: None,
@@ -1842,6 +1862,9 @@ mod tests {
                     started_at_ms: Some(1),
                     launcher_pid: None,
                     launcher_started_at_ms: None,
+                    worktree: None,
+                    promotion: None,
+                    scheduling: None,
                     completed_at_ms: Some(2),
                     agents: Vec::new(),
                     error: None,
@@ -1888,6 +1911,9 @@ mod tests {
                 started_at_ms: None,
                 launcher_pid: None,
                 launcher_started_at_ms: None,
+                worktree: None,
+                promotion: None,
+                scheduling: None,
                 completed_at_ms: Some(1),
                 agents: Vec::new(),
                 error: None,
@@ -1958,6 +1984,9 @@ mod tests {
                 started_at_ms: Some(1),
                 launcher_pid: None,
                 launcher_started_at_ms: None,
+                worktree: None,
+                promotion: None,
+                scheduling: None,
                 completed_at_ms: Some(2),
                 agents: Vec::new(),
                 error: None,
@@ -2068,6 +2097,68 @@ mod tests {
         assert_eq!(queue.claimed_wave_count, 2);
         assert_eq!(queue.waves[0].queue_state, "claimed");
         assert_eq!(control_status.queue_decision.claimed_wave_ids, vec![0, 1]);
+    }
+
+    #[test]
+    fn projection_bundle_surfaces_execution_and_fairness_state() {
+        let config = test_config();
+        let waves = vec![test_wave(0, Vec::new()), test_wave(1, Vec::new())];
+        let scheduler_events = vec![
+            SchedulerEvent::new("sched-budget-parallel", SchedulerEventKind::SchedulerBudgetUpdated)
+                .with_created_at_ms(1)
+                .with_payload(SchedulerEventPayload::SchedulerBudgetUpdated {
+                    budget: SchedulerBudgetRecord {
+                        budget_id: SchedulerBudgetId::new("budget-parallel"),
+                        budget: SchedulerBudget {
+                            max_active_wave_claims: Some(2),
+                            max_active_task_leases: Some(2),
+                            reserved_closure_task_leases: Some(1),
+                            preemption_enabled: true,
+                        },
+                        owner: scheduler_owner("budget-bootstrap"),
+                        updated_at_ms: 1,
+                        detail: Some("parallel budget".to_string()),
+                    },
+                }),
+            worktree_event(1, ".wave/state/worktrees/wave-01-run", 20),
+            promotion_event(1, wave_domain::WavePromotionState::Conflicted, 21),
+            scheduling_event(1, 22),
+        ];
+
+        let bundle = build_planning_projection_bundle_with_scheduler_state(
+            &config,
+            &waves,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashSet::new(),
+            &scheduler_events,
+        );
+
+        let wave = bundle.status.waves.iter().find(|wave| wave.id == 1).expect("wave 1");
+        assert_eq!(
+            wave.execution
+                .worktree
+                .as_ref()
+                .map(|worktree| worktree.path.as_str()),
+            Some(".wave/state/worktrees/wave-01-run")
+        );
+        assert!(
+            wave.execution
+                .promotion
+                .as_ref()
+                .map(|promotion| promotion.state == wave_domain::WavePromotionState::Conflicted)
+                .unwrap_or(false)
+        );
+        assert!(
+            wave.execution
+                .scheduling
+                .as_ref()
+                .map(|record| record.protected_closure_capacity)
+                .unwrap_or(false)
+        );
+        assert_eq!(wave.ownership.budget.reserved_closure_task_leases, Some(1));
+        assert!(wave.ownership.budget.preemption_enabled);
     }
 
     fn test_config() -> ProjectConfig {
@@ -2182,6 +2273,8 @@ mod tests {
             budget: SchedulerBudget {
                 max_active_wave_claims: Some(max_active_wave_claims),
                 max_active_task_leases: Some(1),
+                reserved_closure_task_leases: None,
+                preemption_enabled: false,
             },
             owner: scheduler_owner("budget-bootstrap"),
             updated_at_ms,
@@ -2193,6 +2286,88 @@ mod tests {
         )
         .with_created_at_ms(updated_at_ms)
         .with_payload(SchedulerEventPayload::SchedulerBudgetUpdated { budget })
+    }
+
+    fn worktree_event(wave_id: u32, path: &str, created_at_ms: u128) -> SchedulerEvent {
+        SchedulerEvent::new(
+            format!("sched-worktree-{wave_id}-{created_at_ms}"),
+            SchedulerEventKind::WaveWorktreeUpdated,
+        )
+        .with_wave_id(wave_id)
+        .with_created_at_ms(created_at_ms)
+        .with_payload(SchedulerEventPayload::WaveWorktreeUpdated {
+            worktree: wave_domain::WaveWorktreeRecord {
+                worktree_id: wave_domain::WaveWorktreeId::new(format!(
+                    "worktree-wave-{wave_id:02}"
+                )),
+                wave_id,
+                state: wave_domain::WaveWorktreeState::Allocated,
+                path: path.to_string(),
+                base_ref: "main".to_string(),
+                snapshot_ref: "snapshot".to_string(),
+                branch_ref: None,
+                shared_scope: wave_domain::WaveWorktreeScope::Wave,
+                allocated_at_ms: created_at_ms,
+                released_at_ms: None,
+                detail: Some("shared wave worktree".to_string()),
+            },
+        })
+    }
+
+    fn promotion_event(
+        wave_id: u32,
+        state: wave_domain::WavePromotionState,
+        created_at_ms: u128,
+    ) -> SchedulerEvent {
+        SchedulerEvent::new(
+            format!("sched-promotion-{wave_id}-{created_at_ms}"),
+            SchedulerEventKind::WavePromotionUpdated,
+        )
+        .with_wave_id(wave_id)
+        .with_created_at_ms(created_at_ms)
+        .with_payload(SchedulerEventPayload::WavePromotionUpdated {
+            promotion: wave_domain::WavePromotionRecord {
+                promotion_id: wave_domain::WavePromotionId::new(format!(
+                    "promotion-wave-{wave_id:02}"
+                )),
+                wave_id,
+                worktree_id: Some(wave_domain::WaveWorktreeId::new(format!(
+                    "worktree-wave-{wave_id:02}"
+                ))),
+                state,
+                target_ref: "main".to_string(),
+                snapshot_ref: "snapshot".to_string(),
+                candidate_ref: Some("candidate".to_string()),
+                candidate_tree: Some("tree".to_string()),
+                conflict_paths: vec!["README.md".to_string()],
+                checked_at_ms: created_at_ms,
+                completed_at_ms: Some(created_at_ms),
+                detail: Some("promotion visibility".to_string()),
+            },
+        })
+    }
+
+    fn scheduling_event(wave_id: u32, created_at_ms: u128) -> SchedulerEvent {
+        SchedulerEvent::new(
+            format!("sched-scheduling-{wave_id}-{created_at_ms}"),
+            SchedulerEventKind::WaveSchedulingUpdated,
+        )
+        .with_wave_id(wave_id)
+        .with_created_at_ms(created_at_ms)
+        .with_payload(SchedulerEventPayload::WaveSchedulingUpdated {
+            scheduling: wave_domain::WaveSchedulingRecord {
+                wave_id,
+                phase: wave_domain::WaveExecutionPhase::Closure,
+                priority: wave_domain::WaveSchedulerPriority::Closure,
+                state: wave_domain::WaveSchedulingState::Protected,
+                fairness_rank: 0,
+                waiting_since_ms: Some(created_at_ms),
+                protected_closure_capacity: true,
+                preemptible: false,
+                last_decision: Some("closure lane protected".to_string()),
+                updated_at_ms: created_at_ms,
+            },
+        })
     }
 
     fn test_wave(id: u32, depends_on: Vec<u32>) -> WaveDocument {

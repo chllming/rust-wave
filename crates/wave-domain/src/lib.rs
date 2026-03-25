@@ -41,11 +41,14 @@ string_id!(ResultEnvelopeId);
 string_id!(WaveClaimId);
 string_id!(TaskLeaseId);
 string_id!(SchedulerBudgetId);
+string_id!(WaveWorktreeId);
+string_id!(WavePromotionId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TaskRole {
     Implementation,
+    Design,
     Integration,
     Documentation,
     ContQa,
@@ -61,6 +64,8 @@ pub enum TaskRole {
 #[serde(rename_all = "snake_case")]
 pub enum ClosureRole {
     ContEval,
+    DesignReview,
+    SecurityReview,
     Integration,
     Documentation,
     ContQa,
@@ -231,6 +236,9 @@ pub struct TaskLeaseRecord {
 pub struct SchedulerBudget {
     pub max_active_wave_claims: Option<u32>,
     pub max_active_task_leases: Option<u32>,
+    pub reserved_closure_task_leases: Option<u32>,
+    #[serde(default)]
+    pub preemption_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,10 +252,125 @@ pub struct SchedulerBudgetRecord {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum WaveWorktreeState {
+    Allocated,
+    Released,
+}
+
+impl WaveWorktreeState {
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Allocated)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveWorktreeScope {
+    Wave,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaveWorktreeRecord {
+    pub worktree_id: WaveWorktreeId,
+    pub wave_id: u32,
+    pub state: WaveWorktreeState,
+    pub path: String,
+    pub base_ref: String,
+    pub snapshot_ref: String,
+    pub branch_ref: Option<String>,
+    pub shared_scope: WaveWorktreeScope,
+    pub allocated_at_ms: u128,
+    pub released_at_ms: Option<u128>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WavePromotionState {
+    NotStarted,
+    Pending,
+    Ready,
+    Conflicted,
+    Failed,
+}
+
+impl WavePromotionState {
+    pub fn blocks_closure(self) -> bool {
+        !matches!(self, Self::Ready)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WavePromotionRecord {
+    pub promotion_id: WavePromotionId,
+    pub wave_id: u32,
+    pub worktree_id: Option<WaveWorktreeId>,
+    pub state: WavePromotionState,
+    pub target_ref: String,
+    pub snapshot_ref: String,
+    pub candidate_ref: Option<String>,
+    pub candidate_tree: Option<String>,
+    #[serde(default)]
+    pub conflict_paths: Vec<String>,
+    pub checked_at_ms: u128,
+    pub completed_at_ms: Option<u128>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveExecutionPhase {
+    Implementation,
+    Promotion,
+    Closure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveSchedulerPriority {
+    Implementation,
+    Closure,
+}
+
+impl WaveSchedulerPriority {
+    pub fn is_closure(self) -> bool {
+        matches!(self, Self::Closure)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveSchedulingState {
+    Waiting,
+    Admitted,
+    Running,
+    Protected,
+    Preempted,
+    Released,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaveSchedulingRecord {
+    pub wave_id: u32,
+    pub phase: WaveExecutionPhase,
+    pub priority: WaveSchedulerPriority,
+    pub state: WaveSchedulingState,
+    pub fairness_rank: u32,
+    pub waiting_since_ms: Option<u128>,
+    pub protected_closure_capacity: bool,
+    pub preemptible: bool,
+    pub last_decision: Option<String>,
+    pub updated_at_ms: u128,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TaskDependencyKind {
     WaveClosure,
     ImplementationSlice,
     ContEvalVerdict,
+    DesignReviewVerdict,
+    SecurityReviewVerdict,
     IntegrationClosure,
     DocumentationClosure,
 }
@@ -422,6 +545,8 @@ pub enum ClosureVerdictPayload {
     #[default]
     None,
     ContQa(ContQaClosureVerdict),
+    Design(DesignClosureVerdict),
+    Security(SecurityClosureVerdict),
     Integration(IntegrationClosureVerdict),
     Documentation(DocumentationClosureVerdict),
 }
@@ -448,6 +573,21 @@ pub struct IntegrationClosureVerdict {
     pub claims: Option<u32>,
     pub conflicts: Option<u32>,
     pub blockers: Option<u32>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DesignClosureVerdict {
+    pub state: Option<String>,
+    pub findings: Option<u32>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SecurityClosureVerdict {
+    pub state: Option<String>,
+    pub findings: Option<u32>,
+    pub approvals: Option<u32>,
     pub detail: Option<String>,
 }
 
@@ -878,6 +1018,15 @@ pub enum SchedulerEventPayload {
     SchedulerBudgetUpdated {
         budget: SchedulerBudgetRecord,
     },
+    WaveWorktreeUpdated {
+        worktree: WaveWorktreeRecord,
+    },
+    WavePromotionUpdated {
+        promotion: WavePromotionRecord,
+    },
+    WaveSchedulingUpdated {
+        scheduling: WaveSchedulingRecord,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -948,6 +1097,16 @@ pub fn declaration_task_seeds(wave: &WaveDocument) -> Vec<TaskSeed> {
         .iter()
         .find(|agent| agent.id == "E0")
         .map(|agent| task_id_for_agent(wave.metadata.id, &agent.id));
+    let design_review_task_id = wave
+        .agents
+        .iter()
+        .find(|agent| agent.id == "A6")
+        .map(|agent| task_id_for_agent(wave.metadata.id, &agent.id));
+    let security_review_task_id = wave
+        .agents
+        .iter()
+        .find(|agent| agent.id == "A7")
+        .map(|agent| task_id_for_agent(wave.metadata.id, &agent.id));
     let integration_task_id = wave
         .agents
         .iter()
@@ -983,6 +1142,8 @@ pub fn declaration_task_seeds(wave: &WaveDocument) -> Vec<TaskSeed> {
                 &wave_dependency_task_ids,
                 &implementation_task_ids,
                 eval_task_id.as_ref(),
+                design_review_task_id.as_ref(),
+                security_review_task_id.as_ref(),
                 integration_task_id.as_ref(),
                 documentation_task_id.as_ref(),
             ),
@@ -1013,6 +1174,8 @@ pub fn task_id_for_agent(wave_id: u32, agent_id: &str) -> TaskId {
 pub fn inferred_closure_role_for_agent(agent_id: &str) -> Option<ClosureRole> {
     match agent_id {
         "E0" => Some(ClosureRole::ContEval),
+        "A6" => Some(ClosureRole::DesignReview),
+        "A7" => Some(ClosureRole::SecurityReview),
         "A8" => Some(ClosureRole::Integration),
         "A9" => Some(ClosureRole::Documentation),
         "A0" => Some(ClosureRole::ContQa),
@@ -1026,11 +1189,14 @@ fn closure_role(agent: &WaveAgent) -> Option<ClosureRole> {
 
 pub fn inferred_task_role_for_agent(agent_id: &str, skills: &[String]) -> TaskRole {
     match agent_id {
+        "A6" => TaskRole::Design,
+        "A7" => TaskRole::Security,
         "A8" => TaskRole::Integration,
         "A9" => TaskRole::Documentation,
         "A0" => TaskRole::ContQa,
         "E0" => TaskRole::ContEval,
         _ if skills.iter().any(|skill| skill == "role-security") => TaskRole::Security,
+        _ if skills.iter().any(|skill| skill == "role-design") => TaskRole::Design,
         _ if skills.iter().any(|skill| skill == "role-infra") => TaskRole::Infra,
         _ if skills.iter().any(|skill| skill == "role-deploy") => TaskRole::Deploy,
         _ if skills.iter().any(|skill| skill == "role-research") => TaskRole::Research,
@@ -1057,6 +1223,8 @@ fn task_dependencies(
     wave_dependency_task_ids: &[TaskId],
     implementation_task_ids: &[TaskId],
     eval_task_id: Option<&TaskId>,
+    design_review_task_id: Option<&TaskId>,
+    security_review_task_id: Option<&TaskId>,
     integration_task_id: Option<&TaskId>,
     documentation_task_id: Option<&TaskId>,
 ) -> Vec<TaskDependency> {
@@ -1078,6 +1246,40 @@ fn task_dependencies(
                 kind: TaskDependencyKind::ImplementationSlice,
             })
             .collect(),
+        "A6" => {
+            let mut dependencies = implementation_task_ids
+                .iter()
+                .cloned()
+                .map(|task_id| TaskDependency {
+                    task_id,
+                    kind: TaskDependencyKind::ImplementationSlice,
+                })
+                .collect::<Vec<_>>();
+            if let Some(task_id) = eval_task_id {
+                dependencies.push(TaskDependency {
+                    task_id: task_id.clone(),
+                    kind: TaskDependencyKind::ContEvalVerdict,
+                });
+            }
+            dependencies
+        }
+        "A7" => {
+            let mut dependencies = implementation_task_ids
+                .iter()
+                .cloned()
+                .map(|task_id| TaskDependency {
+                    task_id,
+                    kind: TaskDependencyKind::ImplementationSlice,
+                })
+                .collect::<Vec<_>>();
+            if let Some(task_id) = eval_task_id {
+                dependencies.push(TaskDependency {
+                    task_id: task_id.clone(),
+                    kind: TaskDependencyKind::ContEvalVerdict,
+                });
+            }
+            dependencies
+        }
         "A8" => {
             let mut dependencies = implementation_task_ids
                 .iter()
@@ -1091,6 +1293,18 @@ fn task_dependencies(
                 dependencies.push(TaskDependency {
                     task_id: task_id.clone(),
                     kind: TaskDependencyKind::ContEvalVerdict,
+                });
+            }
+            if let Some(task_id) = design_review_task_id {
+                dependencies.push(TaskDependency {
+                    task_id: task_id.clone(),
+                    kind: TaskDependencyKind::DesignReviewVerdict,
+                });
+            }
+            if let Some(task_id) = security_review_task_id {
+                dependencies.push(TaskDependency {
+                    task_id: task_id.clone(),
+                    kind: TaskDependencyKind::SecurityReviewVerdict,
                 });
             }
             dependencies
@@ -1550,6 +1764,8 @@ mod tests {
             budget: SchedulerBudget {
                 max_active_wave_claims: Some(1),
                 max_active_task_leases: Some(1),
+                reserved_closure_task_leases: Some(1),
+                preemption_enabled: true,
             },
             owner,
             updated_at_ms: 9,

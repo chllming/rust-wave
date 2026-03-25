@@ -229,8 +229,11 @@ fn authored_expected_markers(agent: Option<&&WaveAgent>, agent_id: &str) -> Vec<
 fn default_expected_markers(agent_id: &str) -> Vec<String> {
     match agent_id {
         "A0" => vec!["[wave-gate]".to_string()],
+        "A6" => vec!["[wave-design]".to_string()],
+        "A7" => vec!["[wave-security]".to_string()],
         "A8" => vec!["[wave-integration]".to_string()],
         "A9" => vec!["[wave-doc-closure]".to_string()],
+        "E0" => vec!["[wave-eval]".to_string()],
         _ => Vec::new(),
     }
 }

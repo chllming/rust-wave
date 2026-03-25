@@ -7,7 +7,7 @@ owners = ["architecture", "runtime", "delivery"]
 depends_on = [13]
 validation = ["cargo test -p wave-domain -p wave-reducer -p wave-projections --locked", "cargo test -p wave-runtime -p wave-cli -p wave-app-server -p wave-tui --locked", "cargo run -p wave-cli -- doctor --json", "cargo run -p wave-cli -- control status --json", "cargo run -p wave-cli -- trace latest --wave 14 --json", "cargo run -p wave-cli -- trace replay --wave 14 --json"]
 rollback = ["Return to the scheduler-authority and worktree-contract path without allowing more than one active wave to mutate repo state at a time, and treat merge or fairness state as derived evidence only until true parallel execution regains parity."]
-proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-reducer/src/lib.rs", "crates/wave-projections/src/lib.rs", "crates/wave-runtime/src/lib.rs", "crates/wave-cli/src/main.rs", "crates/wave-app-server/src/lib.rs", "crates/wave-tui/src/lib.rs", "docs/implementation/parallel-wave-multi-runtime-architecture.md", "docs/plans/master-plan.md", "docs/plans/current-state.md"]
+proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-reducer/src/lib.rs", "crates/wave-projections/src/lib.rs", "crates/wave-runtime/src/lib.rs", "crates/wave-cli/src/main.rs", "crates/wave-app-server/src/lib.rs", "crates/wave-tui/src/lib.rs", "docs/implementation/parallel-wave-multi-runtime-architecture.md", "docs/implementation/design.md", "docs/plans/master-plan.md", "docs/plans/current-state.md"]
 +++
 # Wave 14 - Land true parallel-wave execution and merge discipline
 
@@ -40,6 +40,18 @@ proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-reducer/src
 - Show scheduler fairness, priority, or reserved closure capacity visible in operator-facing state.
 - Show that conflicts are detected before dishonest closure.
 
+## Quality control expectations
+- Add deterministic tests for wave-scoped worktree allocation, explicit merge-state tracking, fairness or preemption state, and reserved closure capacity behavior.
+- Add at least one runtime-backed proof path that exercises two non-conflicting waves concurrently in separate worktrees.
+- Make any merge conflict or promotion failure fail closed before final closure roles can report success.
+- Keep the TUI and app-server thin: any new operator-facing state must come from reducer/projection truth rather than local terminal heuristics.
+- Make concurrency, worktree, contention, and fairness visibility align with `docs/implementation/design.md`, especially for the `Overview`, `Wave`, and `Blockers` views.
+
+## Documentation closure expectations
+- Update architecture and current-state docs to explain exactly what is live in this wave versus what still remains future work.
+- Record the wave-local worktree model explicitly: one worktree per active wave, never one per agent.
+- Document the exact live proof commands, fixtures, or artifacts a reviewer should inspect before accepting the wave.
+
 ## Agent A0: Running cont-QA
 
 ### Role prompts
@@ -61,7 +73,7 @@ proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-reducer/src
 - repo-wave-closure-markers
 
 ### File ownership
-- .wave/reviews/wave-17-cont-qa.md
+- .wave/reviews/wave-14-cont-qa.md
 
 ### Final markers
 - [wave-gate]
@@ -84,7 +96,53 @@ Specific expectations:
 - emit the final [wave-gate] marker as a plain last line before Verdict: ...
 
 File ownership (only touch these paths):
-- .wave/reviews/wave-17-cont-qa.md
+- .wave/reviews/wave-14-cont-qa.md
+```
+
+## Agent A6: Design Review Steward
+
+### Role prompts
+- docs/agents/wave-design-role.md
+
+### Executor
+- profile: review-codex
+- model: gpt-5.4
+- codex.config: model_reasoning_effort=high,model_verbosity=low
+
+### Context7
+- bundle: none
+- query: "Repository docs remain canonical for design review"
+
+### Skills
+- wave-core
+- role-design
+- tui-design
+- repo-wave-closure-markers
+
+### File ownership
+- .wave/design/wave-14.md
+
+### Final markers
+- [wave-design]
+
+### Prompt
+```text
+Primary goal:
+- Review Wave 14 against docs/implementation/design.md and judge whether parallel-wave, worktree, merge, contention, and fairness visibility are operator-honest enough for integration closure.
+
+Required context before coding:
+- Read docs/implementation/design.md.
+- Read docs/implementation/parallel-wave-multi-runtime-architecture.md.
+- Read docs/plans/current-state.md.
+
+Specific expectations:
+- treat docs/implementation/design.md as the canonical review source
+- require the operator surface to explain active wave worktrees, contention, merge blockers, fairness, and reserved closure capacity without local TUI guesswork
+- treat misleading or missing concurrency visibility as a blocking design defect
+- keep the review report concise and end with the final [wave-design] state=<aligned|concerns|blocked> findings=<n> detail=<text> marker as a plain last line
+
+File ownership (only touch these paths):
+- .wave/design/wave-14.md
 ```
 
 ## Agent A8: Integration Steward
@@ -108,8 +166,8 @@ File ownership (only touch these paths):
 - repo-wave-closure-markers
 
 ### File ownership
-- .wave/integration/wave-17.md
-- .wave/integration/wave-17.json
+- .wave/integration/wave-14.md
+- .wave/integration/wave-14.json
 
 ### Final markers
 - [wave-integration]
@@ -131,8 +189,8 @@ Specific expectations:
 - emit the final [wave-integration] state=<ready-for-doc-closure|needs-more-work> claims=<n> conflicts=<n> blockers=<n> detail=<text> marker as a plain last line
 
 File ownership (only touch these paths):
-- .wave/integration/wave-17.md
-- .wave/integration/wave-17.json
+- .wave/integration/wave-14.md
+- .wave/integration/wave-14.json
 ```
 
 ## Agent A9: Wave Documentation Steward

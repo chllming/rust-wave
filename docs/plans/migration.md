@@ -12,7 +12,7 @@
 1. Move active wave definitions into `waves/*.md` and treat them as canonical execution inputs.
 2. Add a `+++` frontmatter block with `id`, `slug`, `title`, `mode`, `owners`, `depends_on`, `validation`, `rollback`, and `proof`.
 3. Add a top-level commit message, component promotions, deploy environments, and `## Context7 defaults`.
-4. Keep at least one implementation agent in every active wave. Add mandatory closure agents `A0`, `A8`, and `A9`. Add `E0` only when eval work is explicitly in scope.
+4. Keep at least one implementation agent in every active wave. Add mandatory closure agents `A0`, `A8`, and `A9`. Add `E0` only when eval work is explicitly in scope, and add optional specialist reviewers such as `A6` design review only when the wave truly needs that report-only closure pass.
 5. For each implementation agent, declare `### Executor`, `### Context7`, `### Deliverables`, `### File ownership`, `### Skills`, `### Components`, `### Capabilities`, `### Exit contract`, `### Final markers`, and a structured `### Prompt`.
 6. For each closure agent, declare `### Role prompts`, `### Executor`, `### Context7`, `### Skills`, `### File ownership`, `### Final markers`, and a structured `### Prompt`.
 7. Keep role boundaries strict: implementation agents do not declare `### Role prompts`, and closure agents do not declare implementation-only sections such as deliverables, components, capabilities, or exit contracts.

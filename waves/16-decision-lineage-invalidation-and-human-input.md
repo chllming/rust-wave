@@ -7,7 +7,7 @@ owners = ["architecture", "control"]
 depends_on = [15]
 validation = ["cargo test -p wave-domain -p wave-events -p wave-coordination -p wave-reducer --locked", "cargo test -p wave-projections -p wave-runtime -p wave-cli -p wave-app-server -p wave-tui --locked", "cargo run -p wave-cli -- doctor --json", "cargo run -p wave-cli -- control status --json", "cargo run -p wave-cli -- control show --wave 16 --json"]
 rollback = ["Treat questions, assumptions, decisions, invalidation, dependency handshakes, and human-input state as compatibility-only projections again, and route reopen or supersession behavior back through manual operator notes until durable workflow semantics regain parity."]
-proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-events/src/lib.rs", "crates/wave-coordination/src/lib.rs", "crates/wave-reducer/src/lib.rs", "crates/wave-projections/src/lib.rs", "crates/wave-runtime/src/lib.rs", "crates/wave-cli/src/main.rs", "crates/wave-app-server/src/lib.rs", "crates/wave-tui/src/lib.rs", "docs/implementation/parallel-wave-multi-runtime-architecture.md", "docs/plans/master-plan.md", "docs/plans/current-state.md"]
+proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-events/src/lib.rs", "crates/wave-coordination/src/lib.rs", "crates/wave-reducer/src/lib.rs", "crates/wave-projections/src/lib.rs", "crates/wave-runtime/src/lib.rs", "crates/wave-cli/src/main.rs", "crates/wave-app-server/src/lib.rs", "crates/wave-tui/src/lib.rs", "docs/implementation/parallel-wave-multi-runtime-architecture.md", "docs/implementation/design.md", "docs/plans/master-plan.md", "docs/plans/current-state.md"]
 +++
 # Wave 16 - Land decision lineage, invalidation, and human input
 
@@ -38,6 +38,18 @@ proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-events/src/
 - Show a superseded decision invalidating the right downstream wave or proof set.
 - Show contradiction-aware reopen semantics against the right upstream design wave.
 - Show dependency or handshake state as durable reducer or projection output, not as a free-form note.
+- Show blocker triage, approval, and escalation surfaces that match the `Blockers` and `Control` UX in `docs/implementation/design.md`.
+
+## Quality control expectations
+- Add deterministic tests for question blocking, decision supersession, contradiction-linked reopen routing, dependency-handshake blockers, and selective invalidation.
+- Prove that invalidation is scoped: one superseded decision must not erase unrelated wave truth.
+- Require operator-facing state to explain what is blocked, what was invalidated, and what upstream lineage changed.
+- Treat any broad, whole-system invalidation behavior as a failure of this wave.
+
+## Documentation closure expectations
+- Update architecture and current-state docs to explain the new durable lineage and invalidation semantics in plain language.
+- Record exactly how human-input requests and dependency handshakes block or reopen downstream work.
+- Include one live proof walkthrough showing how an upstream decision change propagates through the system.
 
 ## Agent A0: Running cont-QA
 
@@ -60,7 +72,7 @@ proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-events/src/
 - repo-wave-closure-markers
 
 ### File ownership
-- .wave/reviews/wave-15-cont-qa.md
+- .wave/reviews/wave-16-cont-qa.md
 
 ### Final markers
 - [wave-gate]
@@ -83,7 +95,53 @@ Specific expectations:
 - emit the final [wave-gate] marker as a plain last line before Verdict: ...
 
 File ownership (only touch these paths):
-- .wave/reviews/wave-15-cont-qa.md
+- .wave/reviews/wave-16-cont-qa.md
+```
+
+## Agent A6: Design Review Steward
+
+### Role prompts
+- docs/agents/wave-design-role.md
+
+### Executor
+- profile: review-codex
+- model: gpt-5.4
+- codex.config: model_reasoning_effort=high,model_verbosity=low
+
+### Context7
+- bundle: none
+- query: "Repository docs remain canonical for design review"
+
+### Skills
+- wave-core
+- role-design
+- tui-design
+- repo-wave-closure-markers
+
+### File ownership
+- .wave/design/wave-16.md
+
+### Final markers
+- [wave-design]
+
+### Prompt
+```text
+Primary goal:
+- Review Wave 16 against docs/implementation/design.md and judge whether blocker triage, human-input, approval, escalation, and invalidation visibility are operator-honest enough for integration closure.
+
+Required context before coding:
+- Read docs/implementation/design.md.
+- Read docs/plans/full-cycle-waves.md.
+- Read docs/implementation/parallel-wave-multi-runtime-architecture.md.
+
+Specific expectations:
+- treat docs/implementation/design.md as the canonical review source
+- require contradiction, dependency, lease, merge, and human-input blockers to be triageable through the operator surface rather than buried in prose
+- require approvals, overrides, and escalations to be surfaced clearly enough that operators understand what action is waiting and why
+- keep the review report concise and end with the final [wave-design] state=<aligned|concerns|blocked> findings=<n> detail=<text> marker as a plain last line
+
+File ownership (only touch these paths):
+- .wave/design/wave-16.md
 ```
 
 ## Agent A8: Integration Steward
@@ -107,8 +165,8 @@ File ownership (only touch these paths):
 - repo-wave-closure-markers
 
 ### File ownership
-- .wave/integration/wave-15.md
-- .wave/integration/wave-15.json
+- .wave/integration/wave-16.md
+- .wave/integration/wave-16.json
 
 ### Final markers
 - [wave-integration]
@@ -131,8 +189,8 @@ Specific expectations:
 - emit the final [wave-integration] state=<ready-for-doc-closure|needs-more-work> claims=<n> conflicts=<n> blockers=<n> detail=<text> marker as a plain last line
 
 File ownership (only touch these paths):
-- .wave/integration/wave-15.md
-- .wave/integration/wave-15.json
+- .wave/integration/wave-16.md
+- .wave/integration/wave-16.json
 ```
 
 ## Agent A9: Wave Documentation Steward

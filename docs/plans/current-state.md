@@ -53,7 +53,7 @@
 - Every active wave starts with a `+++` frontmatter block carrying `id`, `slug`, `title`, `mode`, `owners`, `depends_on`, `validation`, `rollback`, and `proof`.
 - Every active wave must also declare a commit message, component promotions, deploy environments, and wave-level Context7 defaults in the markdown body.
 - Every active wave must include at least one implementation agent; closure-only waves do not satisfy the current contract.
-- Mandatory closure agents are `A0`, `A8`, and `A9`. `E0` is optional and only belongs in waves that explicitly need eval work.
+- Mandatory closure agents are `A0`, `A8`, and `A9`. `E0` remains optional for eval work, and optional specialist reviewers such as `A6` design review may be added when a wave needs report-only closure review beyond the mandatory gates.
 - Implementation agents must declare `### Executor`, `### Context7`, `### Deliverables`, `### File ownership`, `### Skills`, `### Components`, `### Capabilities`, `### Exit contract`, `### Final markers`, and a structured `### Prompt`.
 - Closure agents stay lighter but must still declare `### Role prompts`, `### Executor`, `### Context7`, `### Skills`, `### File ownership`, `### Final markers`, and a structured `### Prompt`.
 - `### Skills` is required for every agent, including `A0`, `A8`, and `A9`; `wave lint` now fails closed on empty closure-agent skill lists as well as unknown ids.
@@ -89,8 +89,10 @@
 
 ## Closure And Marker Baseline
 
-- Closure order is fixed: implementation proof, optional `E0`, `A8` integration, `A9` documentation, then `A0` cont-QA.
+- Closure order is fixed: implementation proof, optional `E0`, optional specialist review such as `A6` design review, `A8` integration, `A9` documentation, then `A0` cont-QA.
+- Optional specialist reviewers are report-only by default. They do not absorb implementation ownership, and their structured markers are advisory unless the wave explicitly treats a blocked review as stopping closure.
 - Implementation agents emit `[wave-proof]`, `[wave-doc-delta]`, and `[wave-component]`.
+- Optional `A6` design review emits `[wave-design]`.
 - Optional `E0` emits `[wave-eval]`.
 - `A8` emits `[wave-integration]`.
 - `A9` emits `[wave-doc-closure]`.

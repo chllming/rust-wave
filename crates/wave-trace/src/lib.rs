@@ -194,6 +194,8 @@ pub enum ClosureVerdictPayload {
     #[default]
     None,
     ContQa(ContQaClosureVerdict),
+    Design(DesignClosureVerdict),
+    Security(SecurityClosureVerdict),
     Integration(IntegrationClosureVerdict),
     Documentation(DocumentationClosureVerdict),
 }
@@ -214,6 +216,21 @@ pub struct IntegrationClosureVerdict {
     pub claims: Option<u32>,
     pub conflicts: Option<u32>,
     pub blockers: Option<u32>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DesignClosureVerdict {
+    pub state: Option<String>,
+    pub findings: Option<u32>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SecurityClosureVerdict {
+    pub state: Option<String>,
+    pub findings: Option<u32>,
+    pub approvals: Option<u32>,
     pub detail: Option<String>,
 }
 
@@ -354,6 +371,12 @@ pub struct WaveRunRecord {
     pub launcher_pid: Option<u32>,
     #[serde(default)]
     pub launcher_started_at_ms: Option<u128>,
+    #[serde(default)]
+    pub worktree: Option<wave_domain::WaveWorktreeRecord>,
+    #[serde(default)]
+    pub promotion: Option<wave_domain::WavePromotionRecord>,
+    #[serde(default)]
+    pub scheduling: Option<wave_domain::WaveSchedulingRecord>,
     pub completed_at_ms: Option<u128>,
     pub agents: Vec<AgentRunRecord>,
     pub error: Option<String>,
@@ -763,6 +786,9 @@ fn normalize_run_record_paths_for_storage(record: &mut WaveRunRecord, repo_root:
     normalize_repo_path_for_storage(&mut record.bundle_dir, repo_root);
     normalize_repo_path_for_storage(&mut record.trace_path, repo_root);
     normalize_repo_path_for_storage(&mut record.codex_home, repo_root);
+    if let Some(worktree) = &mut record.worktree {
+        normalize_string_path_for_storage(&mut worktree.path, repo_root);
+    }
     for agent in &mut record.agents {
         normalize_repo_path_for_storage(&mut agent.prompt_path, repo_root);
         normalize_repo_path_for_storage(&mut agent.last_message_path, repo_root);
@@ -778,6 +804,9 @@ fn normalize_run_record_paths(record: &mut WaveRunRecord, repo_root: &Path) {
     normalize_repo_relative_path(&mut record.bundle_dir, repo_root);
     normalize_repo_relative_path(&mut record.trace_path, repo_root);
     normalize_repo_relative_path(&mut record.codex_home, repo_root);
+    if let Some(worktree) = &mut record.worktree {
+        normalize_string_path_to_absolute(&mut worktree.path, repo_root);
+    }
     for agent in &mut record.agents {
         normalize_repo_relative_path(&mut agent.prompt_path, repo_root);
         normalize_repo_relative_path(&mut agent.last_message_path, repo_root);
@@ -1298,6 +1327,7 @@ fn result_envelope_from_domain(envelope: wave_domain::ResultEnvelope) -> ResultE
 fn trace_task_role(role: wave_domain::TaskRole) -> &'static str {
     match role {
         wave_domain::TaskRole::Implementation => "implementation",
+        wave_domain::TaskRole::Design => "design",
         wave_domain::TaskRole::Integration => "integration",
         wave_domain::TaskRole::Documentation => "documentation",
         wave_domain::TaskRole::ContQa => "cont_qa",
@@ -1313,6 +1343,8 @@ fn trace_task_role(role: wave_domain::TaskRole) -> &'static str {
 fn trace_closure_role(role: wave_domain::ClosureRole) -> &'static str {
     match role {
         wave_domain::ClosureRole::ContEval => "cont_eval",
+        wave_domain::ClosureRole::DesignReview => "design_review",
+        wave_domain::ClosureRole::SecurityReview => "security_review",
         wave_domain::ClosureRole::Integration => "integration",
         wave_domain::ClosureRole::Documentation => "documentation",
         wave_domain::ClosureRole::ContQa => "cont_qa",
@@ -1411,6 +1443,21 @@ fn trace_closure_state(closure: wave_domain::ClosureState) -> ClosureState {
                     gate_state: payload.gate_state,
                     gate_line: payload.gate_line,
                     gate_dimensions: payload.gate_dimensions,
+                    detail: payload.detail,
+                })
+            }
+            wave_domain::ClosureVerdictPayload::Design(payload) => {
+                ClosureVerdictPayload::Design(DesignClosureVerdict {
+                    state: payload.state,
+                    findings: payload.findings,
+                    detail: payload.detail,
+                })
+            }
+            wave_domain::ClosureVerdictPayload::Security(payload) => {
+                ClosureVerdictPayload::Security(SecurityClosureVerdict {
+                    state: payload.state,
+                    findings: payload.findings,
+                    approvals: payload.approvals,
                     detail: payload.detail,
                 })
             }

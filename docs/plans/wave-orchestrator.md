@@ -272,11 +272,15 @@ The launcher entrypoint in `scripts/wave-orchestrator/launcher.mjs` now delegate
 - `## Deploy environments` lets the wave declare named deployment targets. The default deploy environment kind is also used for deploy-kind skill attachment.
 - Lane runtime policy can assign a default executor by role even when the wave omits `### Executor`.
 - Use `### Role prompts` for standing-role imports from `docs/agents/*.md`.
+- Optional design review is declared by importing `docs/agents/wave-design-role.md` on a report-owning reviewer agent. The review should use `docs/implementation/design.md` as canonical operator-UX truth.
+- A design reviewer must own at least one design review report path. Any owned `.md` or `.txt` path containing `design` is accepted by the validator.
+- Design reviewers are report-only by default. They should route fixes to the owning implementation or documentation agent instead of taking over product-code ownership.
+- Design closure requires one final structured marker: `[wave-design] state=<aligned|concerns|blocked> findings=<n> detail=<short-note>`.
 - Optional security review is declared by importing `docs/agents/wave-security-role.md` on a report-owning reviewer agent. The starter planner uses a report path under `.tmp/<lane>-wave-launcher/security/` and the `security-review` executor profile.
 - A security reviewer must own at least one security report path. Any owned `.md` or `.txt` path containing `security` is accepted by the validator.
 - Security reviewers are report-only by default. They should route fixes to the owning implementation agent instead of taking over product-code ownership.
 - Security closure requires one final structured marker: `[wave-security] state=<clear|concerns|blocked> findings=<n> approvals=<n> detail=<short-note>`.
-- Optional standing roles available in this repo include `docs/agents/wave-infra-role.md` for infra proof and `docs/agents/wave-deploy-verifier-role.md` for rollout verification.
+- Optional standing roles available in this repo include `docs/agents/wave-design-role.md` for canonical operator-UX review, `docs/agents/wave-infra-role.md` for infra proof, and `docs/agents/wave-deploy-verifier-role.md` for rollout verification.
 - Keep file ownership explicit inside each `### Prompt`.
 - From the configured thresholds onward, declare `## Context7 defaults`, per-agent `### Context7`, and per-agent `### Exit contract`.
 - For benchmark-family guidance and delegated-versus-pinned eval examples, see [docs/evals/README.md](../evals/README.md).
@@ -349,11 +353,12 @@ pnpm exec wave feedback respond --id <request-id> --response "..."
 
 ## Closure Sweep
 
-If implementation agents ran, the launcher does not stop at `exit 0`. It checks implementation exit contracts, promoted component proof, helper assignments, required dependencies, and the integration recommendation first. When present, `cont-EVAL` must satisfy its declared eval targets before integration can close. Optional security review then runs before integration so the reviewer can publish findings and approval-sensitive actions while the wave is still active. In the default planner shape `E0` is report-only; if a wave explicitly assigns `E0` non-report files, the launcher also applies the normal implementation proof gates to that role. Security reviewers stay report-only by default. Documentation and cont-QA closure only run after integration is explicitly ready for doc closure; if `cont-EVAL`, security review, or integration reports more work, or if helper assignments or required dependency tickets remain open, the wave stops there and retries only the implicated owners plus the relevant closure steward. When multiple implementation agents share a promoted component, owners that already landed valid proof stay reusable while the launcher retries only the sibling owners that still owe closure evidence.
+If implementation agents ran, the launcher does not stop at `exit 0`. It checks implementation exit contracts, promoted component proof, helper assignments, required dependencies, and the integration recommendation first. When present, `cont-EVAL` must satisfy its declared eval targets before integration can close. Optional specialist review such as design review or security review then runs before integration so the reviewer can publish findings while the wave is still active. In the default planner shape `E0` is report-only; if a wave explicitly assigns `E0` non-report files, the launcher also applies the normal implementation proof gates to that role. Design and security reviewers stay report-only by default. Documentation and cont-QA closure only run after integration is explicitly ready for doc closure; if `cont-EVAL`, specialist review, or integration reports more work, or if helper assignments or required dependency tickets remain open, the wave stops there and retries only the implicated owners plus the relevant closure steward. When multiple implementation agents share a promoted component, owners that already landed valid proof stay reusable while the launcher retries only the sibling owners that still owe closure evidence.
 
 Live closure is fail-closed:
 
 - `cont-EVAL` PASS requires a report artifact plus a structured `[wave-eval]` marker whose `target_ids` exactly matches the wave contract and whose `benchmark_ids` stays within the declared benchmark catalog surface.
+- Design review requires a report artifact plus a structured `[wave-design]` marker. `state=blocked` stops the wave before integration, while `state=concerns` is preserved in summaries and traces without automatically failing closure.
 - Security review requires a report artifact plus a structured `[wave-security]` marker. `state=blocked` stops the wave before integration, while `state=concerns` is preserved in summaries and traces without automatically failing closure.
 - `cont-QA` PASS requires both the final verdict and the final `[wave-gate]` marker.
 - Legacy evaluator-era or underspecified closure artifacts are still readable in replay and trace analysis, but they no longer satisfy live completion.

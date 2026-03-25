@@ -7,7 +7,7 @@ owners = ["architecture", "runtime"]
 depends_on = [14]
 validation = ["cargo test -p wave-domain -p wave-results --locked", "cargo test -p wave-runtime -p wave-cli -p wave-app-server --locked", "cargo run -p wave-cli -- doctor --json", "cargo run -p wave-cli -- control show --wave 15 --json", "cargo run -p wave-cli -- project show --json"]
 rollback = ["Route execution back through the current Codex-only runtime path, keep any executor API or runtime-policy artifacts as non-authoritative scaffolding, and leave skill projection explicit per-agent until runtime plurality reaches parity."]
-proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-results/src/lib.rs", "crates/wave-runtime/src/lib.rs", "crates/wave-cli/src/main.rs", "crates/wave-app-server/src/lib.rs", "docs/reference/runtime-config/README.md", "docs/reference/runtime-config/codex.md", "docs/reference/runtime-config/claude.md", "docs/reference/skills.md", "docs/implementation/parallel-wave-multi-runtime-architecture.md", "docs/plans/master-plan.md", "docs/plans/current-state.md"]
+proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-results/src/lib.rs", "crates/wave-runtime/src/lib.rs", "crates/wave-cli/src/main.rs", "crates/wave-app-server/src/lib.rs", "docs/reference/runtime-config/README.md", "docs/reference/runtime-config/codex.md", "docs/reference/runtime-config/claude.md", "docs/reference/skills.md", "docs/implementation/parallel-wave-multi-runtime-architecture.md", "docs/implementation/design.md", "docs/plans/master-plan.md", "docs/plans/current-state.md"]
 +++
 # Wave 15 - Land runtime policy and multi-runtime adapters
 
@@ -39,6 +39,18 @@ proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-results/src
 - Show runtime-aware skill overlays recomputed after runtime selection.
 - Keep docs honest about whether the Claude proof is live or fixture-backed in this wave.
 
+## Quality control expectations
+- Add deterministic tests for executor selection, runtime identity persistence, fallback metadata, and late-bound runtime skill projection.
+- Prove that runtime-specific fields do not leak back into reducer semantics or queue policy.
+- Require one operator-facing proof surface to show which runtime executed the work and why that runtime was selected.
+- Treat fixture-backed Claude proof as acceptable only if the docs and proof artifacts make that limitation explicit.
+- Make runtime identity, fallback reason, and runtime-specific operator visibility fit the `Agents` and `Control` UX defined in `docs/implementation/design.md`.
+
+## Documentation closure expectations
+- Update runtime and skills docs together so Codex, Claude, and policy-layer behavior remain consistent.
+- Record whether the Claude path in this wave is live, dry-run-backed, or fixture-backed.
+- Keep the boundary explicit that scheduler semantics still belong above runtime policy.
+
 ## Agent A0: Running cont-QA
 
 ### Role prompts
@@ -60,7 +72,7 @@ proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-results/src
 - repo-wave-closure-markers
 
 ### File ownership
-- .wave/reviews/wave-14-cont-qa.md
+- .wave/reviews/wave-15-cont-qa.md
 
 ### Final markers
 - [wave-gate]
@@ -85,7 +97,53 @@ Specific expectations:
 - emit the final [wave-gate] marker as a plain last line before Verdict: ...
 
 File ownership (only touch these paths):
-- .wave/reviews/wave-14-cont-qa.md
+- .wave/reviews/wave-15-cont-qa.md
+```
+
+## Agent A6: Design Review Steward
+
+### Role prompts
+- docs/agents/wave-design-role.md
+
+### Executor
+- profile: review-codex
+- model: gpt-5.4
+- codex.config: model_reasoning_effort=high,model_verbosity=low
+
+### Context7
+- bundle: none
+- query: "Repository docs remain canonical for design review"
+
+### Skills
+- wave-core
+- role-design
+- tui-design
+- repo-wave-closure-markers
+
+### File ownership
+- .wave/design/wave-15.md
+
+### Final markers
+- [wave-design]
+
+### Prompt
+```text
+Primary goal:
+- Review Wave 15 against docs/implementation/design.md and judge whether runtime identity, runtime choice, fallback reason, and adapter visibility fit the operator UX cleanly enough for integration closure.
+
+Required context before coding:
+- Read docs/implementation/design.md.
+- Read docs/reference/runtime-config/README.md.
+- Read docs/implementation/parallel-wave-multi-runtime-architecture.md.
+
+Specific expectations:
+- treat docs/implementation/design.md as the canonical review source
+- require runtime identity, runtime selection, fallback metadata, and runtime-specific operator cues to fit the Agents and Control UX without leaking runtime semantics into the TUI
+- treat operator confusion about which runtime ran or why it was selected as a blocking design defect
+- keep the review report concise and end with the final [wave-design] state=<aligned|concerns|blocked> findings=<n> detail=<text> marker as a plain last line
+
+File ownership (only touch these paths):
+- .wave/design/wave-15.md
 ```
 
 ## Agent A8: Integration Steward
@@ -109,8 +167,8 @@ File ownership (only touch these paths):
 - repo-wave-closure-markers
 
 ### File ownership
-- .wave/integration/wave-14.md
-- .wave/integration/wave-14.json
+- .wave/integration/wave-15.md
+- .wave/integration/wave-15.json
 
 ### Final markers
 - [wave-integration]
@@ -134,8 +192,8 @@ Specific expectations:
 - emit the final [wave-integration] state=<ready-for-doc-closure|needs-more-work> claims=<n> conflicts=<n> blockers=<n> detail=<text> marker as a plain last line
 
 File ownership (only touch these paths):
-- .wave/integration/wave-14.md
-- .wave/integration/wave-14.json
+- .wave/integration/wave-15.md
+- .wave/integration/wave-15.json
 ```
 
 ## Agent A9: Wave Documentation Steward
@@ -234,13 +292,11 @@ File ownership (only touch these paths):
 - Cargo.toml
 - crates/wave-runtime/src/lib.rs
 - crates/wave-cli/src/main.rs
-- docs/reference/runtime-config/codex.md
 
 ### File ownership
 - Cargo.toml
 - crates/wave-runtime/src/lib.rs
 - crates/wave-cli/src/main.rs
-- docs/reference/runtime-config/codex.md
 
 ### Final markers
 - [wave-proof]
@@ -268,7 +324,6 @@ File ownership (only touch these paths):
 - Cargo.toml
 - crates/wave-runtime/src/lib.rs
 - crates/wave-cli/src/main.rs
-- docs/reference/runtime-config/codex.md
 ```
 
 ## Agent A2: Claude Adapter And Skill Projection
@@ -308,14 +363,10 @@ File ownership (only touch these paths):
 ### Deliverables
 - crates/wave-domain/src/lib.rs
 - crates/wave-results/src/lib.rs
-- docs/reference/runtime-config/claude.md
-- docs/reference/skills.md
 
 ### File ownership
 - crates/wave-domain/src/lib.rs
 - crates/wave-results/src/lib.rs
-- docs/reference/runtime-config/claude.md
-- docs/reference/skills.md
 
 ### Final markers
 - [wave-proof]
@@ -343,8 +394,6 @@ Specific expectations:
 File ownership (only touch these paths):
 - crates/wave-domain/src/lib.rs
 - crates/wave-results/src/lib.rs
-- docs/reference/runtime-config/claude.md
-- docs/reference/skills.md
 ```
 
 ## Agent A3: Runtime Policy And Live Proof
@@ -383,13 +432,9 @@ File ownership (only touch these paths):
 
 ### Deliverables
 - crates/wave-app-server/src/lib.rs
-- docs/implementation/parallel-wave-multi-runtime-architecture.md
-- docs/plans/current-state.md
 
 ### File ownership
 - crates/wave-app-server/src/lib.rs
-- docs/implementation/parallel-wave-multi-runtime-architecture.md
-- docs/plans/current-state.md
 
 ### Final markers
 - [wave-proof]
@@ -415,6 +460,4 @@ Specific expectations:
 
 File ownership (only touch these paths):
 - crates/wave-app-server/src/lib.rs
-- docs/implementation/parallel-wave-multi-runtime-architecture.md
-- docs/plans/current-state.md
 ```

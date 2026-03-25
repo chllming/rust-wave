@@ -81,6 +81,7 @@ Role:
 - `role-implementation`
 - `role-integration`
 - `role-documentation`
+- `role-design`
 - `role-cont-qa`
 - `role-cont-eval`
 - `role-infra`
@@ -100,6 +101,7 @@ Repo-specific Rust/Codex bundles:
 - `repo-rust-control-plane`
 - `repo-codex-orchestrator`
 - `repo-ratatui-operator`
+- `tui-design`
 
 These are the standard repo-specific attachments for implementation work. Use the narrowest one that matches the subsystem you are changing.
 
@@ -152,6 +154,7 @@ That catches drift between the authored wave and the compiled prompt bundle the 
 - Closure-role defaults stay smaller:
   - `A8`: `wave-core`, `role-integration`, `repo-wave-closure-markers`
   - `A9`: `wave-core`, `role-documentation`, `repo-wave-closure-markers`
+- optional design review: `wave-core`, `role-design`, `tui-design`, `repo-wave-closure-markers`
   - `A0`: `wave-core`, `role-cont-qa`, `repo-wave-closure-markers`
 - Pair narrow skills with narrow Context7 queries. Do not use a broad skill to compensate for a weak query.
 - Attach `repo-wave-closure-markers` anywhere final marker discipline matters.
