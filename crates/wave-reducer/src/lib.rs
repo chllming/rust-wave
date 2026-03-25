@@ -19,6 +19,12 @@ use wave_domain::SchedulerOwner;
 use wave_domain::TaskLeaseRecord;
 use wave_domain::TaskLeaseState;
 use wave_domain::WaveClaimRecord;
+use wave_domain::WaveExecutionPhase;
+use wave_domain::WavePromotionRecord;
+use wave_domain::WavePromotionState;
+use wave_domain::WaveSchedulingRecord;
+use wave_domain::WaveSchedulingState;
+use wave_domain::WaveWorktreeRecord;
 use wave_events::SchedulerEvent;
 use wave_gates::CompatibilityRunFacts;
 use wave_gates::CompatibilityRunInput;
@@ -111,8 +117,13 @@ pub struct TaskLeaseStateView {
 pub struct SchedulerBudgetState {
     pub max_active_wave_claims: Option<u32>,
     pub max_active_task_leases: Option<u32>,
+    pub reserved_closure_task_leases: Option<u32>,
     pub active_wave_claims: usize,
     pub active_task_leases: usize,
+    pub active_implementation_task_leases: usize,
+    pub active_closure_task_leases: usize,
+    pub closure_capacity_reserved: bool,
+    pub preemption_enabled: bool,
     pub budget_blocked: bool,
 }
 
@@ -124,6 +135,15 @@ pub struct WaveOwnershipState {
     pub contention_reasons: Vec<String>,
     pub blocked_by_owner: Option<SchedulerOwnerState>,
     pub budget: SchedulerBudgetState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WaveExecutionState {
+    pub worktree: Option<WaveWorktreeRecord>,
+    pub promotion: Option<WavePromotionRecord>,
+    pub scheduling: Option<WaveSchedulingRecord>,
+    pub merge_blocked: bool,
+    pub closure_blocked_by_promotion: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -199,6 +219,7 @@ pub struct WavePlanningState {
     pub lint_errors: usize,
     pub ready: bool,
     pub ownership: WaveOwnershipState,
+    pub execution: WaveExecutionState,
     pub agents: WaveAgentCounts,
     pub closure: WaveClosureFacts,
     pub lifecycle: WaveLifecycleSummary,
@@ -331,6 +352,9 @@ pub struct SchedulerAuthorityState {
     pub reference_time_ms: u128,
     pub active_wave_claims: usize,
     pub active_task_leases: usize,
+    pub active_implementation_task_leases: usize,
+    pub active_closure_task_leases: usize,
+    pub waiting_closure_waves: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -338,6 +362,9 @@ pub struct SchedulerWaveState {
     pub claim: Option<WaveClaimRecord>,
     pub active_leases: Vec<TaskLeaseRecord>,
     pub stale_leases: Vec<TaskLeaseRecord>,
+    pub worktree: Option<WaveWorktreeRecord>,
+    pub promotion: Option<WavePromotionRecord>,
+    pub scheduling: Option<WaveSchedulingRecord>,
     pub contention_reasons: Vec<String>,
 }
 
@@ -406,8 +433,13 @@ pub fn reduce_planning_state_with_scheduler(
         let planning_ready = planning_gate.blocking_reasons.is_empty();
         let ownership =
             build_wave_ownership_state(&scheduler_state, wave.metadata.id, planning_ready);
-        let blocked_by =
-            combined_blockers(&planning_gate.blocking_reasons, &ownership, planning_ready);
+        let execution = build_wave_execution_state(&scheduler_state, wave.metadata.id);
+        let blocked_by = combined_blockers(
+            &planning_gate.blocking_reasons,
+            &ownership,
+            &execution,
+            planning_ready,
+        );
         let blocker_state = classify_blockers(&blocked_by);
         let blockers = classify_blocker_flags(&blocker_state);
         let readiness = classify_wave_readiness(
@@ -429,6 +461,7 @@ pub fn reduce_planning_state_with_scheduler(
             lint_errors,
             ready: readiness.claimable,
             ownership,
+            execution,
             agents: WaveAgentCounts {
                 total: wave.agents.len(),
                 implementation: wave.implementation_agents().count(),
@@ -855,6 +888,7 @@ fn accumulate_blocker_waves(
 pub fn reduce_scheduler_authority(events: &[SchedulerEvent]) -> SchedulerAuthorityState {
     let mut claims_by_id = HashMap::new();
     let mut leases_by_id = HashMap::new();
+    let mut waves: HashMap<u32, SchedulerWaveState> = HashMap::new();
     let mut budget = None;
     let mut reference_time_ms = 0;
     let mut sorted_events = events.to_vec();
@@ -864,9 +898,23 @@ pub fn reduce_scheduler_authority(events: &[SchedulerEvent]) -> SchedulerAuthori
         reference_time_ms = reference_time_ms.max(event.created_at_ms);
         match event.payload {
             SchedulerEventPayload::WaveClaimUpdated { claim } => {
+                waves.entry(claim.wave_id).or_default();
                 claims_by_id.insert(claim.claim_id.clone(), claim);
             }
+            SchedulerEventPayload::WaveWorktreeUpdated { worktree } => {
+                let wave_id = worktree.wave_id;
+                waves.entry(wave_id).or_default().worktree = Some(worktree);
+            }
+            SchedulerEventPayload::WavePromotionUpdated { promotion } => {
+                let wave_id = promotion.wave_id;
+                waves.entry(wave_id).or_default().promotion = Some(promotion);
+            }
+            SchedulerEventPayload::WaveSchedulingUpdated { scheduling } => {
+                let wave_id = scheduling.wave_id;
+                waves.entry(wave_id).or_default().scheduling = Some(scheduling);
+            }
             SchedulerEventPayload::TaskLeaseUpdated { lease } => {
+                waves.entry(lease.wave_id).or_default();
                 leases_by_id.insert(lease.lease_id.clone(), lease);
             }
             SchedulerEventPayload::SchedulerBudgetUpdated { budget: record } => {
@@ -876,7 +924,6 @@ pub fn reduce_scheduler_authority(events: &[SchedulerEvent]) -> SchedulerAuthori
         }
     }
 
-    let mut waves: HashMap<u32, SchedulerWaveState> = HashMap::new();
     for claim in claims_by_id.into_values() {
         let state = waves.entry(claim.wave_id).or_default();
         if claim.state.is_held() {
@@ -928,10 +975,35 @@ pub fn reduce_scheduler_authority(events: &[SchedulerEvent]) -> SchedulerAuthori
     }
 
     let active_wave_claims = waves.values().filter(|state| state.claim.is_some()).count();
-    let active_task_leases = waves
+    let active_implementation_task_leases = waves
         .values()
-        .map(|state| state.active_leases.len())
-        .sum::<usize>();
+        .flat_map(|state| state.active_leases.iter())
+        .filter(|lease| !task_id_is_closure(&lease.task_id))
+        .count();
+    let active_closure_task_leases = waves
+        .values()
+        .flat_map(|state| state.active_leases.iter())
+        .filter(|lease| task_id_is_closure(&lease.task_id))
+        .count();
+    let active_task_leases = active_implementation_task_leases + active_closure_task_leases;
+    let waiting_closure_waves = waves
+        .values()
+        .filter(|state| {
+            state
+                .scheduling
+                .as_ref()
+                .map(|record| {
+                    matches!(record.phase, WaveExecutionPhase::Closure)
+                        && matches!(
+                            record.state,
+                            WaveSchedulingState::Waiting
+                                | WaveSchedulingState::Protected
+                                | WaveSchedulingState::Preempted
+                        )
+                })
+                .unwrap_or(false)
+        })
+        .count();
 
     SchedulerAuthorityState {
         waves,
@@ -939,6 +1011,9 @@ pub fn reduce_scheduler_authority(events: &[SchedulerEvent]) -> SchedulerAuthori
         reference_time_ms,
         active_wave_claims,
         active_task_leases,
+        active_implementation_task_leases,
+        active_closure_task_leases,
+        waiting_closure_waves,
     }
 }
 
@@ -983,6 +1058,35 @@ fn build_wave_ownership_state(
     }
 }
 
+fn build_wave_execution_state(
+    scheduler_state: &SchedulerAuthorityState,
+    wave_id: u32,
+) -> WaveExecutionState {
+    let wave_state = scheduler_state.waves.get(&wave_id);
+    let promotion = wave_state.and_then(|state| state.promotion.clone());
+    let closure_blocked_by_promotion = promotion
+        .as_ref()
+        .map(|promotion| promotion.state.blocks_closure())
+        .unwrap_or(false);
+    let merge_blocked = promotion
+        .as_ref()
+        .map(|promotion| {
+            matches!(
+                promotion.state,
+                WavePromotionState::Conflicted | WavePromotionState::Failed
+            )
+        })
+        .unwrap_or(false);
+
+    WaveExecutionState {
+        worktree: wave_state.and_then(|state| state.worktree.clone()),
+        promotion,
+        scheduling: wave_state.and_then(|state| state.scheduling.clone()),
+        merge_blocked,
+        closure_blocked_by_promotion,
+    }
+}
+
 fn build_budget_state(
     scheduler_state: &SchedulerAuthorityState,
     planning_ready: bool,
@@ -1005,8 +1109,20 @@ fn build_budget_state(
     SchedulerBudgetState {
         max_active_wave_claims: limits.max_active_wave_claims,
         max_active_task_leases: limits.max_active_task_leases,
+        reserved_closure_task_leases: limits.reserved_closure_task_leases,
         active_wave_claims: scheduler_state.active_wave_claims,
         active_task_leases: scheduler_state.active_task_leases,
+        active_implementation_task_leases: scheduler_state.active_implementation_task_leases,
+        active_closure_task_leases: scheduler_state.active_closure_task_leases,
+        closure_capacity_reserved: limits
+            .reserved_closure_task_leases
+            .map(|reserved| {
+                reserved > 0
+                    && scheduler_state.waiting_closure_waves > 0
+                    && scheduler_state.active_closure_task_leases < reserved as usize
+            })
+            .unwrap_or(false),
+        preemption_enabled: limits.preemption_enabled,
         budget_blocked: planning_ready
             && !already_claimed
             && (wave_claim_limit_hit || task_lease_limit_hit),
@@ -1016,6 +1132,7 @@ fn build_budget_state(
 fn combined_blockers(
     planning_blockers: &[String],
     ownership: &WaveOwnershipState,
+    execution: &WaveExecutionState,
     planning_ready: bool,
 ) -> Vec<String> {
     let mut blocked_by = planning_blockers.to_vec();
@@ -1042,6 +1159,16 @@ fn combined_blockers(
                 .max_active_wave_claims
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "unbounded".to_string())
+        ));
+    }
+    if execution.merge_blocked {
+        blocked_by.push(format!(
+            "closure:promotion-blocked:{}",
+            execution
+                .promotion
+                .as_ref()
+                .map(|promotion| promotion_state_label(promotion.state))
+                .unwrap_or("unknown")
         ));
     }
 
@@ -1099,6 +1226,24 @@ fn lease_is_stale(lease: &TaskLeaseRecord, reference_time_ms: u128) -> bool {
         .unwrap_or(false)
 }
 
+fn task_id_is_closure(task_id: &wave_domain::TaskId) -> bool {
+    task_id
+        .as_str()
+        .rsplit_once("agent-")
+        .map(|(_, agent_id)| matches!(agent_id, "a0" | "a8" | "a9"))
+        .unwrap_or(false)
+}
+
+fn promotion_state_label(state: WavePromotionState) -> &'static str {
+    match state {
+        WavePromotionState::NotStarted => "not_started",
+        WavePromotionState::Pending => "pending",
+        WavePromotionState::Ready => "ready",
+        WavePromotionState::Conflicted => "conflicted",
+        WavePromotionState::Failed => "failed",
+    }
+}
+
 fn is_newer_claim(candidate: &WaveClaimRecord, current: &WaveClaimRecord) -> bool {
     (candidate.claimed_at_ms, candidate.claim_id.as_str())
         > (current.claimed_at_ms, current.claim_id.as_str())
@@ -1154,6 +1299,10 @@ mod tests {
     use wave_domain::WaveClaimId;
     use wave_domain::WaveClaimRecord;
     use wave_domain::WaveClaimState;
+    use wave_domain::WaveExecutionPhase;
+    use wave_domain::WavePromotionState;
+    use wave_domain::WaveSchedulerPriority;
+    use wave_domain::WaveSchedulingState;
     use wave_domain::task_id_for_agent;
     use wave_events::SchedulerEvent;
     use wave_events::SchedulerEventKind;
@@ -1648,6 +1797,103 @@ mod tests {
         );
     }
 
+    #[test]
+    fn promotion_conflict_and_reserved_closure_capacity_are_visible_in_reducer_state() {
+        let waves = vec![test_wave(0, Vec::new()), test_wave(1, Vec::new())];
+        let scheduler_events = vec![
+            SchedulerEvent::new(
+                "sched-budget-parallel",
+                SchedulerEventKind::SchedulerBudgetUpdated,
+            )
+            .with_created_at_ms(1)
+            .with_payload(SchedulerEventPayload::SchedulerBudgetUpdated {
+                budget: SchedulerBudgetRecord {
+                    budget_id: SchedulerBudgetId::new("budget-parallel"),
+                    budget: SchedulerBudget {
+                        max_active_wave_claims: Some(2),
+                        max_active_task_leases: Some(2),
+                        reserved_closure_task_leases: Some(1),
+                        preemption_enabled: true,
+                    },
+                    owner: scheduler_owner("budget-bootstrap"),
+                    updated_at_ms: 1,
+                    detail: Some("parallel budget".to_string()),
+                },
+            }),
+            claim_acquired_event(0, "claim-wave-0", "wave-0-run", 10),
+            lease_event(
+                0,
+                "claim-wave-0",
+                "wave-0-run",
+                "A1",
+                TaskLeaseState::Granted,
+                11,
+                None,
+            ),
+            worktree_event(1, ".wave/state/worktrees/wave-01-run", 20),
+            promotion_event(
+                1,
+                WavePromotionState::Conflicted,
+                vec!["README.md".to_string()],
+                21,
+            ),
+            scheduling_event(
+                1,
+                WaveExecutionPhase::Closure,
+                WaveSchedulerPriority::Closure,
+                WaveSchedulingState::Protected,
+                true,
+                false,
+                22,
+            ),
+        ];
+
+        let state = reduce_with_scheduler(
+            &waves,
+            &[],
+            &[],
+            HashMap::new(),
+            HashSet::new(),
+            scheduler_events,
+        );
+
+        let conflicted = state
+            .waves
+            .iter()
+            .find(|wave| wave.id == 1)
+            .expect("wave 1");
+        assert!(conflicted.execution.merge_blocked);
+        assert!(conflicted.execution.closure_blocked_by_promotion);
+        assert_eq!(
+            conflicted
+                .execution
+                .promotion
+                .as_ref()
+                .map(|promotion| promotion.state),
+            Some(WavePromotionState::Conflicted)
+        );
+        assert!(
+            conflicted
+                .blocked_by
+                .iter()
+                .any(|reason| reason == "closure:promotion-blocked:conflicted")
+        );
+        assert!(
+            conflicted
+                .execution
+                .scheduling
+                .as_ref()
+                .map(|record| record.protected_closure_capacity)
+                .unwrap_or(false)
+        );
+        assert_eq!(
+            conflicted.ownership.budget.reserved_closure_task_leases,
+            Some(1)
+        );
+        assert!(conflicted.ownership.budget.preemption_enabled);
+        assert!(conflicted.ownership.budget.closure_capacity_reserved);
+    }
+
     fn reduce(
         waves: &[WaveDocument],
         findings: &[LintFinding],
@@ -1707,6 +1953,9 @@ mod tests {
             started_at_ms: Some(1),
             launcher_pid: None,
             launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: match status {
                 WaveRunStatus::Running | WaveRunStatus::Planned => None,
                 _ => Some(2),
@@ -1942,6 +2191,8 @@ mod tests {
             budget: SchedulerBudget {
                 max_active_wave_claims: Some(max_active_wave_claims),
                 max_active_task_leases: Some(1),
+                reserved_closure_task_leases: Some(1),
+                preemption_enabled: true,
             },
             owner: scheduler_owner("budget-bootstrap"),
             updated_at_ms,
@@ -1962,5 +2213,96 @@ mod tests {
             TaskLeaseState::Expired => "expired",
             TaskLeaseState::Revoked => "revoked",
         }
+    }
+
+    fn worktree_event(wave_id: u32, path: &str, created_at_ms: u128) -> SchedulerEvent {
+        SchedulerEvent::new(
+            format!("sched-worktree-{wave_id}-{created_at_ms}"),
+            SchedulerEventKind::WaveWorktreeUpdated,
+        )
+        .with_wave_id(wave_id)
+        .with_created_at_ms(created_at_ms)
+        .with_payload(SchedulerEventPayload::WaveWorktreeUpdated {
+            worktree: wave_domain::WaveWorktreeRecord {
+                worktree_id: wave_domain::WaveWorktreeId::new(format!(
+                    "worktree-wave-{wave_id:02}"
+                )),
+                wave_id,
+                state: wave_domain::WaveWorktreeState::Allocated,
+                path: path.to_string(),
+                base_ref: "main".to_string(),
+                snapshot_ref: "snapshot".to_string(),
+                branch_ref: None,
+                shared_scope: wave_domain::WaveWorktreeScope::Wave,
+                allocated_at_ms: created_at_ms,
+                released_at_ms: None,
+                detail: Some("shared wave worktree".to_string()),
+            },
+        })
+    }
+
+    fn promotion_event(
+        wave_id: u32,
+        state: WavePromotionState,
+        conflict_paths: Vec<String>,
+        created_at_ms: u128,
+    ) -> SchedulerEvent {
+        SchedulerEvent::new(
+            format!("sched-promotion-{wave_id}-{created_at_ms}"),
+            SchedulerEventKind::WavePromotionUpdated,
+        )
+        .with_wave_id(wave_id)
+        .with_created_at_ms(created_at_ms)
+        .with_payload(SchedulerEventPayload::WavePromotionUpdated {
+            promotion: wave_domain::WavePromotionRecord {
+                promotion_id: wave_domain::WavePromotionId::new(format!(
+                    "promotion-wave-{wave_id:02}"
+                )),
+                wave_id,
+                worktree_id: Some(wave_domain::WaveWorktreeId::new(format!(
+                    "worktree-wave-{wave_id:02}"
+                ))),
+                state,
+                target_ref: "main".to_string(),
+                snapshot_ref: "snapshot".to_string(),
+                candidate_ref: Some("candidate".to_string()),
+                candidate_tree: Some("tree".to_string()),
+                conflict_paths,
+                checked_at_ms: created_at_ms,
+                completed_at_ms: Some(created_at_ms),
+                detail: Some("promotion visibility".to_string()),
+            },
+        })
+    }
+
+    fn scheduling_event(
+        wave_id: u32,
+        phase: WaveExecutionPhase,
+        priority: WaveSchedulerPriority,
+        state: WaveSchedulingState,
+        protected_closure_capacity: bool,
+        preemptible: bool,
+        created_at_ms: u128,
+    ) -> SchedulerEvent {
+        SchedulerEvent::new(
+            format!("sched-scheduling-{wave_id}-{created_at_ms}"),
+            SchedulerEventKind::WaveSchedulingUpdated,
+        )
+        .with_wave_id(wave_id)
+        .with_created_at_ms(created_at_ms)
+        .with_payload(SchedulerEventPayload::WaveSchedulingUpdated {
+            scheduling: wave_domain::WaveSchedulingRecord {
+                wave_id,
+                phase,
+                priority,
+                state,
+                fairness_rank: 0,
+                waiting_since_ms: Some(created_at_ms),
+                protected_closure_capacity,
+                preemptible,
+                last_decision: Some("scheduler visibility".to_string()),
+                updated_at_ms: created_at_ms,
+            },
+        })
     }
 }

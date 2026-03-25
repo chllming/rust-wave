@@ -1,5 +1,5 @@
 [package]
-name = "wave-control-rust"
+name = "rust-wave-control"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

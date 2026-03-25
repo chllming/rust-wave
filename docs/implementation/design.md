@@ -732,6 +732,8 @@ This UX design should shape the coming waves as follows.
 
 Must make parallel-wave, worktree, fairness, and merge state visible enough that the `Overview`, `Wave`, and `Blockers` views can explain concurrency honestly.
 
+The current Wave 14 landing now surfaces the first repo-local slice of that truth in the live shell: selected-wave and run views show worktree identity, promotion state, scheduler phase, fairness, protected closure state, and merge blocking from reducer-backed projections. The fuller `Overview` and `Blockers` ergonomics in this document still belong to a dedicated later UX wave.
+
 ### Wave 15
 
 Must make runtime identity, runtime selection, fallback reason, and runtime-specific operator visibility fit the `Agents` and `Control` views without leaking runtime semantics into the TUI.

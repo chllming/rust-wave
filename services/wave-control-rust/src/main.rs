@@ -156,7 +156,10 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/healthz", get(health))
-        .route("/v1/operator/snapshot", get(get_operator_snapshot).post(post_operator_snapshot))
+        .route(
+            "/v1/operator/snapshot",
+            get(get_operator_snapshot).post(post_operator_snapshot),
+        )
         .route(
             "/v1/control-events/:wave_id",
             get(get_control_events).post(post_control_events),
@@ -174,10 +177,10 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(state.config.bind_addr)
         .await
         .with_context(|| format!("failed to bind {}", state.config.bind_addr))?;
-    println!("wave-control-rust listening on {}", state.config.bind_addr);
+    println!("rust-wave-control listening on {}", state.config.bind_addr);
     axum::serve(listener, app)
         .await
-        .context("wave-control-rust server failed")?;
+        .context("rust-wave-control server failed")?;
     Ok(())
 }
 
@@ -242,7 +245,7 @@ impl MirrorStore {
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     let project_key = &state.config.default_project_key;
     Json(HealthResponse {
-        service: "wave-control-rust",
+        service: "rust-wave-control",
         status: "ok",
         auth_required: state.config.auth_token.is_some(),
         live_repo_mode: state.config.repo_root.is_some(),
@@ -256,7 +259,9 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         orchestrator_id: state.config.orchestrator_id.clone(),
         runtime_version: state.config.runtime_version.clone(),
         data_dir: state.config.data_dir.display().to_string(),
-        snapshot_path: snapshot_path(&state.config, project_key).display().to_string(),
+        snapshot_path: snapshot_path(&state.config, project_key)
+            .display()
+            .to_string(),
     })
 }
 
@@ -299,7 +304,8 @@ async fn get_control_events(
     if let Some(events) = load_live_control_events(&state.config, wave_id)? {
         return Ok(Json(ControlEventBatch { events }));
     }
-    if let Some(events) = load_mirrored_control_events(&state, project_key.as_str(), wave_id).await?
+    if let Some(events) =
+        load_mirrored_control_events(&state, project_key.as_str(), wave_id).await?
     {
         return Ok(Json(ControlEventBatch { events }));
     }
@@ -392,14 +398,19 @@ async fn post_result_envelopes(
     Json(batch): Json<ResultEnvelopeBatch>,
 ) -> Result<Json<MirrorWriteResponse>, ApiError> {
     authorize(&headers, &state.config)?;
-    if batch.envelopes.iter().any(|envelope| envelope.wave_id != wave_id) {
+    if batch
+        .envelopes
+        .iter()
+        .any(|envelope| envelope.wave_id != wave_id)
+    {
         return Err(ApiError::bad_request(
             "all mirrored result envelopes must match the requested wave_id",
         ));
     }
     let stored_at_ms = now_epoch_ms().map_err(ApiError::internal)?;
     let project_key = project_key(&headers, &state.config);
-    let path = store_result_envelopes(&state, project_key.as_str(), wave_id, batch.envelopes).await?;
+    let path =
+        store_result_envelopes(&state, project_key.as_str(), wave_id, batch.envelopes).await?;
     Ok(Json(MirrorWriteResponse { stored_at_ms, path }))
 }
 
@@ -433,7 +444,8 @@ fn load_live_snapshot(config: &ServiceConfig) -> Result<Option<Value>, ApiError>
         return Ok(None);
     };
     let project_config = ProjectConfig::load(config_path).map_err(ApiError::internal)?;
-    let snapshot = load_operator_snapshot(repo_root, &project_config).map_err(ApiError::internal)?;
+    let snapshot =
+        load_operator_snapshot(repo_root, &project_config).map_err(ApiError::internal)?;
     serde_json::to_value(snapshot)
         .map(Some)
         .map_err(ApiError::internal)
@@ -489,9 +501,14 @@ fn load_live_result_envelopes(
         return Ok(None);
     };
     let project_config = ProjectConfig::load(config_path).map_err(ApiError::internal)?;
-    let results_dir = project_config.resolved_paths(repo_root).authority.state_results_dir;
+    let results_dir = project_config
+        .resolved_paths(repo_root)
+        .authority
+        .state_results_dir;
     let store = ResultEnvelopeStore::new(results_dir);
-    let envelopes = store.load_wave_envelopes(wave_id).map_err(ApiError::internal)?;
+    let envelopes = store
+        .load_wave_envelopes(wave_id)
+        .map_err(ApiError::internal)?;
     if envelopes.is_empty() {
         Ok(None)
     } else {
@@ -514,15 +531,19 @@ async fn load_mirrored_snapshot(
             Ok(Some(envelope.snapshot))
         }
         MirrorStore::Postgres(pool) => {
-            let row =
-                sqlx::query("SELECT snapshot FROM rust_wave_operator_snapshots WHERE project_key = $1")
-                    .bind(project_key)
-                    .fetch_optional(pool)
-                    .await
-                    .map_err(ApiError::internal)?;
-            row.map(|row| row.try_get::<SqlJson<Value>, _>("snapshot").map(|value| value.0))
-                .transpose()
-                .map_err(ApiError::internal)
+            let row = sqlx::query(
+                "SELECT snapshot FROM rust_wave_operator_snapshots WHERE project_key = $1",
+            )
+            .bind(project_key)
+            .fetch_optional(pool)
+            .await
+            .map_err(ApiError::internal)?;
+            row.map(|row| {
+                row.try_get::<SqlJson<Value>, _>("snapshot")
+                    .map(|value| value.0)
+            })
+            .transpose()
+            .map_err(ApiError::internal)
         }
     }
 }
@@ -687,7 +708,9 @@ async fn store_snapshot(
             .execute(pool)
             .await
             .map_err(ApiError::internal)?;
-            Ok(format!("db://rust-wave-control/{project_key}/operator-snapshot"))
+            Ok(format!(
+                "db://rust-wave-control/{project_key}/operator-snapshot"
+            ))
         }
     }
 }
@@ -738,7 +761,9 @@ async fn store_control_events(
                 .map_err(ApiError::internal)?;
             }
             tx.commit().await.map_err(ApiError::internal)?;
-            Ok(format!("db://rust-wave-control/{project_key}/control-events/{wave_id}"))
+            Ok(format!(
+                "db://rust-wave-control/{project_key}/control-events/{wave_id}"
+            ))
         }
     }
 }
@@ -786,7 +811,9 @@ async fn store_coordination_records(
                 .map_err(ApiError::internal)?;
             }
             tx.commit().await.map_err(ApiError::internal)?;
-            Ok(format!("db://rust-wave-control/{project_key}/coordination/{wave_id}"))
+            Ok(format!(
+                "db://rust-wave-control/{project_key}/coordination/{wave_id}"
+            ))
         }
     }
 }
@@ -843,7 +870,9 @@ async fn store_result_envelopes(
                 .map_err(ApiError::internal)?;
             }
             tx.commit().await.map_err(ApiError::internal)?;
-            Ok(format!("db://rust-wave-control/{project_key}/result-envelopes/{wave_id}"))
+            Ok(format!(
+                "db://rust-wave-control/{project_key}/result-envelopes/{wave_id}"
+            ))
         }
     }
 }
@@ -861,11 +890,7 @@ fn control_events_path(config: &ServiceConfig, project_key: &str, wave_id: u32) 
         .join(format!("wave-{wave_id:02}.json"))
 }
 
-fn coordination_records_path(
-    config: &ServiceConfig,
-    project_key: &str,
-    wave_id: u32,
-) -> PathBuf {
+fn coordination_records_path(config: &ServiceConfig, project_key: &str, wave_id: u32) -> PathBuf {
     project_dir(config, project_key)
         .join("mirror")
         .join("coordination")
@@ -913,14 +938,17 @@ async fn write_json_file<T: Serialize>(
 }
 
 fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> anyhow::Result<T> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))
 }
 
 fn merge_control_events(existing: &mut Vec<ControlEvent>, incoming: Vec<ControlEvent>) {
     for event in incoming {
-        if existing.iter().any(|candidate| candidate.event_id == event.event_id) {
+        if existing
+            .iter()
+            .any(|candidate| candidate.event_id == event.event_id)
+        {
             continue;
         }
         existing.push(event);

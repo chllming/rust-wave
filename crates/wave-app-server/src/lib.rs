@@ -704,10 +704,25 @@ mod tests {
             budget: wave_control_plane::SchedulerBudgetState {
                 max_active_wave_claims: None,
                 max_active_task_leases: None,
+                reserved_closure_task_leases: None,
                 active_wave_claims: 0,
                 active_task_leases: 0,
+                active_implementation_task_leases: 0,
+                active_closure_task_leases: 0,
+                closure_capacity_reserved: false,
+                preemption_enabled: false,
                 budget_blocked: false,
             },
+        }
+    }
+
+    fn empty_execution() -> wave_control_plane::WaveExecutionState {
+        wave_control_plane::WaveExecutionState {
+            worktree: None,
+            promotion: None,
+            scheduling: None,
+            merge_blocked: false,
+            closure_blocked_by_promotion: false,
         }
     }
 
@@ -761,6 +776,7 @@ mod tests {
                     lint_errors: 0,
                     ready: false,
                     ownership: empty_ownership(),
+                    execution: empty_execution(),
                     agent_count: 6,
                     implementation_agent_count: 3,
                     closure_agent_count: 3,
@@ -805,6 +821,7 @@ mod tests {
                     lint_errors: 0,
                     ready: true,
                     ownership: empty_ownership(),
+                    execution: empty_execution(),
                     agent_count: 6,
                     implementation_agent_count: 3,
                     closure_agent_count: 3,
@@ -850,6 +867,9 @@ mod tests {
                 started_at_ms: Some(1),
                 launcher_pid: None,
                 launcher_started_at_ms: None,
+                worktree: None,
+                promotion: None,
+                scheduling: None,
                 completed_at_ms: None,
                 agents: Vec::new(),
                 error: None,
@@ -915,6 +935,7 @@ mod tests {
                 lint_errors: 0,
                 ready: true,
                 ownership: empty_ownership(),
+                execution: empty_execution(),
                 agent_count: 3,
                 implementation_agent_count: 1,
                 closure_agent_count: 2,
@@ -1043,6 +1064,7 @@ mod tests {
                     lint_errors: 0,
                     ready: false,
                     ownership: empty_ownership(),
+                    execution: empty_execution(),
                     agent_count: 3,
                     implementation_agent_count: 1,
                     closure_agent_count: 2,
@@ -1091,6 +1113,7 @@ mod tests {
                     lint_errors: 0,
                     ready: false,
                     ownership: empty_ownership(),
+                    execution: empty_execution(),
                     agent_count: 3,
                     implementation_agent_count: 1,
                     closure_agent_count: 2,
@@ -1139,6 +1162,7 @@ mod tests {
                     lint_errors: 0,
                     ready: false,
                     ownership: empty_ownership(),
+                    execution: empty_execution(),
                     agent_count: 3,
                     implementation_agent_count: 1,
                     closure_agent_count: 2,
@@ -1334,6 +1358,9 @@ mod tests {
             started_at_ms: Some(2),
             launcher_pid: None,
             launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: Some(3),
             agents: vec![wave_trace::AgentRunRecord {
                 id: "A1".to_string(),
@@ -1456,6 +1483,9 @@ mod tests {
             started_at_ms: Some(2),
             launcher_pid: None,
             launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: Some(3),
             agents: vec![wave_trace::AgentRunRecord {
                 id: "A8".to_string(),
@@ -1621,6 +1651,9 @@ mod tests {
             started_at_ms: Some(3),
             launcher_pid: None,
             launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: Some(4),
             agents: vec![wave_trace::AgentRunRecord {
                 id: "A1".to_string(),

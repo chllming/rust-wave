@@ -11,12 +11,33 @@ For live behavior today, read:
 - [rust-codex-refactor.md](./rust-codex-refactor.md)
 - [../plans/current-state.md](../plans/current-state.md)
 - [../reference/runtime-config/README.md](../reference/runtime-config/README.md)
+- [./live-proofs/phase-2-parallel-wave-execution/README.md](./live-proofs/phase-2-parallel-wave-execution/README.md)
 
 For the broader 0.2 cutover architecture that this document extends, read:
 
 - [rust-wave-0.2-architecture.md](./rust-wave-0.2-architecture.md)
 - [rust-wave-0.3-notes.md](./rust-wave-0.3-notes.md)
 - [../plans/full-cycle-waves.md](../plans/full-cycle-waves.md)
+
+## Wave 14 Live Boundary
+
+Wave 14 has now landed the first honest repo-local parallel-wave execution slice.
+
+What is live now:
+
+- repo-local parallel admission and execution for two non-conflicting waves at a time
+- one isolated worktree per active wave under `.wave/state/worktrees/`
+- one shared wave-local filesystem view for every agent inside the same wave
+- explicit promotion state before closure, with conflict or failure blocking closure
+- reducer-backed projection visibility for worktree identity, promotion state, scheduler phase, fairness rank, and protected closure capacity
+
+What is still later work:
+
+- Claude runtime adapters
+- a richer runtime policy engine and operator policy controls
+- portfolio or release-layer delivery state
+- decision, contradiction, and invalidation lineage
+- per-agent worktrees
 
 ## Architectural Readout
 
@@ -33,12 +54,12 @@ The current Rust repo is a stronger architectural base than the older launcher-c
 
 That is the right direction.
 
-The main gap is runtime behavior. The live runtime is still effectively:
+The main remaining gap is runtime breadth. The live runtime is now:
 
-- one selected wave at a time
-- one agent at a time
+- parallel for up to two non-conflicting repo-local waves at a time
+- one agent at a time inside each wave, sharing that wave's worktree
 - Codex-only
-- scheduler-enforced and lease-aware, but still serial rather than truly parallel
+- scheduler-enforced and lease-aware, but still not yet a multi-runtime policy engine
 
 So the target architecture should not be “make the current launcher slightly smarter.”
 
@@ -584,14 +605,14 @@ The intended ladder should be:
 
 1. scheduler and lease authority
    live proof: ready versus claimed versus released, lease visibility, wave-local worktree reservation
-2. runtime policy and plurality
-   live proof: the same wave contract exercised through Codex and Claude or a fixture-backed equivalent, with runtime identity preserved in projections
-3. question, decision, contradiction, and invalidation flow
-   live proof: upstream ambiguity or superseded decisions reopening the right downstream work and invalidating the right proofs
-4. portfolio, release, and acceptance packages
-   live proof: one initiative or release aggregating multiple waves into a coherent ship/no-ship state
-5. true parallel-wave execution
+2. true parallel-wave execution
    live proof: two non-conflicting waves active concurrently in separate worktrees, merge state captured explicitly, and scheduler fairness visible to operators
+3. runtime policy and plurality
+   live proof: the same wave contract exercised through Codex and Claude or a fixture-backed equivalent, with runtime identity preserved in projections
+4. question, decision, contradiction, and invalidation flow
+   live proof: upstream ambiguity or superseded decisions reopening the right downstream work and invalidating the right proofs
+5. portfolio, release, and acceptance packages
+   live proof: one initiative or release aggregating multiple waves into a coherent ship/no-ship state
 
 Until a phase has both deterministic tests and this kind of repo-local live proof, it should not be described as landed.
 
@@ -664,12 +685,10 @@ The Rust repo already has the right bones:
 
 The live behavior still falls short in four ways:
 
-1. the runtime is serial
-2. durable claims and leases are not yet the active scheduler truth
-3. multi-runtime execution is not yet live in Rust
-4. the domain is richer than the runtime currently exercises
-5. the live harness is still implementation-first operationally, not yet a true full-cycle design-to-hardening system
-6. execution isolation for true parallel waves is not yet modeled as one worktree per active wave
+1. multi-runtime execution is not yet live in Rust
+2. the domain is richer than the runtime currently exercises
+3. the live harness is still implementation-first operationally, not yet a true full-cycle design-to-hardening system
+4. runtime policy remains shallow even though fairness, worktree identity, and closure protection are now projection-visible
 
 ## Non-Goals
 

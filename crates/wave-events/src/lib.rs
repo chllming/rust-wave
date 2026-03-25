@@ -446,6 +446,9 @@ pub fn parse_control_wave_id(path: &Path) -> Option<u32> {
 pub enum SchedulerEventKind {
     WaveClaimAcquired,
     WaveClaimReleased,
+    WaveWorktreeUpdated,
+    WavePromotionUpdated,
+    WaveSchedulingUpdated,
     TaskLeaseGranted,
     TaskLeaseRenewed,
     TaskLeaseReleased,
@@ -722,6 +725,9 @@ fn scheduler_owner_path(event: &SchedulerEvent) -> Option<&str> {
         SchedulerEventPayload::WaveClaimUpdated { claim } => {
             Some(claim.owner.scheduler_path.as_str())
         }
+        SchedulerEventPayload::WaveWorktreeUpdated { .. } => None,
+        SchedulerEventPayload::WavePromotionUpdated { .. } => None,
+        SchedulerEventPayload::WaveSchedulingUpdated { .. } => None,
         SchedulerEventPayload::TaskLeaseUpdated { lease } => {
             Some(lease.owner.scheduler_path.as_str())
         }
@@ -735,6 +741,9 @@ fn scheduler_owner_path(event: &SchedulerEvent) -> Option<&str> {
 fn scheduler_owner_session_id(event: &SchedulerEvent) -> Option<&str> {
     match &event.payload {
         SchedulerEventPayload::WaveClaimUpdated { claim } => claim.owner.session_id.as_deref(),
+        SchedulerEventPayload::WaveWorktreeUpdated { .. } => None,
+        SchedulerEventPayload::WavePromotionUpdated { .. } => None,
+        SchedulerEventPayload::WaveSchedulingUpdated { .. } => None,
         SchedulerEventPayload::TaskLeaseUpdated { lease } => lease.owner.session_id.as_deref(),
         SchedulerEventPayload::SchedulerBudgetUpdated { budget } => {
             budget.owner.session_id.as_deref()
@@ -1054,6 +1063,8 @@ mod tests {
             budget: SchedulerBudget {
                 max_active_wave_claims: Some(1),
                 max_active_task_leases: Some(1),
+                reserved_closure_task_leases: Some(1),
+                preemption_enabled: true,
             },
             owner: SchedulerOwner {
                 scheduler_id: "wave-runtime".to_string(),

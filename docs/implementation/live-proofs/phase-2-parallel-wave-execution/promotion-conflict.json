@@ -1,0 +1,46 @@
+{
+  "wave_id": 12,
+  "worktree": {
+    "worktree_id": "worktree-wave-12-wave-12-proof",
+    "wave_id": 12,
+    "state": "allocated",
+    "path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-conflict/.wave/state/worktrees/wave-12-wave-12-proof",
+    "base_ref": "main",
+    "snapshot_ref": "0b718f0fd16711fe19c502e932732089b17f9d88",
+    "branch_ref": null,
+    "shared_scope": "wave",
+    "allocated_at_ms": 1,
+    "released_at_ms": null,
+    "detail": "shared wave-local worktree"
+  },
+  "initial_promotion": {
+    "promotion_id": "promotion-wave-12-0b718f0fd16711fe19c502e932732089b17f9d88",
+    "wave_id": 12,
+    "worktree_id": "worktree-wave-12-wave-12-proof",
+    "state": "not_started",
+    "target_ref": "main",
+    "snapshot_ref": "0b718f0fd16711fe19c502e932732089b17f9d88",
+    "candidate_ref": null,
+    "candidate_tree": null,
+    "conflict_paths": [],
+    "checked_at_ms": 1,
+    "completed_at_ms": null,
+    "detail": "promotion not yet evaluated"
+  },
+  "evaluated_promotion": {
+    "promotion_id": "promotion-wave-12-0b718f0fd16711fe19c502e932732089b17f9d88",
+    "wave_id": 12,
+    "worktree_id": "worktree-wave-12-wave-12-proof",
+    "state": "conflicted",
+    "target_ref": "main",
+    "snapshot_ref": "0b718f0fd16711fe19c502e932732089b17f9d88",
+    "candidate_ref": "cdc95243bd079799d10d0ff50305350f70e62c89",
+    "candidate_tree": "331e65674264f8a820de59ab13010f79e0baa363",
+    "conflict_paths": [
+      "README.md"
+    ],
+    "checked_at_ms": 1774437299412,
+    "completed_at_ms": 1774437299459,
+    "detail": "promotion blocked by README.md"
+  }
+}

@@ -660,7 +660,12 @@ pub fn launch_wave(
     let worktree = match allocate_wave_worktree(root, config, wave, &run_id, created_at_ms) {
         Ok(worktree) => worktree,
         Err(error) => {
-            release_wave_claim(root, config, &claim, "launch aborted while allocating worktree")?;
+            release_wave_claim(
+                root,
+                config,
+                &claim,
+                "launch aborted while allocating worktree",
+            )?;
             return Err(error);
         }
     };
@@ -910,10 +915,7 @@ pub fn launch_wave(
                 waiting_since_ms: None,
                 protected_closure_capacity: is_closure_agent(agent.id.as_str()),
                 preemptible: !is_closure_agent(agent.id.as_str()),
-                last_decision: Some(format!(
-                    "running {} in shared wave worktree",
-                    agent.id
-                )),
+                last_decision: Some(format!("running {} in shared wave worktree", agent.id)),
                 updated_at_ms: now_epoch_ms()?,
             },
             &record.run_id,
@@ -1261,9 +1263,9 @@ pub fn autonomous_launch(
                 match handle.join().expect("parallel wave launch thread panicked") {
                     Ok(report) => reports.push(report),
                     Err(error)
-                        if error
-                            .chain()
-                            .any(|cause| cause.downcast_ref::<SchedulerAdmissionError>().is_some()) =>
+                        if error.chain().any(|cause| {
+                            cause.downcast_ref::<SchedulerAdmissionError>().is_some()
+                        }) =>
                     {
                         admission_retry = true;
                     }
@@ -1276,7 +1278,9 @@ pub fn autonomous_launch(
             status = refresh_planning_status(root, config, waves)?;
             continue;
         }
-        let failed = reports.iter().any(|report| report.status == WaveRunStatus::Failed);
+        let failed = reports
+            .iter()
+            .any(|report| report.status == WaveRunStatus::Failed);
         launched.extend(reports);
         status = refresh_planning_status(root, config, waves)?;
         if failed {
@@ -1666,8 +1670,8 @@ fn allocate_wave_worktree(
     allocated_at_ms: u128,
 ) -> Result<WaveWorktreeRecord> {
     let snapshot_ref = create_workspace_snapshot_commit(root, config, run_id, "base")?;
-    let worktree_path = state_worktrees_dir(root, config)
-        .join(format!("wave-{:02}-{run_id}", wave.metadata.id));
+    let worktree_path =
+        state_worktrees_dir(root, config).join(format!("wave-{:02}-{run_id}", wave.metadata.id));
     if let Some(parent) = worktree_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -1782,20 +1786,32 @@ fn evaluate_wave_promotion(
         correlation_id,
     )?;
     let worktree_root = Path::new(worktree.path.as_str());
-    let candidate_ref = create_workspace_snapshot_commit(worktree_root, config, correlation_id, "candidate")?;
-    let target_snapshot_ref = create_workspace_snapshot_commit(root, config, correlation_id, "target")?;
-    let candidate_tree =
-        git_output(worktree_root, &["rev-parse", &format!("{candidate_ref}^{{tree}}")])?;
+    let candidate_ref =
+        create_workspace_snapshot_commit(worktree_root, config, correlation_id, "candidate")?;
+    let target_snapshot_ref =
+        create_workspace_snapshot_commit(root, config, correlation_id, "target")?;
+    let candidate_tree = git_output(
+        worktree_root,
+        &["rev-parse", &format!("{candidate_ref}^{{tree}}")],
+    )?;
     let candidate_paths = git_diff_name_only(root, &pending.snapshot_ref, &candidate_ref)?;
-    let target_changed: HashSet<String> = git_diff_name_only(root, &pending.snapshot_ref, &target_snapshot_ref)?
-        .into_iter()
-        .collect();
+    let target_changed: HashSet<String> =
+        git_diff_name_only(root, &pending.snapshot_ref, &target_snapshot_ref)?
+            .into_iter()
+            .collect();
     let mut conflict_paths = Vec::new();
     for path in candidate_paths {
         if target_changed.contains(&path)
             && !git_status(
                 root,
-                &["diff", "--quiet", &target_snapshot_ref, &candidate_ref, "--", &path],
+                &[
+                    "diff",
+                    "--quiet",
+                    &target_snapshot_ref,
+                    &candidate_ref,
+                    "--",
+                    &path,
+                ],
             )?
         {
             conflict_paths.push(path);
@@ -1836,11 +1852,8 @@ fn create_workspace_snapshot_commit(
     run_id: &str,
     label: &str,
 ) -> Result<String> {
-    let derived_dir = config
-        .resolved_paths(workspace_root)
-        .authority
-        .state_derived_dir
-        .join("git");
+    let resolved_paths = config.resolved_paths(workspace_root);
+    let derived_dir = resolved_paths.authority.state_derived_dir.join("git");
     fs::create_dir_all(&derived_dir)
         .with_context(|| format!("failed to create {}", derived_dir.display()))?;
     let index_path = derived_dir.join(format!("{run_id}-{label}.index"));
@@ -1849,7 +1862,19 @@ fn create_workspace_snapshot_commit(
     }
     let envs = [("GIT_INDEX_FILE", index_path.as_path())];
     run_git_with_env(workspace_root, &["read-tree", "HEAD"], &envs)?;
-    run_git_with_env(workspace_root, &["add", "-A"], &envs)?;
+    let state_derived_rel = config.authority.state_derived_dir.display().to_string();
+    let state_worktrees_rel = config.authority.state_worktrees_dir.display().to_string();
+    let exclude_derived = format!(":(exclude){state_derived_rel}");
+    let exclude_worktrees = format!(":(exclude){state_worktrees_rel}");
+    let add_args = [
+        "add",
+        "-A",
+        "--",
+        ".",
+        exclude_derived.as_str(),
+        exclude_worktrees.as_str(),
+    ];
+    run_git_with_env(workspace_root, &add_args, &envs)?;
     let tree = git_output_with_env(workspace_root, &["write-tree"], &envs)?;
     let parent = git_output(workspace_root, &["rev-parse", "HEAD"])?;
     let commit = git_output_with_env(
@@ -3225,7 +3250,9 @@ fn write_rerun_intent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Serialize;
     use std::collections::BTreeMap;
+    use std::collections::HashMap;
     use std::collections::HashSet;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
@@ -4048,10 +4075,10 @@ mod tests {
 
         let wave_a = parallel_launchable_test_wave(5, "src/wave5.rs");
         let wave_b = parallel_launchable_test_wave(6, "src/wave6.rs");
-        let worktree_a =
-            allocate_wave_worktree(&root, &config, &wave_a, "wave-05-proof", 1).expect("worktree a");
-        let worktree_b =
-            allocate_wave_worktree(&root, &config, &wave_b, "wave-06-proof", 2).expect("worktree b");
+        let worktree_a = allocate_wave_worktree(&root, &config, &wave_a, "wave-05-proof", 1)
+            .expect("worktree a");
+        let worktree_b = allocate_wave_worktree(&root, &config, &wave_b, "wave-06-proof", 2)
+            .expect("worktree b");
 
         assert_ne!(worktree_a.path, worktree_b.path);
         assert_eq!(worktree_a.shared_scope, WaveWorktreeScope::Wave);
@@ -4179,7 +4206,11 @@ mod tests {
         })
         .expect("parallel autonomous launch");
         assert_eq!(reports.len(), 2);
-        assert!(reports.iter().all(|report| report.status == WaveRunStatus::Succeeded));
+        assert!(
+            reports
+                .iter()
+                .all(|report| report.status == WaveRunStatus::Succeeded)
+        );
 
         let latest_runs = load_latest_runs(&root, &config).expect("latest runs");
         let run_a = latest_runs.get(&5).expect("run a");
@@ -4481,6 +4512,322 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[test]
+    #[ignore = "writes the Wave 14 live-proof bundle and local trace seed"]
+    fn generate_phase_2_parallel_wave_execution_live_proof_bundle() {
+        #[derive(Debug, Serialize)]
+        struct TimingWindow {
+            start_ms: u128,
+            end_ms: u128,
+        }
+
+        #[derive(Debug, Serialize)]
+        struct ParallelWaveProof {
+            wave_id: u32,
+            run_id: String,
+            worktree: WaveWorktreeRecord,
+            promotion: WavePromotionRecord,
+            scheduling: WaveSchedulingRecord,
+            agent_worktree_markers: BTreeMap<String, String>,
+            timing_window: TimingWindow,
+        }
+
+        #[derive(Debug, Serialize)]
+        struct ParallelRuntimeProofBundle {
+            generated_at_ms: u128,
+            fixture_root: String,
+            overlap_observed: bool,
+            distinct_worktrees: bool,
+            per_agent_worktrees_used: bool,
+            waves: Vec<ParallelWaveProof>,
+        }
+
+        #[derive(Debug, Serialize)]
+        struct ProjectionSnapshotBundle {
+            planning: wave_control_plane::PlanningStatus,
+            control_status: wave_control_plane::ControlStatusReadModel,
+        }
+
+        #[derive(Debug, Serialize)]
+        struct PromotionConflictBundle {
+            wave_id: u32,
+            worktree: WaveWorktreeRecord,
+            initial_promotion: WavePromotionRecord,
+            evaluated_promotion: WavePromotionRecord,
+        }
+
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root");
+        let proof_dir =
+            workspace_root.join("docs/implementation/live-proofs/phase-2-parallel-wave-execution");
+        fs::create_dir_all(&proof_dir).expect("create proof dir");
+
+        let fixture_root =
+            workspace_root.join(".wave/state/live-proofs/phase-2-parallel-wave-execution-fixture");
+        if fixture_root.exists() {
+            fs::remove_dir_all(&fixture_root).expect("clear prior fixture");
+        }
+        fs::create_dir_all(fixture_root.join("src")).expect("create fixture src dir");
+        fs::create_dir_all(fixture_root.join("waves")).expect("create fixture waves dir");
+        seed_lint_context(&fixture_root);
+        fs::write(fixture_root.join("src/wave5.rs"), "fn wave5() {}\n").expect("write wave5");
+        fs::write(fixture_root.join("src/wave6.rs"), "fn wave6() {}\n").expect("write wave6");
+        fs::write(fixture_root.join("waves/05.md"), "# Wave 5\n").expect("write wave 05");
+        fs::write(fixture_root.join("waves/06.md"), "# Wave 6\n").expect("write wave 06");
+        init_git_repo(&fixture_root);
+
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&fixture_root, &config).expect("bootstrap fixture authority");
+
+        let waves = vec![
+            parallel_launchable_test_wave(5, "src/wave5.rs"),
+            parallel_launchable_test_wave(6, "src/wave6.rs"),
+        ];
+        let planning = build_planning_status_with_state(
+            &config,
+            &waves,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+        with_fake_codex(&fixture_root, "parallel", || {
+            autonomous_launch(
+                &fixture_root,
+                &config,
+                &waves,
+                planning,
+                AutonomousOptions {
+                    limit: Some(2),
+                    dry_run: false,
+                },
+            )
+        })
+        .expect("run parallel proof fixture");
+
+        let latest_runs = load_latest_runs(&fixture_root, &config).expect("fixture latest runs");
+        let run_a = latest_runs.get(&5).expect("fixture run a").clone();
+        let run_b = latest_runs.get(&6).expect("fixture run b").clone();
+        let worktree_a = run_a.worktree.clone().expect("run a worktree");
+        let worktree_b = run_b.worktree.clone().expect("run b worktree");
+        let promotion_a = run_a.promotion.clone().expect("run a promotion");
+        let promotion_b = run_b.promotion.clone().expect("run b promotion");
+        let scheduling_a = run_a.scheduling.clone().expect("run a scheduling");
+        let scheduling_b = run_b.scheduling.clone().expect("run b scheduling");
+        let timing_a = read_agent_timing(Path::new(&worktree_a.path).join(".wave-A1-timing.txt"));
+        let timing_b = read_agent_timing(Path::new(&worktree_b.path).join(".wave-A1-timing.txt"));
+
+        let parallel_bundle = ParallelRuntimeProofBundle {
+            generated_at_ms: now_epoch_ms().expect("proof timestamp"),
+            fixture_root: fixture_root.display().to_string(),
+            overlap_observed: timing_a.0 < timing_b.1 && timing_b.0 < timing_a.1,
+            distinct_worktrees: worktree_a.path != worktree_b.path,
+            per_agent_worktrees_used: false,
+            waves: vec![
+                ParallelWaveProof {
+                    wave_id: run_a.wave_id,
+                    run_id: run_a.run_id.clone(),
+                    worktree: worktree_a.clone(),
+                    promotion: promotion_a.clone(),
+                    scheduling: scheduling_a.clone(),
+                    agent_worktree_markers: ["A1", "A8", "A9", "A0"]
+                        .into_iter()
+                        .map(|agent| {
+                            (
+                                agent.to_string(),
+                                fs::read_to_string(
+                                    Path::new(&worktree_a.path)
+                                        .join(format!(".wave-{agent}-worktree.txt")),
+                                )
+                                .expect("read agent worktree marker")
+                                .trim()
+                                .to_string(),
+                            )
+                        })
+                        .collect(),
+                    timing_window: TimingWindow {
+                        start_ms: timing_a.0,
+                        end_ms: timing_a.1,
+                    },
+                },
+                ParallelWaveProof {
+                    wave_id: run_b.wave_id,
+                    run_id: run_b.run_id.clone(),
+                    worktree: worktree_b.clone(),
+                    promotion: promotion_b.clone(),
+                    scheduling: scheduling_b.clone(),
+                    agent_worktree_markers: ["A1", "A8", "A9", "A0"]
+                        .into_iter()
+                        .map(|agent| {
+                            (
+                                agent.to_string(),
+                                fs::read_to_string(
+                                    Path::new(&worktree_b.path)
+                                        .join(format!(".wave-{agent}-worktree.txt")),
+                                )
+                                .expect("read agent worktree marker")
+                                .trim()
+                                .to_string(),
+                            )
+                        })
+                        .collect(),
+                    timing_window: TimingWindow {
+                        start_ms: timing_b.0,
+                        end_ms: timing_b.1,
+                    },
+                },
+            ],
+        };
+        fs::write(
+            proof_dir.join("parallel-runtime-proof.json"),
+            serde_json::to_string_pretty(&parallel_bundle).expect("serialize parallel proof"),
+        )
+        .expect("write parallel proof");
+
+        let findings = wave_dark_factory::lint_project(&fixture_root, &waves);
+        let skill_catalog_issues = wave_dark_factory::validate_skill_catalog(&fixture_root);
+        let spine = wave_control_plane::build_projection_spine_from_authority(
+            &fixture_root,
+            &config,
+            &waves,
+            &findings,
+            &skill_catalog_issues,
+            &latest_runs,
+            &HashSet::new(),
+            true,
+        )
+        .expect("build proof projection spine");
+        let projection_bundle = ProjectionSnapshotBundle {
+            planning: spine.planning.status.clone(),
+            control_status: wave_control_plane::build_control_status_read_model_from_spine(&spine),
+        };
+        fs::write(
+            proof_dir.join("projection-snapshot.json"),
+            serde_json::to_string_pretty(&projection_bundle)
+                .expect("serialize projection snapshot"),
+        )
+        .expect("write projection snapshot");
+
+        let scheduler_events = scheduler_event_log(&fixture_root, &config)
+            .load_all()
+            .expect("load fixture scheduler events");
+        fs::write(
+            proof_dir.join("scheduler-events.jsonl"),
+            scheduler_events
+                .iter()
+                .map(|event| serde_json::to_string(event).expect("serialize event"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .expect("write scheduler events");
+
+        let conflict_root =
+            workspace_root.join(".wave/state/live-proofs/phase-2-parallel-wave-execution-conflict");
+        if conflict_root.exists() {
+            fs::remove_dir_all(&conflict_root).expect("clear prior conflict fixture");
+        }
+        fs::create_dir_all(&conflict_root).expect("create conflict fixture");
+        seed_lint_context(&conflict_root);
+        init_git_repo(&conflict_root);
+        bootstrap_authority_roots(&conflict_root, &config).expect("bootstrap conflict fixture");
+        let conflict_wave = launchable_test_wave(12);
+        let conflict_worktree =
+            allocate_wave_worktree(&conflict_root, &config, &conflict_wave, "wave-12-proof", 1)
+                .expect("conflict worktree");
+        let initial_promotion = publish_promotion_record(
+            &conflict_root,
+            &config,
+            initial_promotion_record(&conflict_root, &conflict_wave, &conflict_worktree)
+                .expect("initial promotion"),
+            "wave-12-proof",
+        )
+        .expect("publish initial conflict promotion");
+        fs::write(conflict_root.join("README.md"), "# root changed\n").expect("change root readme");
+        fs::write(
+            Path::new(&conflict_worktree.path).join("README.md"),
+            "# worktree changed\n",
+        )
+        .expect("change worktree readme");
+        let evaluated_promotion = evaluate_wave_promotion(
+            &conflict_root,
+            &config,
+            &conflict_worktree,
+            &initial_promotion,
+            "wave-12-proof",
+        )
+        .expect("evaluate conflict promotion");
+        fs::write(
+            proof_dir.join("promotion-conflict.json"),
+            serde_json::to_string_pretty(&PromotionConflictBundle {
+                wave_id: conflict_wave.metadata.id,
+                worktree: conflict_worktree,
+                initial_promotion,
+                evaluated_promotion: evaluated_promotion.clone(),
+            })
+            .expect("serialize conflict proof"),
+        )
+        .expect("write conflict proof");
+
+        let workspace_config =
+            ProjectConfig::load_from_repo_root(&workspace_root).expect("load workspace config");
+        bootstrap_authority_roots(&workspace_root, &workspace_config)
+            .expect("bootstrap workspace authority");
+        let trace_seed_run_id = "wave-14-live-proof".to_string();
+        let state_path = state_runs_dir(&workspace_root, &workspace_config)
+            .join(format!("{trace_seed_run_id}.json"));
+        let trace_path = trace_runs_dir(&workspace_root, &workspace_config)
+            .join(format!("{trace_seed_run_id}.json"));
+        let mut trace_seed = run_a.clone();
+        trace_seed.run_id = trace_seed_run_id;
+        trace_seed.wave_id = 14;
+        trace_seed.slug = "parallel-wave-execution-and-merge-discipline-live-proof".to_string();
+        trace_seed.title = "Wave 14 live-proof fixture".to_string();
+        trace_seed.status = WaveRunStatus::DryRun;
+        trace_seed.dry_run = true;
+        trace_seed.error = Some(
+            "local Wave 14 live-proof trace seed; not an authored-wave completion record"
+                .to_string(),
+        );
+        trace_seed.trace_path = trace_path.clone();
+        trace_seed.created_at_ms = now_epoch_ms().expect("trace seed timestamp");
+        trace_seed.started_at_ms = Some(trace_seed.created_at_ms);
+        trace_seed.completed_at_ms = Some(trace_seed.created_at_ms + 1);
+        let trace_seed_worktree_id = WaveWorktreeId::new("worktree-wave-14-live-proof".to_string());
+        if let Some(worktree) = trace_seed.worktree.as_mut() {
+            worktree.wave_id = 14;
+            worktree.worktree_id = trace_seed_worktree_id.clone();
+        }
+        if let Some(promotion) = trace_seed.promotion.as_mut() {
+            promotion.wave_id = 14;
+            promotion.promotion_id =
+                WavePromotionId::new("promotion-wave-14-live-proof".to_string());
+            promotion.worktree_id = Some(trace_seed_worktree_id.clone());
+        }
+        if let Some(scheduling) = trace_seed.scheduling.as_mut() {
+            scheduling.wave_id = 14;
+        }
+        write_run_record(&state_path, &trace_seed).expect("write wave 14 proof run");
+        write_trace_bundle(&trace_path, &trace_seed).expect("write wave 14 proof trace");
+
+        fs::write(
+            proof_dir.join("trace-latest-wave-14.json"),
+            serde_json::to_string_pretty(&dogfood_evidence_report(&trace_seed))
+                .expect("serialize latest trace"),
+        )
+        .expect("write latest trace proof");
+        fs::write(
+            proof_dir.join("trace-replay-wave-14.json"),
+            serde_json::to_string_pretty(&trace_inspection_report(&trace_seed).replay)
+                .expect("serialize replay trace"),
+        )
+        .expect("write replay trace proof");
+    }
+
     fn test_agent(id: &str) -> WaveAgent {
         match id {
             "A0" | "A6" | "A7" | "A8" | "A9" | "E0" => closure_test_agent(id),
@@ -4771,11 +5118,7 @@ printf '{"event":"ok","agent":"%s"}\n' "$agent"
         script_path
     }
 
-    fn with_fake_codex<T>(
-        root: &Path,
-        scenario: &str,
-        f: impl FnOnce() -> Result<T>,
-    ) -> Result<T> {
+    fn with_fake_codex<T>(root: &Path, scenario: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
         let _guard = fake_codex_env_lock().lock().expect("fake codex env lock");
         let binary = install_fake_codex(root);
         let previous_binary = env::var("WAVE_CODEX_BIN").ok();
@@ -4819,7 +5162,11 @@ printf '{"event":"ok","agent":"%s"}\n' "$agent"
         wave
     }
 
-    fn events_for_wave_worktree_allocations(root: &Path, config: &ProjectConfig, wave_id: u32) -> usize {
+    fn events_for_wave_worktree_allocations(
+        root: &Path,
+        config: &ProjectConfig,
+        wave_id: u32,
+    ) -> usize {
         scheduler_event_log(root, config)
             .load_all()
             .expect("scheduler events")

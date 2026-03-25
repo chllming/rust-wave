@@ -1652,7 +1652,10 @@ fn render_trace_latest(
         if let Some(promotion) = &report.promotion {
             println!("promotion state: {:?}", promotion.state);
             if !promotion.conflict_paths.is_empty() {
-                println!("promotion conflicts: {}", promotion.conflict_paths.join(", "));
+                println!(
+                    "promotion conflicts: {}",
+                    promotion.conflict_paths.join(", ")
+                );
             }
         }
         if let Some(scheduling) = &report.scheduling {

@@ -1,4 +1,4 @@
-# `wave-control-rust`
+# `rust-wave-control`
 
 Rust HTTP service for the hosted Wave control plane mirror.
 

@@ -1,0 +1,109 @@
+{
+  "wave_id": 14,
+  "run_id": "wave-14-live-proof",
+  "trace_path": "/home/coder/codex-wave-mode/.wave/traces/runs/wave-14-live-proof.json",
+  "recorded": true,
+  "replay": {
+    "run_id": "wave-14-live-proof",
+    "wave_id": 14,
+    "ok": true,
+    "issues": []
+  },
+  "operator_help_required": true,
+  "help_items": [
+    {
+      "name": "codex-binary",
+      "ok": true,
+      "detail": "runtime observed a completed local run record, not a synthetic fixture"
+    },
+    {
+      "name": "trace-bundle",
+      "ok": true,
+      "detail": "trace path /home/coder/codex-wave-mode/.wave/traces/runs/wave-14-live-proof.json"
+    },
+    {
+      "name": "agent-A1-artifacts",
+      "ok": true,
+      "detail": "prompt=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A1/prompt.md last_message=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A1/last-message.txt events=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A1/events.jsonl stderr=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A1/stderr.txt"
+    },
+    {
+      "name": "agent-A1-result-envelope",
+      "ok": true,
+      "detail": "result envelope /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/results/wave-05/wave-05-1774437297548-a1/agent_result_envelope.json"
+    },
+    {
+      "name": "agent-A8-artifacts",
+      "ok": true,
+      "detail": "prompt=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A8/prompt.md last_message=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A8/last-message.txt events=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A8/events.jsonl stderr=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A8/stderr.txt"
+    },
+    {
+      "name": "agent-A8-result-envelope",
+      "ok": true,
+      "detail": "result envelope /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/results/wave-05/wave-05-1774437297548-a8/agent_result_envelope.json"
+    },
+    {
+      "name": "agent-A9-artifacts",
+      "ok": true,
+      "detail": "prompt=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A9/prompt.md last_message=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A9/last-message.txt events=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A9/events.jsonl stderr=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A9/stderr.txt"
+    },
+    {
+      "name": "agent-A9-result-envelope",
+      "ok": true,
+      "detail": "result envelope /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/results/wave-05/wave-05-1774437297548-a9/agent_result_envelope.json"
+    },
+    {
+      "name": "agent-A0-artifacts",
+      "ok": true,
+      "detail": "prompt=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A0/prompt.md last_message=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A0/last-message.txt events=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A0/events.jsonl stderr=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A0/stderr.txt"
+    },
+    {
+      "name": "agent-A0-result-envelope",
+      "ok": true,
+      "detail": "result envelope /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/results/wave-05/wave-05-1774437297548-a0/agent_result_envelope.json"
+    },
+    {
+      "name": "operator-help",
+      "ok": false,
+      "detail": "run did not complete cleanly; operator intervention still required"
+    }
+  ],
+  "worktree": {
+    "worktree_id": "worktree-wave-14-live-proof",
+    "wave_id": 14,
+    "state": "released",
+    "path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/worktrees/wave-05-wave-05-1774437297548",
+    "base_ref": "main",
+    "snapshot_ref": "6f7e753886dbed1a61d1d90bffb9ea30b3e45868",
+    "branch_ref": null,
+    "shared_scope": "wave",
+    "allocated_at_ms": 1774437297558,
+    "released_at_ms": 1774437299286,
+    "detail": "wave completed; worktree released"
+  },
+  "promotion": {
+    "promotion_id": "promotion-wave-14-live-proof",
+    "wave_id": 14,
+    "worktree_id": "worktree-wave-14-live-proof",
+    "state": "ready",
+    "target_ref": "main",
+    "snapshot_ref": "6f7e753886dbed1a61d1d90bffb9ea30b3e45868",
+    "candidate_ref": "cccb284f1002b6d8bd6aff2d608351d9fbd6306b",
+    "candidate_tree": "36ed4c3606add4b97e27a21e74a38930bd2d44b2",
+    "conflict_paths": [],
+    "checked_at_ms": 1774437298431,
+    "completed_at_ms": 1774437298507,
+    "detail": "promotion candidate is ready"
+  },
+  "scheduling": {
+    "wave_id": 14,
+    "phase": "closure",
+    "priority": "closure",
+    "state": "released",
+    "fairness_rank": 0,
+    "waiting_since_ms": null,
+    "protected_closure_capacity": true,
+    "preemptible": false,
+    "last_decision": "wave completed and released",
+    "updated_at_ms": 1774437299287
+  }
+}

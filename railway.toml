@@ -1,6 +1,6 @@
 [build]
 builder = "RAILPACK"
-buildCommand = "cargo build --locked --release -p wave-control-rust && install -m 755 target/release/wave-control-rust ./wave-control-rust"
+buildCommand = "cargo build --locked --release -p rust-wave-control && install -m 755 target/release/rust-wave-control ./rust-wave-control"
 watchPatterns = [
   "/services/wave-control-rust/**",
   "/crates/**",
@@ -9,7 +9,7 @@ watchPatterns = [
 ]
 
 [deploy]
-startCommand = "./wave-control-rust"
+startCommand = "./rust-wave-control"
 healthcheckPath = "/healthz"
 healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"

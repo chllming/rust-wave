@@ -1,0 +1,304 @@
+{
+  "planning": {
+    "project_name": "Codex Wave Mode",
+    "default_mode": "dark-factory",
+    "summary": {
+      "total_waves": 2,
+      "ready_waves": 0,
+      "blocked_waves": 0,
+      "active_waves": 0,
+      "completed_waves": 2,
+      "total_agents": 8,
+      "implementation_agents": 2,
+      "closure_agents": 6,
+      "waves_with_complete_closure": 2,
+      "waves_missing_closure": 0,
+      "total_missing_closure_agents": 0,
+      "lint_error_waves": 0,
+      "skill_catalog_issue_count": 0
+    },
+    "skill_catalog": {
+      "ok": true,
+      "issue_count": 0,
+      "issues": []
+    },
+    "queue": {
+      "next_ready_wave_ids": [],
+      "next_ready_wave_id": null,
+      "claimable_wave_ids": [],
+      "claimed_wave_ids": [],
+      "ready_wave_count": 0,
+      "claimed_wave_count": 0,
+      "blocked_wave_count": 0,
+      "active_wave_count": 0,
+      "completed_wave_count": 2,
+      "queue_ready": false,
+      "queue_ready_reason": "queue is empty"
+    },
+    "next_ready_wave_ids": [],
+    "waves": [
+      {
+        "id": 5,
+        "slug": "wave-5",
+        "title": "Wave 5",
+        "depends_on": [],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": true,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": {
+            "worktree_id": "worktree-wave-05-wave-05-1774437297548",
+            "wave_id": 5,
+            "state": "released",
+            "path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/worktrees/wave-05-wave-05-1774437297548",
+            "base_ref": "main",
+            "snapshot_ref": "6f7e753886dbed1a61d1d90bffb9ea30b3e45868",
+            "branch_ref": null,
+            "shared_scope": "wave",
+            "allocated_at_ms": 1774437297558,
+            "released_at_ms": 1774437299286,
+            "detail": "wave completed; worktree released"
+          },
+          "promotion": {
+            "promotion_id": "promotion-wave-05-6f7e753886dbed1a61d1d90bffb9ea30b3e45868",
+            "wave_id": 5,
+            "worktree_id": "worktree-wave-05-wave-05-1774437297548",
+            "state": "ready",
+            "target_ref": "main",
+            "snapshot_ref": "6f7e753886dbed1a61d1d90bffb9ea30b3e45868",
+            "candidate_ref": "cccb284f1002b6d8bd6aff2d608351d9fbd6306b",
+            "candidate_tree": "36ed4c3606add4b97e27a21e74a38930bd2d44b2",
+            "conflict_paths": [],
+            "checked_at_ms": 1774437298431,
+            "completed_at_ms": 1774437298507,
+            "detail": "promotion candidate is ready"
+          },
+          "scheduling": {
+            "wave_id": 5,
+            "phase": "closure",
+            "priority": "closure",
+            "state": "released",
+            "fairness_rank": 0,
+            "waiting_since_ms": null,
+            "protected_closure_capacity": true,
+            "preemptible": false,
+            "last_decision": "wave completed and released",
+            "updated_at_ms": 1774437299287
+          },
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 4,
+        "implementation_agent_count": 1,
+        "closure_agent_count": 3,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded"
+      },
+      {
+        "id": 6,
+        "slug": "wave-6",
+        "title": "Wave 6",
+        "depends_on": [],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": true,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": {
+            "worktree_id": "worktree-wave-06-wave-06-1774437297548",
+            "wave_id": 6,
+            "state": "released",
+            "path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/worktrees/wave-06-wave-06-1774437297548",
+            "base_ref": "main",
+            "snapshot_ref": "e86ce6f8832c23249741adcd5b5baf9f3633f648",
+            "branch_ref": null,
+            "shared_scope": "wave",
+            "allocated_at_ms": 1774437297558,
+            "released_at_ms": 1774437299329,
+            "detail": "wave completed; worktree released"
+          },
+          "promotion": {
+            "promotion_id": "promotion-wave-06-e86ce6f8832c23249741adcd5b5baf9f3633f648",
+            "wave_id": 6,
+            "worktree_id": "worktree-wave-06-wave-06-1774437297548",
+            "state": "ready",
+            "target_ref": "main",
+            "snapshot_ref": "e86ce6f8832c23249741adcd5b5baf9f3633f648",
+            "candidate_ref": "2015ff84ec0e69be57fed3439731c3b678a07381",
+            "candidate_tree": "ffdcf9fef6e17e4efe3958e8f5efbc9ca1dab708",
+            "conflict_paths": [],
+            "checked_at_ms": 1774437298478,
+            "completed_at_ms": 1774437298547,
+            "detail": "promotion candidate is ready"
+          },
+          "scheduling": {
+            "wave_id": 6,
+            "phase": "closure",
+            "priority": "closure",
+            "state": "released",
+            "fairness_rank": 0,
+            "waiting_since_ms": null,
+            "protected_closure_capacity": true,
+            "preemptible": false,
+            "last_decision": "wave completed and released",
+            "updated_at_ms": 1774437299330
+          },
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 4,
+        "implementation_agent_count": 1,
+        "closure_agent_count": 3,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded"
+      }
+    ],
+    "has_errors": false
+  },
+  "control_status": {
+    "queue_decision": {
+      "next_claimable_wave_id": null,
+      "claimable_wave_ids": [],
+      "claimed_wave_ids": [],
+      "queue_ready_reason": "queue is empty",
+      "blocker_summary": {
+        "dependency": 0,
+        "lint": 0,
+        "closure": 0,
+        "ownership": 0,
+        "lease_expired": 0,
+        "budget": 0,
+        "active_run": 0,
+        "already_completed": 2,
+        "other": 0
+      },
+      "closure_blocked": [],
+      "lines": [
+        "queue decision: next claimable wave=none",
+        "queue decision: claimable waves=none",
+        "queue decision: claimed waves=none",
+        "queue decision: queue ready reason=queue is empty",
+        "queue decision: blocker story dependency=0 lint=0 closure=0 ownership=0 lease_expired=0 budget=0 active_run=0",
+        "queue decision: closure-blocked=none"
+      ]
+    },
+    "closure_attention_lines": [],
+    "skill_issue_paths": [],
+    "skill_issue_lines": []
+  }
+}

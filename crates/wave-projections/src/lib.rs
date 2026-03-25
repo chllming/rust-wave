@@ -2104,22 +2104,25 @@ mod tests {
         let config = test_config();
         let waves = vec![test_wave(0, Vec::new()), test_wave(1, Vec::new())];
         let scheduler_events = vec![
-            SchedulerEvent::new("sched-budget-parallel", SchedulerEventKind::SchedulerBudgetUpdated)
-                .with_created_at_ms(1)
-                .with_payload(SchedulerEventPayload::SchedulerBudgetUpdated {
-                    budget: SchedulerBudgetRecord {
-                        budget_id: SchedulerBudgetId::new("budget-parallel"),
-                        budget: SchedulerBudget {
-                            max_active_wave_claims: Some(2),
-                            max_active_task_leases: Some(2),
-                            reserved_closure_task_leases: Some(1),
-                            preemption_enabled: true,
-                        },
-                        owner: scheduler_owner("budget-bootstrap"),
-                        updated_at_ms: 1,
-                        detail: Some("parallel budget".to_string()),
+            SchedulerEvent::new(
+                "sched-budget-parallel",
+                SchedulerEventKind::SchedulerBudgetUpdated,
+            )
+            .with_created_at_ms(1)
+            .with_payload(SchedulerEventPayload::SchedulerBudgetUpdated {
+                budget: SchedulerBudgetRecord {
+                    budget_id: SchedulerBudgetId::new("budget-parallel"),
+                    budget: SchedulerBudget {
+                        max_active_wave_claims: Some(2),
+                        max_active_task_leases: Some(2),
+                        reserved_closure_task_leases: Some(1),
+                        preemption_enabled: true,
                     },
-                }),
+                    owner: scheduler_owner("budget-bootstrap"),
+                    updated_at_ms: 1,
+                    detail: Some("parallel budget".to_string()),
+                },
+            }),
             worktree_event(1, ".wave/state/worktrees/wave-01-run", 20),
             promotion_event(1, wave_domain::WavePromotionState::Conflicted, 21),
             scheduling_event(1, 22),
@@ -2135,7 +2138,12 @@ mod tests {
             &scheduler_events,
         );
 
-        let wave = bundle.status.waves.iter().find(|wave| wave.id == 1).expect("wave 1");
+        let wave = bundle
+            .status
+            .waves
+            .iter()
+            .find(|wave| wave.id == 1)
+            .expect("wave 1");
         assert_eq!(
             wave.execution
                 .worktree

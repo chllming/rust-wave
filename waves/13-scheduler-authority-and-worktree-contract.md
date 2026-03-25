@@ -318,12 +318,10 @@ File ownership (only touch these paths):
 ### Deliverables
 - crates/wave-runtime/src/lib.rs
 - crates/wave-cli/src/main.rs
-- docs/implementation/parallel-wave-multi-runtime-architecture.md
 
 ### File ownership
 - crates/wave-runtime/src/lib.rs
 - crates/wave-cli/src/main.rs
-- docs/implementation/parallel-wave-multi-runtime-architecture.md
 
 ### Final markers
 - [wave-proof]
@@ -351,7 +349,6 @@ Specific expectations:
 File ownership (only touch these paths):
 - crates/wave-runtime/src/lib.rs
 - crates/wave-cli/src/main.rs
-- docs/implementation/parallel-wave-multi-runtime-architecture.md
 ```
 
 ## Agent A3: Projection And Live Proof Surfaces
@@ -392,12 +389,10 @@ File ownership (only touch these paths):
 ### Deliverables
 - crates/wave-projections/src/lib.rs
 - crates/wave-app-server/src/lib.rs
-- docs/plans/current-state.md
 
 ### File ownership
 - crates/wave-projections/src/lib.rs
 - crates/wave-app-server/src/lib.rs
-- docs/plans/current-state.md
 
 ### Final markers
 - [wave-proof]
@@ -424,5 +419,4 @@ Specific expectations:
 File ownership (only touch these paths):
 - crates/wave-projections/src/lib.rs
 - crates/wave-app-server/src/lib.rs
-- docs/plans/current-state.md
 ```

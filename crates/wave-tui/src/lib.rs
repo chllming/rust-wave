@@ -354,6 +354,8 @@ fn draw_main_pane(
                 wave.blocked_by.join(", ")
             )));
         }
+        lines.push(Line::raw(""));
+        lines.extend(wave_execution_lines(wave));
     }
 
     lines.push(Line::raw(""));
@@ -449,6 +451,7 @@ fn narrow_summary_lines<'a>(snapshot: &'a OperatorSnapshot, state: &'a AppState)
                 wave.blocked_by.join(", ")
             )));
         }
+        lines.extend(wave_execution_lines(wave));
     } else {
         lines.push(Line::raw("No wave selected."));
     }
@@ -609,6 +612,72 @@ fn format_string_list(values: &[String]) -> String {
     }
 }
 
+fn wave_execution_lines(wave: &wave_control_plane::WaveStatusReadModel) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled(
+        "Execution",
+        Style::default()
+            .fg(Color::Gray)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if let Some(worktree) = &wave.execution.worktree {
+        lines.push(Line::raw(format!(
+            "worktree: {} ({})",
+            worktree.path,
+            debug_label(worktree.state)
+        )));
+    } else {
+        lines.push(Line::raw("worktree: none"));
+    }
+    if let Some(promotion) = &wave.execution.promotion {
+        lines.push(Line::raw(format!(
+            "promotion: {}",
+            debug_label(promotion.state)
+        )));
+        if !promotion.conflict_paths.is_empty() {
+            lines.push(Line::raw(format!(
+                "promotion conflicts: {}",
+                promotion.conflict_paths.join(", ")
+            )));
+        }
+        if let Some(detail) = promotion.detail.as_deref() {
+            lines.push(Line::raw(format!("promotion detail: {detail}")));
+        }
+    } else {
+        lines.push(Line::raw("promotion: none"));
+    }
+    if let Some(scheduling) = &wave.execution.scheduling {
+        lines.push(Line::raw(format!(
+            "scheduler: {}/{} fairness={} protected={} preemptible={}",
+            debug_label(scheduling.phase),
+            debug_label(scheduling.state),
+            scheduling.fairness_rank,
+            yes_no(scheduling.protected_closure_capacity),
+            yes_no(scheduling.preemptible)
+        )));
+        if let Some(decision) = scheduling.last_decision.as_deref() {
+            lines.push(Line::raw(format!("decision: {decision}")));
+        }
+    } else {
+        lines.push(Line::raw("scheduler: none"));
+    }
+    lines.push(Line::raw(format!(
+        "merge blocked: {}  closure blocked: {}",
+        yes_no(wave.execution.merge_blocked),
+        yes_no(wave.execution.closure_blocked_by_promotion)
+    )));
+    lines.push(Line::raw(format!(
+        "budget: reserved_closure={} reserved_now={} preemption={}",
+        wave.ownership
+            .budget
+            .reserved_closure_task_leases
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        yes_no(wave.ownership.budget.closure_capacity_reserved),
+        yes_no(wave.ownership.budget.preemption_enabled)
+    )));
+    lines
+}
+
 fn queue_decision_lines(snapshot: &OperatorSnapshot) -> Vec<Line<'static>> {
     snapshot
         .control_status
@@ -684,6 +753,20 @@ fn run_summary_lines(run: &ActiveRunDetail) -> Vec<Line<'static>> {
     lines
 }
 
+fn debug_label(value: impl fmt::Debug) -> String {
+    let debug = format!("{value:?}");
+    let mut label = String::new();
+    for (index, ch) in debug.chars().enumerate() {
+        if ch.is_uppercase() && index > 0 {
+            label.push('_');
+        }
+        for lower in ch.to_lowercase() {
+            label.push(lower);
+        }
+    }
+    label
+}
+
 fn draw_right_panel(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
@@ -733,39 +816,46 @@ fn draw_run_tab(
     snapshot: &OperatorSnapshot,
     selected_wave_id: Option<u32>,
 ) {
-    let Some(run) = selected_active_run(snapshot, selected_wave_id) else {
-        frame.render_widget(
-            Paragraph::new("No active runs.")
-                .block(Block::default().borders(Borders::ALL).title("Run")),
-            area,
-        );
-        return;
-    };
-
-    let mut lines = run_summary_lines(run);
-    lines.push(Line::raw(""));
-    lines.push(Line::raw(format!(
-        "declared proof artifacts: {}",
-        run.proof.declared_artifacts.len()
-    )));
-    for artifact in &run.proof.declared_artifacts {
-        lines.push(Line::from(vec![
-            Span::raw("- "),
-            Span::raw(&artifact.path),
-            Span::raw(" "),
-            Span::styled(
-                if artifact.exists {
-                    "present"
-                } else {
-                    "missing"
-                },
-                Style::default().fg(if artifact.exists {
-                    Color::Green
-                } else {
-                    Color::Red
-                }),
-            ),
-        ]));
+    let selected_wave = selected_wave_id.and_then(|wave_id| {
+        snapshot
+            .planning
+            .waves
+            .iter()
+            .find(|wave| wave.id == wave_id)
+    });
+    let mut lines = Vec::new();
+    if let Some(run) = selected_active_run(snapshot, selected_wave_id) {
+        lines.extend(run_summary_lines(run));
+        lines.push(Line::raw(""));
+        lines.push(Line::raw(format!(
+            "declared proof artifacts: {}",
+            run.proof.declared_artifacts.len()
+        )));
+        for artifact in &run.proof.declared_artifacts {
+            lines.push(Line::from(vec![
+                Span::raw("- "),
+                Span::raw(&artifact.path),
+                Span::raw(" "),
+                Span::styled(
+                    if artifact.exists {
+                        "present"
+                    } else {
+                        "missing"
+                    },
+                    Style::default().fg(if artifact.exists {
+                        Color::Green
+                    } else {
+                        Color::Red
+                    }),
+                ),
+            ]));
+        }
+    } else {
+        lines.push(Line::raw("No active runs."));
+    }
+    if let Some(wave) = selected_wave {
+        lines.push(Line::raw(""));
+        lines.extend(wave_execution_lines(wave));
     }
 
     frame.render_widget(
@@ -1044,10 +1134,25 @@ mod tests {
             budget: wave_control_plane::SchedulerBudgetState {
                 max_active_wave_claims: None,
                 max_active_task_leases: None,
+                reserved_closure_task_leases: None,
                 active_wave_claims: 0,
                 active_task_leases: 0,
+                active_implementation_task_leases: 0,
+                active_closure_task_leases: 0,
+                closure_capacity_reserved: false,
+                preemption_enabled: false,
                 budget_blocked: false,
             },
+        }
+    }
+
+    fn empty_execution() -> wave_control_plane::WaveExecutionState {
+        wave_control_plane::WaveExecutionState {
+            worktree: None,
+            promotion: None,
+            scheduling: None,
+            merge_blocked: false,
+            closure_blocked_by_promotion: false,
         }
     }
 
@@ -1094,6 +1199,9 @@ mod tests {
         assert!(rendered.contains("Control"));
         assert!(rendered.contains("ready: 6"));
         assert!(rendered.contains("A1 TUI Shell And Layout Scaffold"));
+        assert!(rendered.contains("worktree: .wave/state/worktrees/wave-05-test (allocated)"));
+        assert!(rendered.contains("promotion: ready"));
+        assert!(rendered.contains("budget: reserved_closure=1 reserved_now=yes preemption=yes"));
         assert!(rendered.contains("actions: rerun=yes clear-rerun=yes launch=yes autonomous=yes"));
     }
 
@@ -1145,6 +1253,7 @@ mod tests {
                 lint_errors: 0,
                 ready: true,
                 ownership: empty_ownership(),
+                execution: empty_execution(),
                 agent_count: 6,
                 implementation_agent_count: 3,
                 closure_agent_count: 3,
@@ -1415,7 +1524,68 @@ mod tests {
                     blocker_state: Vec::new(),
                     lint_errors: 0,
                     ready: false,
-                    ownership: empty_ownership(),
+                    ownership: wave_control_plane::WaveOwnershipState {
+                        budget: wave_control_plane::SchedulerBudgetState {
+                            reserved_closure_task_leases: Some(1),
+                            active_implementation_task_leases: 1,
+                            active_closure_task_leases: 0,
+                            closure_capacity_reserved: true,
+                            preemption_enabled: true,
+                            ..empty_ownership().budget
+                        },
+                        ..empty_ownership()
+                    },
+                    execution: wave_control_plane::WaveExecutionState {
+                        worktree: Some(wave_domain::WaveWorktreeRecord {
+                            worktree_id: wave_domain::WaveWorktreeId::new(
+                                "worktree-wave-05-test".to_string(),
+                            ),
+                            wave_id: 5,
+                            path: ".wave/state/worktrees/wave-05-test".to_string(),
+                            base_ref: "HEAD".to_string(),
+                            snapshot_ref: "snapshot-wave-05".to_string(),
+                            branch_ref: Some("wave/05/test".to_string()),
+                            shared_scope: wave_domain::WaveWorktreeScope::Wave,
+                            state: wave_domain::WaveWorktreeState::Allocated,
+                            allocated_at_ms: 1,
+                            released_at_ms: None,
+                            detail: Some("shared wave worktree".to_string()),
+                        }),
+                        promotion: Some(wave_domain::WavePromotionRecord {
+                            promotion_id: wave_domain::WavePromotionId::new(
+                                "promotion-wave-05-test".to_string(),
+                            ),
+                            wave_id: 5,
+                            worktree_id: Some(wave_domain::WaveWorktreeId::new(
+                                "worktree-wave-05-test".to_string(),
+                            )),
+                            state: wave_domain::WavePromotionState::Ready,
+                            target_ref: "HEAD".to_string(),
+                            snapshot_ref: "snapshot-wave-05".to_string(),
+                            candidate_ref: Some("refs/wave/05/test".to_string()),
+                            candidate_tree: Some("abc123".to_string()),
+                            conflict_paths: Vec::new(),
+                            detail: Some("promotion candidate recorded".to_string()),
+                            checked_at_ms: 2,
+                            completed_at_ms: Some(3),
+                        }),
+                        scheduling: Some(wave_domain::WaveSchedulingRecord {
+                            wave_id: 5,
+                            phase: wave_domain::WaveExecutionPhase::Closure,
+                            priority: wave_domain::WaveSchedulerPriority::Closure,
+                            state: wave_domain::WaveSchedulingState::Protected,
+                            fairness_rank: 1,
+                            waiting_since_ms: Some(2),
+                            protected_closure_capacity: true,
+                            preemptible: false,
+                            last_decision: Some(
+                                "closure capacity reserved before A8".to_string(),
+                            ),
+                            updated_at_ms: 3,
+                        }),
+                        merge_blocked: false,
+                        closure_blocked_by_promotion: false,
+                    },
                     agent_count: 6,
                     implementation_agent_count: 3,
                     closure_agent_count: 3,

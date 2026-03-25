@@ -1456,6 +1456,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-wave-control"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "wave-app-server",
+ "wave-config",
+ "wave-coordination",
+ "wave-domain",
+ "wave-events",
+ "wave-results",
+]
+
+[[package]]
 name = "rustc_version"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2433,24 +2451,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wave-control-rust"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "serde",
- "serde_json",
- "sqlx",
- "tokio",
- "wave-app-server",
- "wave-config",
- "wave-coordination",
- "wave-domain",
- "wave-events",
- "wave-results",
-]
-
-[[package]]
 name = "wave-coordination"
 version = "0.1.0"
 dependencies = [
@@ -2599,6 +2599,7 @@ dependencies = [
  "wave-app-server",
  "wave-config",
  "wave-control-plane",
+ "wave-domain",
  "wave-runtime",
  "wave-trace",
 ]
