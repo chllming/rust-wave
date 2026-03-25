@@ -1,0 +1,7 @@
+[mcp_servers."railway-mcp-server"]
+command = "/home/coder/codex-wave-mode/.codex-tools/railway-mcp/start.sh"
+args = []
+enabled = true
+
+[mcp_servers."railway-mcp-server".env]
+RAILWAY_PROJECT_ID = "b2427e79-3de9-49c3-aa5a-c86db83123c0"

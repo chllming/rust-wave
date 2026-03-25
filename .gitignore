@@ -7,5 +7,7 @@ target/
 .wave/state/
 .wave/traces/
 .wave/codex/
+.railway/
 .vscode/terminals.json
 .tmp/
+docs/research/agent-context-cache/

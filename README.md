@@ -79,6 +79,25 @@ cargo run -p wave-cli -- control rerun request --wave 4 --reason "operator reque
 cargo run -p wave-cli -- trace replay --json
 ```
 
+## Railway MCP
+
+This repo includes a repo-local Railway MCP launcher so Codex, Claude, and Cursor can all talk to the same Railway project from the same checkout.
+
+- launcher: `.codex-tools/railway-mcp/start.sh`
+- shared MCP config: `.mcp.json`
+- Cursor MCP config: `.cursor/.mcp.json`
+- Codex project config: `.codex/config.toml`
+- Claude project settings: `.claude/settings.json`
+- Railway project id: `b2427e79-3de9-49c3-aa5a-c86db83123c0`
+
+One-time local checks:
+
+```bash
+./.codex-tools/railway-mcp/node_modules/.bin/railway whoami
+./.codex-tools/railway-mcp/node_modules/.bin/railway link --project b2427e79-3de9-49c3-aa5a-c86db83123c0
+codex mcp list
+```
+
 ## Self-Host Runbook
 
 This repo is meant to dogfood the Rust operator on itself. The practical local loop is:
