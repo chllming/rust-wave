@@ -5,6 +5,7 @@ Rust HTTP service for the hosted Wave control plane mirror.
 Current responsibilities:
 
 - serve a health endpoint for Railway
+- build a standalone binary for Railway startup from the workspace crate
 - expose live repo reads for operator snapshots, control events, coordination records, and result envelopes when `WAVE_REPO_ROOT` points at a local repo
 - accept and return mirrored operator snapshots as JSON
 - accept and return mirrored control events, coordination records, and result envelopes per wave
