@@ -1056,6 +1056,7 @@ mod tests {
             created_at_ms: 1,
             started_at_ms: Some(1),
             launcher_pid: None,
+            launcher_started_at_ms: None,
             completed_at_ms: match status {
                 WaveRunStatus::Running | WaveRunStatus::Planned => None,
                 _ => Some(2),

@@ -1556,6 +1556,7 @@ mod tests {
             },
             active_run_details: vec![active_run],
             rerun_intents: vec![RerunIntentRecord {
+                request_id: Some("rerun-wave-05-1".to_string()),
                 wave_id: 5,
                 reason: "Requested from the Wave operator TUI".to_string(),
                 requested_by: "operator".to_string(),

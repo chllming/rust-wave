@@ -2,14 +2,14 @@
 //!
 //! The crate owns file-backed launch, rerun, draft, and replay data plumbing
 //! that the CLI and operator surfaces build on. Runtime state stays rooted
-//! under the project-scoped paths declared in `wave.toml`.
+//! under the project-scoped paths declared in `wave.toml`, and launched agents
+//! persist structured result envelopes through the `wave-results` boundary.
 
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
 use serde::Deserialize;
 use serde::Serialize;
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::env;
@@ -20,36 +20,34 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
+use wave_domain::AttemptId;
+use wave_domain::AttemptRecord;
+use wave_domain::AttemptState;
 use wave_config::ProjectConfig;
 use wave_control_plane::PlanningStatus;
+use wave_domain::ClosureDisposition;
+use wave_domain::ControlEventPayload;
+use wave_domain::ResultEnvelope;
+use wave_domain::RerunRequest;
+use wave_domain::RerunRequestId;
+use wave_domain::RerunState;
+use wave_domain::task_id_for_agent;
+use wave_events::ControlEvent;
+use wave_events::ControlEventKind;
+use wave_events::ControlEventLog;
+use wave_results::ResultEnvelopeStore;
+use wave_results::build_structured_result_envelope;
+use wave_results::closure_contract_error as result_closure_contract_error;
 use wave_spec::WaveAgent;
 use wave_spec::WaveDocument;
 use wave_trace::AgentRunRecord;
-use wave_trace::ArtifactKind;
-use wave_trace::AttemptState;
-use wave_trace::ClosureDisposition;
-use wave_trace::ClosureState;
-use wave_trace::ClosureVerdictPayload;
 use wave_trace::CompiledAgentPrompt;
-use wave_trace::ContQaClosureVerdict;
-use wave_trace::DocDeltaEnvelope;
-use wave_trace::DocumentationClosureVerdict;
 use wave_trace::DraftBundle;
-use wave_trace::FinalMarkerEnvelope;
-use wave_trace::IntegrationClosureVerdict;
-use wave_trace::MarkerEvidence;
-use wave_trace::ProofArtifact;
-use wave_trace::RESULT_ENVELOPE_FILE_NAME;
-use wave_trace::ResultDisposition;
-use wave_trace::ResultEnvelopeRecord;
-use wave_trace::ResultEnvelopeSource;
-use wave_trace::ResultPayloadStatus;
 use wave_trace::WaveRunRecord;
 use wave_trace::WaveRunStatus;
 use wave_trace::load_latest_run_records_by_wave;
 use wave_trace::load_run_record;
 use wave_trace::now_epoch_ms;
-use wave_trace::write_result_envelope;
 use wave_trace::write_run_record;
 use wave_trace::write_trace_bundle;
 
@@ -122,6 +120,8 @@ pub enum RerunIntentStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RerunIntentRecord {
+    #[serde(default)]
+    pub request_id: Option<String>,
     pub wave_id: u32,
     pub reason: String,
     pub requested_by: String,
@@ -203,8 +203,38 @@ pub fn load_latest_runs(
     root: &Path,
     config: &ProjectConfig,
 ) -> Result<HashMap<u32, WaveRunRecord>> {
-    reconcile_orphaned_run_records(root, config)?;
     load_latest_run_records_by_wave(&state_runs_dir(root, config))
+}
+
+pub fn load_relevant_runs(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<HashMap<u32, WaveRunRecord>> {
+    let runs_dir = state_runs_dir(root, config);
+    let mut relevant = HashMap::new();
+    if !runs_dir.exists() {
+        return Ok(relevant);
+    }
+
+    for entry in
+        fs::read_dir(&runs_dir).with_context(|| format!("failed to read {}", runs_dir.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to read entry in {}", runs_dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let record = load_run_record(&path)?;
+        match relevant.get(&record.wave_id) {
+            Some(current) if !is_more_relevant_run(&record, current) => {}
+            _ => {
+                relevant.insert(record.wave_id, record);
+            }
+        }
+    }
+
+    Ok(relevant)
 }
 
 pub fn list_rerun_intents(
@@ -256,6 +286,28 @@ pub fn latest_trace_reports(
     Ok(reports)
 }
 
+fn is_more_relevant_run(candidate: &WaveRunRecord, current: &WaveRunRecord) -> bool {
+    (
+        relevance_rank(candidate.status),
+        candidate.created_at_ms,
+        candidate.started_at_ms.unwrap_or_default(),
+        candidate.completed_at_ms.unwrap_or_default(),
+    ) > (
+        relevance_rank(current.status),
+        current.created_at_ms,
+        current.started_at_ms.unwrap_or_default(),
+        current.completed_at_ms.unwrap_or_default(),
+    )
+}
+
+fn relevance_rank(status: WaveRunStatus) -> u8 {
+    match status {
+        WaveRunStatus::Running | WaveRunStatus::Planned => 3,
+        WaveRunStatus::Succeeded | WaveRunStatus::Failed => 2,
+        WaveRunStatus::DryRun => 1,
+    }
+}
+
 pub fn trace_inspection_report(record: &WaveRunRecord) -> TraceInspectionReport {
     let recorded = record.trace_path.exists();
     let replay = wave_trace::validate_replay(record);
@@ -287,15 +339,31 @@ pub fn request_rerun(
     wave_id: u32,
     reason: impl Into<String>,
 ) -> Result<RerunIntentRecord> {
+    let requested_at_ms = now_epoch_ms()?;
     let record = RerunIntentRecord {
+        request_id: Some(format!("rerun-wave-{wave_id:02}-{requested_at_ms}")),
         wave_id,
         reason: reason.into(),
         requested_by: "operator".to_string(),
         status: RerunIntentStatus::Requested,
-        requested_at_ms: now_epoch_ms()?,
+        requested_at_ms,
         cleared_at_ms: None,
     };
     write_rerun_intent(root, config, &record)?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-rerun-requested-{wave_id:02}-{requested_at_ms}"),
+            ControlEventKind::RerunRequested,
+            wave_id,
+        )
+        .with_created_at_ms(requested_at_ms)
+        .with_correlation_id(format!("rerun-wave-{wave_id:02}"))
+        .with_payload(ControlEventPayload::RerunRequested {
+            rerun: rerun_request_payload(&record, RerunState::Requested),
+        }),
+    )?;
     Ok(record)
 }
 
@@ -304,13 +372,37 @@ pub fn clear_rerun(
     config: &ProjectConfig,
     wave_id: u32,
 ) -> Result<Option<RerunIntentRecord>> {
+    clear_rerun_with_state(root, config, wave_id, RerunState::Cancelled)
+}
+
+fn clear_rerun_with_state(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    rerun_state: RerunState,
+) -> Result<Option<RerunIntentRecord>> {
     let mut intents = list_rerun_intents(root, config)?;
     let Some(mut record) = intents.remove(&wave_id) else {
         return Ok(None);
     };
     record.status = RerunIntentStatus::Cleared;
-    record.cleared_at_ms = Some(now_epoch_ms()?);
+    let cleared_at_ms = now_epoch_ms()?;
+    record.cleared_at_ms = Some(cleared_at_ms);
     write_rerun_intent(root, config, &record)?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-rerun-cleared-{wave_id:02}-{cleared_at_ms}"),
+            ControlEventKind::RerunCleared,
+            wave_id,
+        )
+        .with_created_at_ms(cleared_at_ms)
+        .with_correlation_id(format!("rerun-wave-{wave_id:02}"))
+        .with_payload(ControlEventPayload::RerunRequested {
+            rerun: rerun_request_payload(&record, rerun_state),
+        }),
+    )?;
     Ok(Some(record))
 }
 
@@ -415,7 +507,15 @@ pub fn launch_wave(
     status: &PlanningStatus,
     options: LaunchOptions,
 ) -> Result<LaunchReport> {
-    let wave = select_wave(waves, status, options.wave_id)?;
+    if !options.dry_run {
+        let _ = repair_orphaned_runs(root, config)?;
+    }
+    let planning_status = if options.dry_run || options.wave_id.is_some() {
+        status.clone()
+    } else {
+        refresh_planning_status(root, config, waves)?
+    };
+    let wave = select_wave(waves, &planning_status, options.wave_id)?;
     let run_id = format!("wave-{:02}-{}", wave.metadata.id, now_epoch_ms()?);
     let bundle = compile_wave_bundle(root, config, wave, &run_id)?;
     let preflight = build_launch_preflight(wave, options.dry_run);
@@ -423,6 +523,17 @@ pub fn launch_wave(
     fs::write(&preflight_path, serde_json::to_string_pretty(&preflight)?)
         .with_context(|| format!("failed to write {}", preflight_path.display()))?;
     if !preflight.ok {
+        append_control_event(
+            root,
+            config,
+            ControlEvent::new(
+                format!("evt-launch-refused-{}-{}", wave.metadata.id, now_epoch_ms()?),
+                ControlEventKind::LaunchRefused,
+                wave.metadata.id,
+            )
+            .with_created_at_ms(now_epoch_ms()?)
+            .with_correlation_id(run_id.clone()),
+        )?;
         return Err(LaunchPreflightError { report: preflight }.into());
     }
 
@@ -441,6 +552,10 @@ pub fn launch_wave(
         });
     }
 
+    if !codex_binary_available() {
+        bail!("codex binary is not available on PATH");
+    }
+
     let codex_home = bootstrap_project_codex_home(root, config)?;
     fs::create_dir_all(trace_runs_dir(root, config)).with_context(|| {
         format!(
@@ -454,9 +569,9 @@ pub fn launch_wave(
             state_runs_dir(root, config).display()
         )
     })?;
-    let _ = clear_rerun(root, config, wave.metadata.id)?;
 
     let created_at_ms = now_epoch_ms()?;
+    let launcher_pid = std::process::id();
     let mut record = WaveRunRecord {
         run_id: run_id.clone(),
         wave_id: wave.metadata.id,
@@ -469,7 +584,8 @@ pub fn launch_wave(
         codex_home: codex_home.clone(),
         created_at_ms,
         started_at_ms: None,
-        launcher_pid: Some(std::process::id()),
+        launcher_pid: Some(launcher_pid),
+        launcher_started_at_ms: current_process_started_at_ms(),
         completed_at_ms: None,
         agents: bundle
             .agents
@@ -491,29 +607,109 @@ pub fn launch_wave(
             .collect(),
         error: None,
     };
-
-    if !codex_binary_available() {
-        bail!("codex binary is not available on PATH");
-    }
-
-    record.status = WaveRunStatus::Running;
-    record.started_at_ms = Some(now_epoch_ms()?);
     write_run_record(&state_path, &record)?;
+    let _ = clear_rerun_with_state(root, config, wave.metadata.id, RerunState::Completed)?;
 
     let execution_agents = ordered_agents(wave);
     for (index, agent) in execution_agents.iter().enumerate() {
+        append_attempt_event(
+            root,
+            config,
+            &record,
+            agent,
+            AttemptState::Planned,
+            record.created_at_ms,
+            None,
+        )?;
         record.agents[index].status = WaveRunStatus::Running;
+        if record.started_at_ms.is_none() {
+            record.status = WaveRunStatus::Running;
+            record.started_at_ms = Some(now_epoch_ms()?);
+        }
         write_run_record(&state_path, &record)?;
-        let prompt = fs::read_to_string(&record.agents[index].prompt_path).with_context(|| {
+        append_attempt_event(
+            root,
+            config,
+            &record,
+            agent,
+            AttemptState::Running,
+            record.created_at_ms,
+            record.started_at_ms,
+        )?;
+        let prompt = match fs::read_to_string(&record.agents[index].prompt_path).with_context(|| {
             format!(
                 "failed to read {}",
                 record.agents[index].prompt_path.display()
             )
-        })?;
-        let agent_record = execute_agent(root, agent, &record.agents[index], &prompt, &codex_home)?;
+        }) {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                return finish_failed_launch(
+                    root,
+                    config,
+                    &bundle,
+                    &preflight_path,
+                    &state_path,
+                    &trace_path,
+                    &mut record,
+                    agent,
+                    index,
+                    error,
+                );
+            }
+        };
+        let agent_record = match execute_agent(
+            root,
+            &record,
+            agent,
+            &record.agents[index],
+            &prompt,
+            &codex_home,
+        ) {
+            Ok(agent_record) => agent_record,
+            Err(error) => {
+                return finish_failed_launch(
+                    root,
+                    config,
+                    &bundle,
+                    &preflight_path,
+                    &state_path,
+                    &trace_path,
+                    &mut record,
+                    agent,
+                    index,
+                    error,
+                );
+            }
+        };
         let agent_record =
-            persist_agent_result_envelope(root, config, &record, agent, &agent_record)?;
+            match persist_agent_result_envelope(root, config, &record, agent, &agent_record) {
+                Ok(agent_record) => agent_record,
+                Err(error) => {
+                    return finish_failed_launch(
+                        root,
+                        config,
+                        &bundle,
+                        &preflight_path,
+                        &state_path,
+                        &trace_path,
+                        &mut record,
+                        agent,
+                        index,
+                        error,
+                    );
+                }
+            };
         record.agents[index] = agent_record.clone();
+        append_attempt_event(
+            root,
+            config,
+            &record,
+            agent,
+            attempt_state_from_agent_status(agent_record.status),
+            record.created_at_ms,
+            record.started_at_ms,
+        )?;
         if agent_record.status == WaveRunStatus::Failed {
             record.status = WaveRunStatus::Failed;
             record.error = agent_record.error.clone();
@@ -559,6 +755,10 @@ pub fn autonomous_launch(
     let mut launched = Vec::new();
     if matches!(options.limit, Some(0)) {
         return Ok(launched);
+    }
+    if !options.dry_run {
+        let _ = repair_orphaned_runs(root, config)?;
+        status = refresh_planning_status(root, config, waves)?;
     }
     while let Some(selection) = next_claimable_wave_selection(&status) {
         if let Some(limit) = options.limit {
@@ -652,14 +852,15 @@ fn refresh_planning_status(
     let latest_runs = load_latest_runs(root, config)?;
     let findings = wave_dark_factory::lint_project(root, waves);
     let rerun_wave_ids = pending_rerun_wave_ids(root, config)?;
-    Ok(wave_control_plane::build_planning_status_with_state(
+    wave_control_plane::build_planning_status_from_authority(
+        root,
         config,
         waves,
         &findings,
         &[],
         &latest_runs,
         &rerun_wave_ids,
-    ))
+    )
 }
 
 fn is_claimable_wave(status: &PlanningStatus, wave_id: u32) -> bool {
@@ -678,12 +879,13 @@ fn queue_entry_reason_from_blockers(blocked_by: &[String]) -> String {
     }
 }
 
-fn reconcile_orphaned_run_records(root: &Path, config: &ProjectConfig) -> Result<()> {
+pub fn repair_orphaned_runs(root: &Path, config: &ProjectConfig) -> Result<Vec<WaveRunRecord>> {
     let runs_dir = state_runs_dir(root, config);
     if !runs_dir.exists() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
+    let mut repaired = Vec::new();
     for entry in
         fs::read_dir(&runs_dir).with_context(|| format!("failed to read {}", runs_dir.display()))?
     {
@@ -700,9 +902,183 @@ fn reconcile_orphaned_run_records(root: &Path, config: &ProjectConfig) -> Result
         }
         write_run_record(&path, &record)?;
         write_trace_bundle(&record.trace_path, &record)?;
+        repaired.push(record);
     }
 
-    Ok(())
+    Ok(repaired)
+}
+
+fn append_control_event(root: &Path, config: &ProjectConfig, event: ControlEvent) -> Result<()> {
+    control_event_log(root, config).append(&event)
+}
+
+fn control_event_log(root: &Path, config: &ProjectConfig) -> ControlEventLog {
+    ControlEventLog::new(config.resolved_paths(root).authority.state_events_control_dir)
+}
+
+fn rerun_request_payload(record: &RerunIntentRecord, state: RerunState) -> RerunRequest {
+    RerunRequest {
+        request_id: RerunRequestId::new(record.request_id.clone().unwrap_or_else(|| {
+            format!("rerun-wave-{:02}-{}", record.wave_id, record.requested_at_ms)
+        })),
+        wave_id: record.wave_id,
+        task_ids: Vec::new(),
+        requested_attempt_id: None,
+        requested_by: record.requested_by.clone(),
+        reason: record.reason.clone(),
+        state,
+    }
+}
+
+fn append_attempt_event(
+    root: &Path,
+    config: &ProjectConfig,
+    run: &WaveRunRecord,
+    agent: &WaveAgent,
+    state: AttemptState,
+    created_at_ms: u128,
+    started_at_ms: Option<u128>,
+) -> Result<()> {
+    let task_id = task_id_for_agent(run.wave_id, agent.id.as_str());
+    let attempt_id = attempt_id_for_run_agent(run.run_id.as_str(), agent.id.as_str());
+    let event_created_at_ms = now_epoch_ms()?;
+    let event_kind = match state {
+        AttemptState::Planned => ControlEventKind::AttemptPlanned,
+        AttemptState::Running => ControlEventKind::AttemptStarted,
+        AttemptState::Succeeded
+        | AttemptState::Failed
+        | AttemptState::Aborted
+        | AttemptState::Refused => ControlEventKind::AttemptFinished,
+    };
+    let attempt = AttemptRecord {
+        attempt_id: attempt_id.clone(),
+        wave_id: run.wave_id,
+        task_id: task_id.clone(),
+        attempt_number: 1,
+        state,
+        executor: resolved_codex_model(agent).unwrap_or_else(|| "codex".to_string()),
+        created_at_ms,
+        started_at_ms,
+        finished_at_ms: state.is_terminal().then_some(event_created_at_ms),
+        summary: None,
+        proof_bundle_ids: Vec::new(),
+        result_envelope_id: None,
+    };
+
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!(
+                "evt-attempt-{}-{}-{}",
+                state_label(state),
+                run.wave_id,
+                event_created_at_ms
+            ),
+            event_kind,
+            run.wave_id,
+        )
+        .with_task_id(task_id)
+        .with_attempt_id(attempt_id)
+        .with_created_at_ms(event_created_at_ms)
+        .with_correlation_id(run.run_id.clone())
+        .with_payload(ControlEventPayload::AttemptUpdated { attempt }),
+    )
+}
+
+fn attempt_id_for_run_agent(run_id: &str, agent_id: &str) -> AttemptId {
+    AttemptId::new(format!("{run_id}-{}", agent_id.to_ascii_lowercase()))
+}
+
+fn control_event_for_result_envelope(
+    run: &WaveRunRecord,
+    agent: &WaveAgent,
+    envelope: &ResultEnvelope,
+) -> ControlEvent {
+    ControlEvent::new(
+        format!(
+            "evt-result-envelope-{}-{}",
+            run.wave_id, envelope.created_at_ms
+        ),
+        ControlEventKind::ResultEnvelopeRecorded,
+        run.wave_id,
+    )
+    .with_task_id(task_id_for_agent(run.wave_id, agent.id.as_str()))
+    .with_attempt_id(envelope.attempt_id.clone())
+    .with_created_at_ms(envelope.created_at_ms)
+    .with_correlation_id(run.run_id.clone())
+    .with_payload(ControlEventPayload::ResultEnvelopeRecorded {
+        result: envelope.clone(),
+    })
+}
+
+fn attempt_state_from_agent_status(status: WaveRunStatus) -> AttemptState {
+    match status {
+        WaveRunStatus::Planned => AttemptState::Planned,
+        WaveRunStatus::Running => AttemptState::Running,
+        WaveRunStatus::Succeeded => AttemptState::Succeeded,
+        WaveRunStatus::Failed => AttemptState::Failed,
+        WaveRunStatus::DryRun => AttemptState::Refused,
+    }
+}
+
+fn state_label(state: AttemptState) -> &'static str {
+    match state {
+        AttemptState::Planned => "planned",
+        AttemptState::Running => "started",
+        AttemptState::Succeeded => "succeeded",
+        AttemptState::Failed => "failed",
+        AttemptState::Aborted => "aborted",
+        AttemptState::Refused => "refused",
+    }
+}
+
+fn finish_failed_launch(
+    root: &Path,
+    config: &ProjectConfig,
+    bundle: &DraftBundle,
+    preflight_path: &Path,
+    state_path: &Path,
+    trace_path: &Path,
+    record: &mut WaveRunRecord,
+    agent: &WaveAgent,
+    agent_index: usize,
+    error: anyhow::Error,
+) -> Result<LaunchReport> {
+    let reason = error.to_string();
+    if record.started_at_ms.is_none() {
+        record.started_at_ms = Some(now_epoch_ms()?);
+    }
+    record.agents[agent_index].status = WaveRunStatus::Failed;
+    record.agents[agent_index].exit_code = None;
+    record.agents[agent_index].error = Some(reason.clone());
+    record.agents[agent_index].observed_markers.clear();
+    ensure_orphan_agent_artifacts(&record.agents[agent_index], &reason)?;
+
+    record.status = WaveRunStatus::Failed;
+    record.error = Some(reason);
+    record.completed_at_ms = Some(now_epoch_ms()?);
+    append_attempt_event(
+        root,
+        config,
+        record,
+        agent,
+        AttemptState::Failed,
+        record.created_at_ms,
+        record.started_at_ms,
+    )?;
+    write_run_record(state_path, record)?;
+    write_trace_bundle(trace_path, record)?;
+
+    Ok(LaunchReport {
+        run_id: record.run_id.clone(),
+        wave_id: record.wave_id,
+        status: record.status,
+        state_path: state_path.to_path_buf(),
+        trace_path: trace_path.to_path_buf(),
+        bundle_dir: bundle.bundle_dir.clone(),
+        preflight_path: preflight_path.to_path_buf(),
+    })
 }
 
 fn reconcile_orphaned_run_record(record: &mut WaveRunRecord) -> Result<bool> {
@@ -725,8 +1101,17 @@ fn orphaned_run_reason(record: &WaveRunRecord) -> Option<String> {
     }
 
     let launcher_pid = record.launcher_pid?;
-    if process_is_alive(launcher_pid) {
-        return None;
+    match launcher_liveness(record) {
+        LauncherLiveness::Alive => return None,
+        LauncherLiveness::Missing => {}
+        LauncherLiveness::MismatchedIdentity {
+            observed_started_at_ms,
+        } => {
+            return Some(format!(
+                "launcher process {} no longer matches recorded session (observed start={})",
+                launcher_pid, observed_started_at_ms
+            ));
+        }
     }
 
     Some(format!(
@@ -798,6 +1183,72 @@ fn process_is_alive(pid: u32) -> bool {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LauncherLiveness {
+    Alive,
+    Missing,
+    MismatchedIdentity { observed_started_at_ms: u128 },
+}
+
+fn launcher_liveness(record: &WaveRunRecord) -> LauncherLiveness {
+    const START_TIME_TOLERANCE_MS: u128 = 1_000;
+    let Some(launcher_pid) = record.launcher_pid else {
+        return LauncherLiveness::Missing;
+    };
+    if !process_is_alive(launcher_pid) {
+        return LauncherLiveness::Missing;
+    }
+
+    let observed_started_at_ms = process_started_at_ms(launcher_pid);
+    if let (Some(expected), Some(observed)) = (record.launcher_started_at_ms, observed_started_at_ms)
+    {
+        if expected.abs_diff(observed) <= START_TIME_TOLERANCE_MS {
+            return LauncherLiveness::Alive;
+        }
+        return LauncherLiveness::MismatchedIdentity {
+            observed_started_at_ms: observed,
+        };
+    }
+
+    if let Some(observed) = observed_started_at_ms {
+        if observed > record.created_at_ms.saturating_add(1_000) {
+            return LauncherLiveness::MismatchedIdentity {
+                observed_started_at_ms: observed,
+            };
+        }
+    }
+
+    LauncherLiveness::Alive
+}
+
+fn current_process_started_at_ms() -> Option<u128> {
+    process_started_at_ms(std::process::id())
+}
+
+#[cfg(target_os = "linux")]
+fn process_started_at_ms(pid: u32) -> Option<u128> {
+    let stat = fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("stat")).ok()?;
+    let close_paren = stat.rfind(')')?;
+    let remainder = stat.get(close_paren + 2..)?;
+    let fields = remainder.split_whitespace().collect::<Vec<_>>();
+    let start_ticks = fields.get(19)?.parse::<u128>().ok()?;
+    let ticks_per_second = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if ticks_per_second <= 0 {
+        return None;
+    }
+    let ticks_per_second = u128::try_from(ticks_per_second).ok()?;
+    let uptime = fs::read_to_string("/proc/uptime").ok()?;
+    let uptime_secs = uptime.split_whitespace().next()?.parse::<f64>().ok()?;
+    let uptime_ms = (uptime_secs * 1000.0) as u128;
+    let boot_time_ms = now_epoch_ms().ok()?.checked_sub(uptime_ms)?;
+    Some(boot_time_ms + (start_ticks * 1000 / ticks_per_second))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_started_at_ms(_pid: u32) -> Option<u128> {
+    None
+}
+
 fn persist_agent_result_envelope(
     root: &Path,
     config: &ProjectConfig,
@@ -805,236 +1256,23 @@ fn persist_agent_result_envelope(
     declared_agent: &WaveAgent,
     agent_record: &AgentRunRecord,
 ) -> Result<AgentRunRecord> {
-    let envelope = build_result_envelope(root, run, declared_agent, agent_record)?;
-    let resolved = config.resolved_paths(root);
-    let attempt_dir = resolved.wave_attempt_results_dir(run.wave_id, &envelope.attempt_id);
-    let envelope_path = attempt_dir.join(RESULT_ENVELOPE_FILE_NAME);
-    write_result_envelope(&envelope_path, &envelope)?;
+    let envelope =
+        build_structured_result_envelope(root, run, declared_agent, agent_record, now_epoch_ms()?)?;
+    let envelope_path = ResultEnvelopeStore::under_repo(root).write_envelope(&envelope)?;
+    append_control_event(
+        root,
+        config,
+        control_event_for_result_envelope(run, declared_agent, &envelope),
+    )?;
 
     let mut updated = agent_record.clone();
     updated.result_envelope_path = Some(envelope_path);
     Ok(updated)
 }
 
-fn build_result_envelope(
-    root: &Path,
-    run: &WaveRunRecord,
-    declared_agent: &WaveAgent,
-    agent_record: &AgentRunRecord,
-) -> Result<ResultEnvelopeRecord> {
-    let attempt_state = AttemptState::from_run_status(agent_record.status, run.dry_run);
-    let final_markers = FinalMarkerEnvelope::from_contract(
-        agent_record.expected_markers.clone(),
-        agent_record.observed_markers.clone(),
-    );
-    let output_text = fs::read_to_string(&agent_record.last_message_path).ok();
-    let text_artifacts = collect_text_artifacts(
-        root,
-        declared_agent,
-        output_text.as_deref().unwrap_or_default(),
-    );
-    let marker_evidence = collect_marker_evidence_for_envelope(
-        &text_artifacts,
-        &final_markers.observed,
-        &agent_record.last_message_path,
-    );
-    let doc_delta_paths = declared_agent
-        .file_ownership
-        .iter()
-        .filter(|path| looks_like_doc_path(path))
-        .cloned()
-        .collect::<Vec<_>>();
-    let doc_delta_status = if final_markers
-        .observed
-        .iter()
-        .any(|marker| marker == "[wave-doc-delta]")
-    {
-        if doc_delta_paths.is_empty() {
-            ResultPayloadStatus::EvidenceOnly
-        } else {
-            ResultPayloadStatus::Recorded
-        }
-    } else if declared_agent
-        .expected_final_markers()
-        .iter()
-        .any(|marker| *marker == "[wave-doc-delta]")
-    {
-        ResultPayloadStatus::Missing
-    } else {
-        ResultPayloadStatus::Missing
-    };
-    let closure = build_closure_state(
-        declared_agent,
-        attempt_state,
-        &final_markers,
-        agent_record.error.as_deref(),
-        &text_artifacts,
-    );
-
-    Ok(ResultEnvelopeRecord {
-        result_envelope_id: format!(
-            "result:{}:{}",
-            run.run_id,
-            declared_agent.id.to_ascii_lowercase()
-        ),
-        wave_id: run.wave_id,
-        task_id: task_id_for_agent(run.wave_id, &declared_agent.id),
-        attempt_id: structured_attempt_id(run, declared_agent),
-        agent_id: declared_agent.id.clone(),
-        task_role: inferred_task_role_for_agent(declared_agent),
-        closure_role: inferred_closure_role_for_agent(declared_agent),
-        source: ResultEnvelopeSource::Structured,
-        attempt_state,
-        disposition: ResultDisposition::from_attempt_state(
-            attempt_state,
-            final_markers.missing.len(),
-        ),
-        summary: agent_record.error.clone().or_else(|| {
-            Some(format!(
-                "structured result envelope for {}",
-                declared_agent.id
-            ))
-        }),
-        output_text,
-        final_markers: final_markers.clone(),
-        proof_bundle_ids: Vec::new(),
-        fact_ids: Vec::new(),
-        contradiction_ids: Vec::new(),
-        artifacts: build_result_artifacts(run, agent_record),
-        doc_delta: DocDeltaEnvelope {
-            status: doc_delta_status,
-            summary: if doc_delta_paths.is_empty() {
-                None
-            } else {
-                Some(format!("doc delta paths: {}", doc_delta_paths.join(", ")))
-            },
-            paths: doc_delta_paths,
-        },
-        marker_evidence,
-        closure,
-        created_at_ms: now_epoch_ms()?,
-    })
-}
-
-fn build_result_artifacts(
-    run: &WaveRunRecord,
-    agent_record: &AgentRunRecord,
-) -> Vec<ProofArtifact> {
-    vec![
-        ProofArtifact {
-            path: agent_record
-                .last_message_path
-                .to_string_lossy()
-                .into_owned(),
-            kind: ArtifactKind::Other,
-            digest: None,
-            note: Some("last-message".to_string()),
-        },
-        ProofArtifact {
-            path: agent_record.events_path.to_string_lossy().into_owned(),
-            kind: ArtifactKind::Other,
-            digest: None,
-            note: Some("events".to_string()),
-        },
-        ProofArtifact {
-            path: agent_record.stderr_path.to_string_lossy().into_owned(),
-            kind: ArtifactKind::Other,
-            digest: None,
-            note: Some("stderr".to_string()),
-        },
-        ProofArtifact {
-            path: run.trace_path.to_string_lossy().into_owned(),
-            kind: ArtifactKind::Trace,
-            digest: None,
-            note: Some(run.run_id.clone()),
-        },
-    ]
-}
-
-fn collect_marker_evidence_for_envelope(
-    text_artifacts: &[String],
-    observed_markers: &[String],
-    last_message_path: &Path,
-) -> Vec<MarkerEvidence> {
-    let mut evidence = Vec::new();
-    for text in text_artifacts {
-        for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
-            for marker in observed_markers {
-                if line == marker || line.starts_with(&(marker.clone() + " ")) {
-                    evidence.push(MarkerEvidence {
-                        marker: marker.clone(),
-                        line: line.to_string(),
-                        source: Some(last_message_path.to_string_lossy().replace('\\', "/")),
-                    });
-                }
-            }
-        }
-    }
-    for marker in observed_markers {
-        if !evidence.iter().any(|item| item.marker == *marker) {
-            evidence.push(MarkerEvidence {
-                marker: marker.clone(),
-                line: marker.clone(),
-                source: Some(last_message_path.to_string_lossy().replace('\\', "/")),
-            });
-        }
-    }
-    evidence.sort_by(|left, right| {
-        (
-            left.marker.as_str(),
-            left.line.as_str(),
-            left.source.as_deref().unwrap_or(""),
-        )
-            .cmp(&(
-                right.marker.as_str(),
-                right.line.as_str(),
-                right.source.as_deref().unwrap_or(""),
-            ))
-    });
-    evidence.dedup_by(|left, right| {
-        left.marker == right.marker && left.line == right.line && left.source == right.source
-    });
-    evidence
-}
-
-fn structured_attempt_id(run: &WaveRunRecord, agent: &WaveAgent) -> String {
-    format!("{}-{}", run.run_id, agent.id.to_ascii_lowercase())
-}
-
-fn task_id_for_agent(wave_id: u32, agent_id: &str) -> String {
-    format!("wave-{wave_id:02}:agent-{}", agent_id.to_ascii_lowercase())
-}
-
-fn inferred_task_role_for_agent(agent: &WaveAgent) -> String {
-    match agent.id.as_str() {
-        "A8" => "integration",
-        "A9" => "documentation",
-        "A0" => "cont_qa",
-        "E0" => "cont_eval",
-        _ => "implementation",
-    }
-    .to_string()
-}
-
-fn inferred_closure_role_for_agent(agent: &WaveAgent) -> Option<String> {
-    match agent.id.as_str() {
-        "E0" => Some("cont_eval".to_string()),
-        "A8" => Some("integration".to_string()),
-        "A9" => Some("documentation".to_string()),
-        "A0" => Some("cont_qa".to_string()),
-        _ => None,
-    }
-}
-
-fn looks_like_doc_path(path: &str) -> bool {
-    path == "README.md"
-        || path.starts_with("docs/")
-        || path.ends_with(".md")
-            && (path.contains("/docs/") || path.starts_with("docs/") || !path.contains('/'))
-}
-
 fn execute_agent(
     root: &Path,
+    run: &WaveRunRecord,
     agent: &WaveAgent,
     base_record: &AgentRunRecord,
     prompt: &str,
@@ -1089,60 +1327,61 @@ fn execute_agent(
     fs::write(&base_record.stderr_path, &output.stderr)
         .with_context(|| format!("failed to write {}", base_record.stderr_path.display()))?;
 
-    let last_message = fs::read_to_string(&base_record.last_message_path).unwrap_or_default();
-    let text_artifacts = collect_text_artifacts(root, agent, &last_message);
-    let observed_markers =
-        collect_observed_markers(root, agent, &last_message, &base_record.expected_markers);
-    let missing_markers = base_record
-        .expected_markers
-        .iter()
-        .filter(|marker| !observed_markers.iter().any(|observed| observed == *marker))
-        .cloned()
-        .collect::<Vec<_>>();
+    let initial_error = if output.status.success() {
+        None
+    } else {
+        Some(format!(
+            "codex exec exited with {}",
+            output
+                .status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal".to_string())
+        ))
+    };
+    let provisional_record = AgentRunRecord {
+        status: if output.status.success() {
+            WaveRunStatus::Succeeded
+        } else {
+            WaveRunStatus::Failed
+        },
+        exit_code: output.status.code(),
+        error: initial_error.clone(),
+        observed_markers: Vec::new(),
+        ..base_record.clone()
+    };
+    let envelope =
+        build_structured_result_envelope(root, run, agent, &provisional_record, now_epoch_ms()?)?;
+    let observed_markers = envelope.closure_input.final_markers.observed.clone();
 
     if !output.status.success() {
         return Ok(AgentRunRecord {
             status: WaveRunStatus::Failed,
             exit_code: output.status.code(),
-            error: Some(format!(
-                "codex exec exited with {}",
-                output
-                    .status
-                    .code()
-                    .map(|code| code.to_string())
-                    .unwrap_or_else(|| "signal".to_string())
-            )),
+            error: initial_error,
             observed_markers,
             ..base_record.clone()
         });
     }
 
-    if !missing_markers.is_empty() {
+    if envelope.closure.disposition != ClosureDisposition::Ready {
         return Ok(AgentRunRecord {
             status: WaveRunStatus::Failed,
             exit_code: output.status.code(),
-            error: Some(format!(
-                "agent {} is missing final markers: {}",
-                agent.id,
-                missing_markers.join(", ")
-            )),
+            error: Some(
+                envelope
+                    .closure
+                    .blocking_reasons
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "structured result envelope is not ready".to_string()),
+            ),
             observed_markers,
             ..base_record.clone()
         });
     }
 
-    let closure = build_closure_state(
-        agent,
-        AttemptState::Succeeded,
-        &FinalMarkerEnvelope::from_contract(
-            base_record.expected_markers.clone(),
-            observed_markers.clone(),
-        ),
-        None,
-        &text_artifacts,
-    );
-
-    if let Some(error) = closure_contract_error(agent, &closure) {
+    if let Some(error) = result_closure_contract_error(agent.id.as_str(), &envelope.closure) {
         return Ok(AgentRunRecord {
             status: WaveRunStatus::Failed,
             exit_code: output.status.code(),
@@ -1288,16 +1527,6 @@ fn render_agent_prompt(
     prompt.join("\n")
 }
 
-fn collect_observed_markers(
-    root: &Path,
-    agent: &WaveAgent,
-    last_message: &str,
-    expected_markers: &[String],
-) -> Vec<String> {
-    let text_artifacts = collect_text_artifacts(root, agent, last_message);
-    observed_markers_in_texts(&text_artifacts, expected_markers)
-}
-
 fn resolved_codex_model(agent: &WaveAgent) -> Option<String> {
     env::var("WAVE_CODEX_MODEL_OVERRIDE")
         .ok()
@@ -1320,282 +1549,6 @@ fn parse_codex_config_entries(raw: &str) -> Vec<String> {
         .filter(|entry| !entry.is_empty())
         .map(ToString::to_string)
         .collect()
-}
-
-fn collect_text_artifacts(root: &Path, agent: &WaveAgent, last_message: &str) -> Vec<String> {
-    let mut texts = Vec::new();
-    if !last_message.is_empty() {
-        texts.push(last_message.to_string());
-    }
-
-    for owned_path in &agent.file_ownership {
-        let candidate = root.join(owned_path);
-        if !is_marker_fallback_path(&candidate) || !candidate.exists() {
-            continue;
-        }
-
-        let Ok(contents) = fs::read_to_string(&candidate) else {
-            continue;
-        };
-        if !contents.is_empty() {
-            texts.push(contents);
-        }
-    }
-
-    texts
-}
-
-fn observed_markers_in_texts(texts: &[String], expected_markers: &[String]) -> Vec<String> {
-    let mut observed = Vec::new();
-    for text in texts {
-        for marker in observed_markers_in_text(text, expected_markers) {
-            if !observed.iter().any(|existing| existing == &marker) {
-                observed.push(marker);
-            }
-        }
-    }
-    observed
-}
-
-fn observed_markers_in_text(text: &str, expected_markers: &[String]) -> Vec<String> {
-    let mut observed = Vec::new();
-    for line in text.lines().map(str::trim) {
-        for marker in expected_markers {
-            if line == marker || line.starts_with(&(marker.clone() + " ")) {
-                if !observed.iter().any(|existing| existing == marker) {
-                    observed.push(marker.clone());
-                }
-            }
-        }
-    }
-    observed
-}
-
-fn build_closure_state(
-    agent: &WaveAgent,
-    attempt_state: AttemptState,
-    final_markers: &FinalMarkerEnvelope,
-    agent_error: Option<&str>,
-    texts: &[String],
-) -> ClosureState {
-    let verdict = derive_closure_verdict_payload(agent.id.as_str(), texts);
-    let mut blocking_reasons = Vec::new();
-    if !final_markers.missing.is_empty() {
-        blocking_reasons.push(format!(
-            "missing final markers: {}",
-            final_markers.missing.join(", ")
-        ));
-    }
-    if let Some(error) = agent_error {
-        blocking_reasons.push(error.to_string());
-    }
-    if let Some(error) = closure_contract_error(
-        agent,
-        &ClosureState {
-            disposition: ClosureDisposition::Pending,
-            required_final_markers: final_markers.required.clone(),
-            observed_final_markers: final_markers.observed.clone(),
-            blocking_reasons: Vec::new(),
-            satisfied_fact_ids: Vec::new(),
-            contradiction_ids: Vec::new(),
-            verdict: verdict.clone(),
-        },
-    ) {
-        blocking_reasons.push(error);
-    }
-
-    let disposition = match attempt_state {
-        AttemptState::Succeeded if final_markers.is_satisfied() && blocking_reasons.is_empty() => {
-            ClosureDisposition::Ready
-        }
-        AttemptState::Planned | AttemptState::Running => ClosureDisposition::Pending,
-        _ => ClosureDisposition::Blocked,
-    };
-
-    ClosureState {
-        disposition,
-        required_final_markers: final_markers.required.clone(),
-        observed_final_markers: final_markers.observed.clone(),
-        blocking_reasons,
-        satisfied_fact_ids: Vec::new(),
-        contradiction_ids: Vec::new(),
-        verdict,
-    }
-}
-
-fn closure_contract_error(agent: &WaveAgent, closure: &ClosureState) -> Option<String> {
-    match (agent.id.as_str(), &closure.verdict) {
-        ("A0", ClosureVerdictPayload::ContQa(verdict)) => {
-            let Some(result) = verdict.verdict.as_deref() else {
-                return Some("cont-QA report is missing final Verdict line".to_string());
-            };
-            if result != "PASS" {
-                return Some(format!("cont-QA verdict is {result}, not PASS"));
-            }
-            let Some(gate_state) = verdict.gate_state.as_deref() else {
-                return Some("cont-QA report is missing final [wave-gate] line".to_string());
-            };
-            if gate_state != "pass" {
-                return Some("cont-QA gate marker is not fully pass".to_string());
-            }
-            None
-        }
-        ("A0", _) => Some("cont-QA report is missing structured closure verdict".to_string()),
-        ("A8", ClosureVerdictPayload::Integration(verdict)) => match verdict.state.as_deref() {
-            Some("ready-for-doc-closure") => None,
-            Some(state) => Some(format!(
-                "integration state is {state}, not ready-for-doc-closure"
-            )),
-            None => Some("integration report is missing state=<...>".to_string()),
-        },
-        ("A8", _) => Some("integration report is missing structured closure verdict".to_string()),
-        ("A9", ClosureVerdictPayload::Documentation(verdict)) => match verdict.state.as_deref() {
-            Some("closed") | Some("no-change") => None,
-            Some(state) => Some(format!(
-                "documentation closure state is {state}, not closed or no-change"
-            )),
-            None => Some("documentation closure report is missing state=<...>".to_string()),
-        },
-        ("A9", _) => Some("documentation report is missing structured closure verdict".to_string()),
-        _ => None,
-    }
-}
-
-fn derive_closure_verdict_payload(agent_id: &str, texts: &[String]) -> ClosureVerdictPayload {
-    match agent_id {
-        "A0" => ClosureVerdictPayload::ContQa(parse_cont_qa_verdict(texts)),
-        "A8" => ClosureVerdictPayload::Integration(parse_integration_verdict(texts)),
-        "A9" => ClosureVerdictPayload::Documentation(parse_documentation_verdict(texts)),
-        _ => ClosureVerdictPayload::None,
-    }
-}
-
-fn parse_cont_qa_verdict(texts: &[String]) -> ContQaClosureVerdict {
-    let verdict = texts
-        .iter()
-        .flat_map(|text| text.lines())
-        .map(str::trim)
-        .filter_map(|line| line.strip_prefix("Verdict:"))
-        .map(str::trim)
-        .map(|value| value.to_ascii_uppercase())
-        .last();
-    let (gate_line, gate_fields) = find_marker_fields(texts, "[wave-gate]")
-        .map(|(line, fields)| (Some(line), fields))
-        .unwrap_or_else(|| (None, BTreeMap::new()));
-    let detail = gate_fields.get("detail").cloned();
-    let gate_dimensions = gate_fields
-        .iter()
-        .filter(|(key, _)| key.as_str() != "detail")
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect::<BTreeMap<_, _>>();
-    let gate_state = cont_qa_gate_state(gate_line.as_deref(), &gate_dimensions);
-
-    ContQaClosureVerdict {
-        verdict,
-        gate_state,
-        gate_line,
-        gate_dimensions,
-        detail,
-    }
-}
-
-fn parse_integration_verdict(texts: &[String]) -> IntegrationClosureVerdict {
-    let fields = find_marker_fields(texts, "[wave-integration]")
-        .map(|(_, fields)| fields)
-        .unwrap_or_default();
-    IntegrationClosureVerdict {
-        state: fields.get("state").cloned(),
-        claims: parse_marker_u32(&fields, "claims"),
-        conflicts: parse_marker_u32(&fields, "conflicts"),
-        blockers: parse_marker_u32(&fields, "blockers"),
-        detail: fields.get("detail").cloned(),
-    }
-}
-
-fn parse_documentation_verdict(texts: &[String]) -> DocumentationClosureVerdict {
-    let fields = find_marker_fields(texts, "[wave-doc-closure]")
-        .map(|(_, fields)| fields)
-        .unwrap_or_default();
-    DocumentationClosureVerdict {
-        state: fields.get("state").cloned(),
-        paths: fields
-            .get("paths")
-            .map(|value| split_csv(value))
-            .unwrap_or_default(),
-        detail: fields.get("detail").cloned(),
-    }
-}
-
-fn find_marker_fields(
-    texts: &[String],
-    marker: &str,
-) -> Option<(String, BTreeMap<String, String>)> {
-    texts
-        .iter()
-        .flat_map(|text| text.lines())
-        .map(str::trim)
-        .filter(|line| *line == marker || line.starts_with(&(marker.to_string() + " ")))
-        .map(|line| (line.to_string(), parse_marker_fields(line, marker)))
-        .last()
-}
-
-fn parse_marker_fields(line: &str, marker: &str) -> BTreeMap<String, String> {
-    line.strip_prefix(marker)
-        .unwrap_or_default()
-        .split_whitespace()
-        .filter_map(|token| token.split_once('='))
-        .map(|(key, value)| {
-            (
-                key.to_string(),
-                value.trim().trim_end_matches(',').to_string(),
-            )
-        })
-        .collect()
-}
-
-fn parse_marker_u32(fields: &BTreeMap<String, String>, key: &str) -> Option<u32> {
-    fields.get(key).and_then(|value| value.parse::<u32>().ok())
-}
-
-fn split_csv(value: &str) -> Vec<String> {
-    value
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
-        .collect()
-}
-
-fn cont_qa_gate_state(
-    gate_line: Option<&str>,
-    gate_dimensions: &BTreeMap<String, String>,
-) -> Option<String> {
-    if gate_dimensions.values().any(|value| value == "blocked") {
-        return Some("blocked".to_string());
-    }
-    if gate_dimensions.values().any(|value| value == "concerns") {
-        return Some("concerns".to_string());
-    }
-    gate_line.map(|line| {
-        let lowered = line.to_ascii_lowercase();
-        if lowered.contains("blocked") {
-            "blocked".to_string()
-        } else if lowered.contains("concerns") {
-            "concerns".to_string()
-        } else {
-            "pass".to_string()
-        }
-    })
-}
-
-fn is_marker_fallback_path(path: &Path) -> bool {
-    let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
-        return false;
-    };
-    matches!(extension, "md" | "txt" | "json")
-        && path
-            .components()
-            .any(|component| component.as_os_str() == ".wave")
 }
 
 fn build_launch_preflight(wave: &WaveDocument, dry_run: bool) -> LaunchPreflightReport {
@@ -1843,40 +1796,88 @@ mod tests {
     }
 
     #[test]
-    fn detects_markers_with_extra_payload() {
-        let observed = observed_markers_in_text(
-            "[wave-gate] detail=ok\nVerdict: PASS\n[wave-proof]",
-            &["[wave-gate]".to_string(), "[wave-proof]".to_string()],
+    fn persist_agent_result_envelope_uses_owned_closure_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-owned-closure-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join(".wave/integration")).expect("create integration dir");
+        fs::create_dir_all(root.join(".wave/codex")).expect("create codex dir");
+        let bundle_dir = root.join(".wave/state/build/specs/wave-12-1");
+        let agent_dir = bundle_dir.join("agents/A8");
+        fs::create_dir_all(&agent_dir).expect("create agent dir");
+        fs::write(
+            root.join(".wave/integration/wave-12.md"),
+            "# Integration\n\n[wave-integration] state=ready-for-doc-closure claims=2 conflicts=0 blockers=0 detail=owned summary is authoritative\n",
+        )
+        .expect("write integration summary");
+        fs::write(agent_dir.join("prompt.md"), "# prompt\n").expect("write prompt");
+        fs::write(agent_dir.join("last-message.txt"), "summary only\n").expect("write message");
+        fs::write(agent_dir.join("events.jsonl"), "{}\n").expect("write events");
+        fs::write(agent_dir.join("stderr.txt"), "").expect("write stderr");
+
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        let run = WaveRunRecord {
+            run_id: "wave-12-1".to_string(),
+            wave_id: 12,
+            slug: "result-envelope-proof-lifecycle".to_string(),
+            title: "Result Envelope Proof Lifecycle".to_string(),
+            status: WaveRunStatus::Running,
+            dry_run: false,
+            bundle_dir: bundle_dir.clone(),
+            trace_path: root.join(".wave/traces/runs/wave-12-1.json"),
+            codex_home: root.join(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            launcher_pid: None,
+            launcher_started_at_ms: None,
+            completed_at_ms: None,
+            agents: Vec::new(),
+            error: None,
+        };
+        let mut declared_agent = test_agent("A8");
+        declared_agent.file_ownership = vec![".wave/integration/wave-12.md".to_string()];
+        declared_agent.final_markers = vec!["[wave-integration]".to_string()];
+        let agent_record = AgentRunRecord {
+            id: "A8".to_string(),
+            title: "Integration".to_string(),
+            status: WaveRunStatus::Succeeded,
+            prompt_path: agent_dir.join("prompt.md"),
+            last_message_path: agent_dir.join("last-message.txt"),
+            events_path: agent_dir.join("events.jsonl"),
+            stderr_path: agent_dir.join("stderr.txt"),
+            result_envelope_path: None,
+            expected_markers: vec!["[wave-integration]".to_string()],
+            observed_markers: Vec::new(),
+            exit_code: Some(0),
+            error: None,
+        };
+
+        let updated =
+            persist_agent_result_envelope(&root, &config, &run, &declared_agent, &agent_record)
+                .expect("persist envelope");
+        let envelope_path = updated
+            .result_envelope_path
+            .clone()
+            .expect("result envelope path");
+        let envelope = ResultEnvelopeStore::under_repo(&root)
+            .load_envelope(&envelope_path)
+            .expect("load envelope");
+
+        assert_eq!(
+            envelope.closure_input.final_markers.observed,
+            vec!["[wave-integration]".to_string()]
         );
         assert_eq!(
-            observed,
-            vec!["[wave-gate]".to_string(), "[wave-proof]".to_string()]
-        );
-    }
-
-    #[test]
-    fn falls_back_to_wave_owned_reports_for_markers() {
-        let root =
-            std::env::temp_dir().join(format!("wave-runtime-marker-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join(".wave/reviews")).expect("create temp review dir");
-        fs::write(
-            root.join(".wave/reviews/wave-0-cont-qa.md"),
-            "# Review\n\n[wave-gate] detail=artifact\nVerdict: PASS\n",
-        )
-        .expect("write review");
-
-        let mut agent = test_agent("A0");
-        agent.file_ownership = vec![".wave/reviews/wave-0-cont-qa.md".to_string()];
-
-        let observed = collect_observed_markers(
-            &root,
-            &agent,
-            "Recorded review only.\n",
-            &["[wave-gate]".to_string()],
+            envelope.closure.disposition,
+            wave_domain::ClosureDisposition::Ready
         );
 
-        assert_eq!(observed, vec!["[wave-gate]".to_string()]);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1919,6 +1920,7 @@ mod tests {
             created_at_ms: 1,
             started_at_ms: Some(2),
             launcher_pid: None,
+            launcher_started_at_ms: None,
             completed_at_ms: None,
             agents: Vec::new(),
             error: None,
@@ -1963,9 +1965,15 @@ mod tests {
             envelope_path,
             root.join(".wave/state/results/wave-12/wave-12-1-a2/agent_result_envelope.json")
         );
-        assert_eq!(envelope.source, ResultEnvelopeSource::Structured);
+        assert_eq!(
+            envelope.source,
+            wave_trace::ResultEnvelopeSource::Structured
+        );
         assert_eq!(envelope.final_markers.missing, Vec::<String>::new());
-        assert_eq!(envelope.doc_delta.status, ResultPayloadStatus::Recorded);
+        assert_eq!(
+            envelope.doc_delta.status,
+            wave_trace::ResultPayloadStatus::Recorded
+        );
         assert_eq!(
             envelope.doc_delta.paths,
             vec![
@@ -1981,20 +1989,18 @@ mod tests {
     #[test]
     fn blocks_non_pass_cont_qa_verdicts() {
         let agent = test_agent("A0");
-        let texts = vec![
-            "[wave-gate] architecture=blocked integration=pass durability=pass live=pass docs=pass detail=test\nVerdict: BLOCKED\n"
-                .to_string(),
-        ];
-        let closure = build_closure_state(
-            &agent,
-            AttemptState::Succeeded,
-            &FinalMarkerEnvelope::default(),
+        let closure = wave_results::build_structured_closure_state(
+            agent.id.as_str(),
+            wave_domain::AttemptState::Succeeded,
+            &wave_domain::FinalMarkerEnvelope::default(),
             None,
-            &texts,
+            Some(
+                "[wave-gate] architecture=blocked integration=pass durability=pass live=pass docs=pass detail=test\nVerdict: BLOCKED\n",
+            ),
         );
 
         assert_eq!(
-            closure_contract_error(&agent, &closure),
+            result_closure_contract_error(agent.id.as_str(), &closure),
             Some("cont-QA verdict is BLOCKED, not PASS".to_string())
         );
     }
@@ -2002,20 +2008,18 @@ mod tests {
     #[test]
     fn blocks_integration_that_is_not_ready_for_doc_closure() {
         let agent = test_agent("A8");
-        let texts = vec![
-            "[wave-integration] state=needs-more-work claims=0 conflicts=1 blockers=1 detail=test\n"
-                .to_string(),
-        ];
-        let closure = build_closure_state(
-            &agent,
-            AttemptState::Succeeded,
-            &FinalMarkerEnvelope::default(),
+        let closure = wave_results::build_structured_closure_state(
+            agent.id.as_str(),
+            wave_domain::AttemptState::Succeeded,
+            &wave_domain::FinalMarkerEnvelope::default(),
             None,
-            &texts,
+            Some(
+                "[wave-integration] state=needs-more-work claims=0 conflicts=1 blockers=1 detail=test\n",
+            ),
         );
 
         assert_eq!(
-            closure_contract_error(&agent, &closure),
+            result_closure_contract_error(agent.id.as_str(), &closure),
             Some("integration state is needs-more-work, not ready-for-doc-closure".to_string())
         );
     }
@@ -2023,18 +2027,16 @@ mod tests {
     #[test]
     fn blocks_doc_closure_deltas() {
         let agent = test_agent("A9");
-        let texts =
-            vec!["[wave-doc-closure] state=delta paths=README.md detail=test\n".to_string()];
-        let closure = build_closure_state(
-            &agent,
-            AttemptState::Succeeded,
-            &FinalMarkerEnvelope::default(),
+        let closure = wave_results::build_structured_closure_state(
+            agent.id.as_str(),
+            wave_domain::AttemptState::Succeeded,
+            &wave_domain::FinalMarkerEnvelope::default(),
             None,
-            &texts,
+            Some("[wave-doc-closure] state=delta paths=README.md detail=test\n"),
         );
 
         assert_eq!(
-            closure_contract_error(&agent, &closure),
+            result_closure_contract_error(agent.id.as_str(), &closure),
             Some("documentation closure state is delta, not closed or no-change".to_string())
         );
     }
@@ -2042,26 +2044,24 @@ mod tests {
     #[test]
     fn build_closure_state_records_structured_integration_verdict() {
         let agent = test_agent("A8");
-        let texts = vec![
-            "[wave-integration] state=ready-for-doc-closure claims=2 conflicts=0 blockers=0 detail=ok\n"
-                .to_string(),
-        ];
-        let final_markers = FinalMarkerEnvelope::from_contract(
+        let final_markers = wave_domain::FinalMarkerEnvelope::from_contract(
             vec!["[wave-integration]".to_string()],
             vec!["[wave-integration]".to_string()],
         );
 
-        let closure = build_closure_state(
-            &agent,
-            AttemptState::Succeeded,
+        let closure = wave_results::build_structured_closure_state(
+            agent.id.as_str(),
+            wave_domain::AttemptState::Succeeded,
             &final_markers,
             None,
-            &texts,
+            Some(
+                "[wave-integration] state=ready-for-doc-closure claims=2 conflicts=0 blockers=0 detail=ok\n",
+            ),
         );
 
-        assert_eq!(closure.disposition, ClosureDisposition::Ready);
+        assert_eq!(closure.disposition, wave_domain::ClosureDisposition::Ready);
         match closure.verdict {
-            ClosureVerdictPayload::Integration(verdict) => {
+            wave_domain::ClosureVerdictPayload::Integration(verdict) => {
                 assert_eq!(verdict.state.as_deref(), Some("ready-for-doc-closure"));
                 assert_eq!(verdict.claims, Some(2));
                 assert_eq!(verdict.conflicts, Some(0));
@@ -2212,6 +2212,7 @@ mod tests {
             created_at_ms: 1,
             started_at_ms: Some(2),
             launcher_pid: Some(u32::MAX),
+            launcher_started_at_ms: Some(0),
             completed_at_ms: None,
             agents: vec![AgentRunRecord {
                 id: "A1".to_string(),
@@ -2274,6 +2275,7 @@ mod tests {
             created_at_ms: 1,
             started_at_ms: Some(2),
             launcher_pid: Some(std::process::id()),
+            launcher_started_at_ms: current_process_started_at_ms(),
             completed_at_ms: None,
             agents: vec![AgentRunRecord {
                 id: "A1".to_string(),

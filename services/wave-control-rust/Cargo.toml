@@ -1,0 +1,20 @@
+[package]
+name = "wave-control-rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+axum = { version = "0.7", features = ["json"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "json"] }
+tokio = { version = "1.44", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
+wave-app-server.workspace = true
+wave-coordination.workspace = true
+wave-config.workspace = true
+wave-domain.workspace = true
+wave-events.workspace = true
+wave-results.workspace = true

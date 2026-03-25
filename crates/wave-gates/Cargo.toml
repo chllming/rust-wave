@@ -6,8 +6,10 @@ license.workspace = true
 publish = false
 
 [dependencies]
+anyhow.workspace = true
 serde.workspace = true
 wave-domain.workspace = true
+wave-results.workspace = true
 wave-spec.workspace = true
 wave-trace.workspace = true
 

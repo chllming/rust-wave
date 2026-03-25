@@ -1,17 +1,18 @@
 //! Typed gate and closure helpers for compatibility-backed planning inputs.
 
+use anyhow::Result;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::path::Path;
+use std::path::PathBuf;
 use wave_domain::ClosureDisposition;
 use wave_domain::ClosureState;
 use wave_domain::GateDisposition;
 use wave_domain::GateId;
 use wave_domain::GateVerdict;
 use wave_spec::WaveDocument;
-use wave_trace::AttemptState;
 use wave_trace::WaveRunRecord;
 use wave_trace::WaveRunStatus;
-use wave_trace::load_effective_result_envelope;
 
 pub const REQUIRED_CLOSURE_AGENT_IDS: [&str; 3] = ["A0", "A8", "A9"];
 pub type PlanningGateVerdict = GateVerdict;
@@ -83,13 +84,13 @@ fn compatibility_agent_run_input(
     record: &WaveRunRecord,
     agent: &wave_trace::AgentRunRecord,
 ) -> CompatibilityAgentRunInput {
-    match load_effective_result_envelope(record, agent) {
+    match resolve_effective_result_envelope(record, agent) {
         Ok(result) => CompatibilityAgentRunInput {
             agent_id: agent.id.clone(),
-            status: attempt_state_status(result.envelope.attempt_state, agent.status),
-            expected_final_markers: result.envelope.final_markers.required,
-            observed_final_markers: result.envelope.final_markers.observed,
-            error: agent.error.clone().or(result.envelope.summary),
+            status: attempt_state_status(result.attempt_state, agent.status),
+            expected_final_markers: result.required_final_markers,
+            observed_final_markers: result.observed_final_markers,
+            error: agent.error.clone().or(result.summary),
         },
         Err(_) => CompatibilityAgentRunInput {
             agent_id: agent.id.clone(),
@@ -101,13 +102,66 @@ fn compatibility_agent_run_input(
     }
 }
 
-fn attempt_state_status(state: AttemptState, fallback: WaveRunStatus) -> WaveRunStatus {
+#[derive(Debug, Clone)]
+struct ResolvedResultEnvelope {
+    attempt_state: wave_domain::AttemptState,
+    required_final_markers: Vec<String>,
+    observed_final_markers: Vec<String>,
+    summary: Option<String>,
+}
+
+fn resolve_effective_result_envelope(
+    record: &WaveRunRecord,
+    agent: &wave_trace::AgentRunRecord,
+) -> Result<ResolvedResultEnvelope> {
+    let repo_root = repo_root_from_run_record(record).ok_or_else(|| {
+        anyhow::anyhow!(
+            "failed to resolve repo root for wave {} run {}",
+            record.wave_id,
+            record.run_id
+        )
+    })?;
+    let envelope = wave_results::resolve_effective_result_envelope_view(&repo_root, record, agent)?;
+    Ok(ResolvedResultEnvelope {
+        attempt_state: envelope.attempt_state,
+        required_final_markers: envelope.required_final_markers,
+        observed_final_markers: envelope.observed_final_markers,
+        summary: envelope.summary,
+    })
+}
+
+fn repo_root_from_run_record(run: &WaveRunRecord) -> Option<PathBuf> {
+    repo_root_from_authority_path(&run.bundle_dir)
+        .or_else(|| repo_root_from_authority_path(&run.trace_path))
+        .or_else(|| {
+            run.agents
+                .iter()
+                .find_map(|agent| repo_root_from_authority_path(&agent.prompt_path))
+        })
+}
+
+fn repo_root_from_authority_path(path: &Path) -> Option<PathBuf> {
+    let anchor = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    for ancestor in anchor.ancestors() {
+        if ancestor.file_name().and_then(|name| name.to_str()) == Some(".wave") {
+            return ancestor.parent().map(Path::to_path_buf);
+        }
+    }
+    None
+}
+
+fn attempt_state_status(
+    state: wave_domain::AttemptState,
+    fallback: WaveRunStatus,
+) -> WaveRunStatus {
     match state {
-        AttemptState::Planned => WaveRunStatus::Planned,
-        AttemptState::Running => WaveRunStatus::Running,
-        AttemptState::Succeeded => WaveRunStatus::Succeeded,
-        AttemptState::Failed | AttemptState::Aborted => WaveRunStatus::Failed,
-        AttemptState::Refused => {
+        wave_domain::AttemptState::Planned => WaveRunStatus::Planned,
+        wave_domain::AttemptState::Running => WaveRunStatus::Running,
+        wave_domain::AttemptState::Succeeded => WaveRunStatus::Succeeded,
+        wave_domain::AttemptState::Failed | wave_domain::AttemptState::Aborted => {
+            WaveRunStatus::Failed
+        }
+        wave_domain::AttemptState::Refused => {
             if matches!(fallback, WaveRunStatus::DryRun) {
                 WaveRunStatus::DryRun
             } else {
@@ -931,6 +985,7 @@ mod tests {
             created_at_ms: 1,
             started_at_ms: Some(1),
             launcher_pid: None,
+            launcher_started_at_ms: None,
             completed_at_ms: Some(2),
             agents: vec![wave_trace::AgentRunRecord {
                 id: "A0".to_string(),
@@ -957,6 +1012,84 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn compatibility_run_input_uses_wave_results_legacy_adapter_for_owned_closure_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-gates-legacy-adapter-{}-{}",
+            std::process::id(),
+            wave_trace::now_epoch_ms().expect("timestamp")
+        ));
+        let bundle_dir = root.join(".wave/state/build/specs/wave-12-1");
+        let agent_dir = bundle_dir.join("agents/A8");
+        std::fs::create_dir_all(&agent_dir).expect("agent dir");
+        std::fs::create_dir_all(root.join(".wave/integration")).expect("integration dir");
+        std::fs::create_dir_all(root.join(".wave/codex")).expect("codex dir");
+        std::fs::write(agent_dir.join("prompt.md"), "# prompt\n").expect("write prompt");
+        std::fs::write(agent_dir.join("last-message.txt"), "summary only\n")
+            .expect("write last message");
+        std::fs::write(
+            root.join(".wave/integration/wave-12.md"),
+            "# Integration\n\n[wave-integration] state=ready-for-doc-closure claims=3 conflicts=0 blockers=0 detail=owned summary is authoritative\n",
+        )
+        .expect("write integration summary");
+
+        let mut record = WaveRunRecord {
+            run_id: "wave-12-1".to_string(),
+            wave_id: 12,
+            slug: "wave-12".to_string(),
+            title: "Wave 12".to_string(),
+            status: WaveRunStatus::Succeeded,
+            dry_run: false,
+            bundle_dir: bundle_dir.clone(),
+            trace_path: root.join(".wave/traces/runs/wave-12-1.json"),
+            codex_home: root.join(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(1),
+            launcher_pid: None,
+            launcher_started_at_ms: None,
+            completed_at_ms: Some(2),
+            agents: vec![wave_trace::AgentRunRecord {
+                id: "A8".to_string(),
+                title: "Integration".to_string(),
+                status: WaveRunStatus::Succeeded,
+                prompt_path: agent_dir.join("prompt.md"),
+                last_message_path: agent_dir.join("last-message.txt"),
+                events_path: agent_dir.join("events.jsonl"),
+                stderr_path: agent_dir.join("stderr.txt"),
+                result_envelope_path: None,
+                expected_markers: vec!["[wave-integration]".to_string()],
+                observed_markers: Vec::new(),
+                exit_code: Some(0),
+                error: None,
+            }],
+            error: None,
+        };
+        std::fs::write(agent_dir.join("events.jsonl"), "{}\n").expect("write events");
+        std::fs::write(agent_dir.join("stderr.txt"), "").expect("write stderr");
+
+        let wave = test_wave(12);
+        let a8 = wave
+            .agents
+            .iter()
+            .find(|agent| agent.id == "A8")
+            .expect("A8");
+        record.agents[0].expected_markers = a8
+            .expected_final_markers()
+            .iter()
+            .map(|marker| (*marker).to_string())
+            .collect();
+
+        let input = CompatibilityRunInput::from(&record);
+
+        assert_eq!(input.agents[0].status, WaveRunStatus::Succeeded);
+        assert_eq!(
+            input.agents[0].observed_final_markers,
+            vec!["[wave-integration]".to_string()]
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn run_input(wave_id: u32, status: WaveRunStatus) -> CompatibilityRunInput {
         run_input_with_agents(wave_id, status, Vec::new())
     }
@@ -979,6 +1112,7 @@ mod tests {
             created_at_ms: 1,
             started_at_ms: Some(1),
             launcher_pid: None,
+            launcher_started_at_ms: None,
             completed_at_ms: Some(2),
             agents: agents
                 .into_iter()

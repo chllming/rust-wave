@@ -13,6 +13,7 @@ use wave_app_server::OperatorSnapshot;
 use wave_app_server::ProofSnapshot;
 use wave_app_server::latest_relevant_run_detail;
 use wave_app_server::load_operator_snapshot;
+use wave_app_server::load_relevant_run_records;
 use wave_config::DEFAULT_CONFIG_PATH;
 use wave_config::ProjectConfig;
 use wave_control_plane::ControlStatusReadModel;
@@ -22,7 +23,7 @@ use wave_control_plane::PlanningStatusReadModel;
 use wave_control_plane::ProjectionSpine;
 use wave_control_plane::WaveStatusReadModel;
 use wave_control_plane::build_control_status_read_model_from_spine;
-use wave_control_plane::build_projection_spine_with_state;
+use wave_control_plane::build_projection_spine_from_authority;
 use wave_dark_factory::LintFinding;
 use wave_dark_factory::has_errors;
 use wave_dark_factory::lint_project;
@@ -42,6 +43,7 @@ use wave_runtime::draft_wave;
 use wave_runtime::launch_wave;
 use wave_runtime::load_latest_runs;
 use wave_runtime::pending_rerun_wave_ids;
+use wave_runtime::repair_orphaned_runs;
 use wave_runtime::request_rerun;
 use wave_runtime::trace_inspection_report;
 use wave_spec::WaveDocument;
@@ -134,6 +136,10 @@ enum ControlCommand {
     Rerun {
         #[command(subcommand)]
         command: RerunCommand,
+    },
+    Repair {
+        #[arg(long)]
+        json: bool,
     },
     Proof {
         #[command(subcommand)]
@@ -250,6 +256,19 @@ struct ProofReport {
 }
 
 #[derive(Debug, Serialize)]
+struct ControlRepairReport {
+    repaired_runs: Vec<RepairRunSurface>,
+}
+
+#[derive(Debug, Serialize)]
+struct RepairRunSurface {
+    wave_id: u32,
+    run_id: String,
+    status: wave_trace::WaveRunStatus,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 struct ProjectShowReport {
     project_name: String,
     default_lane: String,
@@ -352,7 +371,8 @@ fn main() -> Result<()> {
     let skill_catalog_issues = validate_skill_catalog(&root);
     let latest_runs = load_latest_runs(&root, &config)?;
     let rerun_wave_ids = pending_rerun_wave_ids(&root, &config)?;
-    let spine = build_projection_spine_with_state(
+    let spine = build_projection_spine_from_authority(
+        &root,
         &config,
         &waves,
         &findings,
@@ -360,7 +380,7 @@ fn main() -> Result<()> {
         &latest_runs,
         &rerun_wave_ids,
         codex_binary_available(),
-    );
+    )?;
 
     match cli.command {
         None => {
@@ -417,6 +437,9 @@ fn main() -> Result<()> {
                     command: RerunCommand::Clear { wave, json },
                 },
         }) => render_rerun_clear(&root, &config, wave, json),
+        Some(Command::Control {
+            command: ControlCommand::Repair { json },
+        }) => render_control_repair(&root, &config, json),
         Some(Command::Control {
             command:
                 ControlCommand::Proof {
@@ -1296,6 +1319,42 @@ fn render_rerun_clear(root: &Path, config: &ProjectConfig, wave_id: u32, json: b
     }
 }
 
+fn render_control_repair(root: &Path, config: &ProjectConfig, json: bool) -> Result<()> {
+    let repaired = repair_orphaned_runs(root, config)?;
+    let report = ControlRepairReport {
+        repaired_runs: repaired
+            .into_iter()
+            .map(|run| RepairRunSurface {
+                wave_id: run.wave_id,
+                run_id: run.run_id,
+                status: run.status,
+                error: run.error,
+            })
+            .collect(),
+    };
+    if json {
+        print_json(&report)
+    } else if report.repaired_runs.is_empty() {
+        println!("control repair: no orphaned runs found");
+        Ok(())
+    } else {
+        println!(
+            "control repair: reconciled {} orphaned run(s)",
+            report.repaired_runs.len()
+        );
+        for run in report.repaired_runs {
+            println!(
+                "- wave {} | run id={} | status={} | error={}",
+                run.wave_id,
+                run.run_id,
+                run.status,
+                run.error.unwrap_or_else(|| "none".to_string())
+            );
+        }
+        Ok(())
+    }
+}
+
 fn render_proof_show(
     root: &Path,
     config: &ProjectConfig,
@@ -1305,12 +1364,12 @@ fn render_proof_show(
     let snapshot = load_operator_snapshot(root, config)?;
     let wave_id = select_wave_id(&snapshot, wave_id)?;
     let waves = load_wave_documents(config, root)?;
-    let latest_runs = load_latest_runs(root, config)?;
+    let relevant_runs = load_relevant_run_records(root, config)?;
     let report = proof_report_for_wave(
         root,
         &waves,
         &snapshot.latest_run_details,
-        &latest_runs,
+        &relevant_runs,
         wave_id,
     );
 
@@ -1938,6 +1997,7 @@ mod tests {
             created_at_ms: 1,
             started_at_ms: Some(2),
             launcher_pid: None,
+            launcher_started_at_ms: None,
             completed_at_ms: Some(3),
             agents: vec![wave_trace::AgentRunRecord {
                 id: "A1".to_string(),

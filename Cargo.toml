@@ -19,6 +19,7 @@ members = [
     "crates/wave-spec",
     "crates/wave-trace",
     "crates/wave-tui",
+    "services/wave-control-rust",
 ]
 resolver = "2"
 

@@ -12,4 +12,5 @@ serde_json.workspace = true
 sha2.workspace = true
 wave-config.workspace = true
 wave-domain.workspace = true
+wave-spec.workspace = true
 wave-trace.workspace = true

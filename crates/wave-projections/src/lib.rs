@@ -1,13 +1,18 @@
 //! Reducer-backed human-facing read models and status helpers for planning,
 //! queue/control status, and operator snapshot surfaces.
 
+mod authority;
+
+use anyhow::Result;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::path::Path;
 use wave_config::ExecutionMode;
 use wave_config::ProjectConfig;
 use wave_dark_factory::LintFinding;
 use wave_dark_factory::SkillCatalogIssue;
+use wave_gates::CompatibilityRunInput;
 use wave_gates::REQUIRED_CLOSURE_AGENT_IDS;
 use wave_gates::compatibility_run_inputs_by_wave;
 use wave_reducer::PlanningReducerState;
@@ -15,6 +20,8 @@ use wave_reducer::reduce_planning_state;
 use wave_spec::WaveDocument;
 use wave_trace::WaveRunRecord;
 use wave_trace::WaveRunStatus;
+
+pub use authority::load_canonical_compatibility_runs;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -457,13 +464,26 @@ pub fn build_planning_projection_bundle_with_state(
     rerun_wave_ids: &HashSet<u32>,
 ) -> PlanningProjectionBundle {
     let compatibility_runs = compatibility_run_inputs_by_wave(latest_runs);
-    let reduced = reduce_planning_state(
+    build_planning_projection_bundle_with_compatibility_state(
+        config,
         waves,
         findings,
         skill_catalog_issues,
         &compatibility_runs,
         rerun_wave_ids,
-    );
+    )
+}
+
+pub fn build_planning_projection_bundle_with_compatibility_state(
+    config: &ProjectConfig,
+    waves: &[WaveDocument],
+    findings: &[LintFinding],
+    skill_catalog_issues: &[SkillCatalogIssue],
+    latest_runs: &HashMap<u32, CompatibilityRunInput>,
+    rerun_wave_ids: &HashSet<u32>,
+) -> PlanningProjectionBundle {
+    let reduced =
+        reduce_planning_state(waves, findings, skill_catalog_issues, latest_runs, rerun_wave_ids);
     let status = build_planning_status_from_reducer(config, &reduced);
     let projection = build_planning_status_projection(&status);
     PlanningProjectionBundle { status, projection }
@@ -478,7 +498,28 @@ pub fn build_projection_spine_with_state(
     rerun_wave_ids: &HashSet<u32>,
     launcher_ready: bool,
 ) -> ProjectionSpine {
-    let planning = build_planning_projection_bundle_with_state(
+    let compatibility_runs = compatibility_run_inputs_by_wave(latest_runs);
+    build_projection_spine_with_compatibility_state(
+        config,
+        waves,
+        findings,
+        skill_catalog_issues,
+        &compatibility_runs,
+        rerun_wave_ids,
+        launcher_ready,
+    )
+}
+
+pub fn build_projection_spine_with_compatibility_state(
+    config: &ProjectConfig,
+    waves: &[WaveDocument],
+    findings: &[LintFinding],
+    skill_catalog_issues: &[SkillCatalogIssue],
+    latest_runs: &HashMap<u32, CompatibilityRunInput>,
+    rerun_wave_ids: &HashSet<u32>,
+    launcher_ready: bool,
+) -> ProjectionSpine {
+    let planning = build_planning_projection_bundle_with_compatibility_state(
         config,
         waves,
         findings,
@@ -486,8 +527,35 @@ pub fn build_projection_spine_with_state(
         latest_runs,
         rerun_wave_ids,
     );
-    let operator = build_operator_snapshot_inputs(&planning, latest_runs, launcher_ready);
+    let operator =
+        build_operator_snapshot_inputs_from_compatibility_runs(&planning, latest_runs, launcher_ready);
     ProjectionSpine { planning, operator }
+}
+
+pub fn build_projection_spine_from_authority(
+    root: &Path,
+    config: &ProjectConfig,
+    waves: &[WaveDocument],
+    findings: &[LintFinding],
+    skill_catalog_issues: &[SkillCatalogIssue],
+    fallback_runs: &HashMap<u32, WaveRunRecord>,
+    rerun_wave_ids: &HashSet<u32>,
+    launcher_ready: bool,
+) -> Result<ProjectionSpine> {
+    let mut compatibility_runs = load_canonical_compatibility_runs(root, config, waves)?;
+    for (wave_id, run) in compatibility_run_inputs_by_wave(fallback_runs) {
+        compatibility_runs.entry(wave_id).or_insert(run);
+    }
+
+    Ok(build_projection_spine_with_compatibility_state(
+        config,
+        waves,
+        findings,
+        skill_catalog_issues,
+        &compatibility_runs,
+        rerun_wave_ids,
+        launcher_ready,
+    ))
 }
 
 pub fn build_planning_status(
@@ -533,6 +601,29 @@ pub fn build_planning_status_with_state(
         rerun_wave_ids,
     )
     .status
+}
+
+pub fn build_planning_status_from_authority(
+    root: &Path,
+    config: &ProjectConfig,
+    waves: &[WaveDocument],
+    findings: &[LintFinding],
+    skill_catalog_issues: &[SkillCatalogIssue],
+    fallback_runs: &HashMap<u32, WaveRunRecord>,
+    rerun_wave_ids: &HashSet<u32>,
+) -> Result<PlanningStatus> {
+    Ok(build_projection_spine_from_authority(
+        root,
+        config,
+        waves,
+        findings,
+        skill_catalog_issues,
+        fallback_runs,
+        rerun_wave_ids,
+        true,
+    )?
+    .planning
+    .status)
 }
 
 pub fn build_planning_status_projection(status: &PlanningStatus) -> PlanningStatusProjection {
@@ -735,6 +826,16 @@ pub fn build_dashboard_read_model(
     status: &PlanningStatus,
     latest_runs: &HashMap<u32, WaveRunRecord>,
 ) -> DashboardReadModel {
+    build_dashboard_read_model_from_compatibility_runs(
+        status,
+        &compatibility_run_inputs_by_wave(latest_runs),
+    )
+}
+
+pub fn build_dashboard_read_model_from_compatibility_runs(
+    status: &PlanningStatus,
+    latest_runs: &HashMap<u32, CompatibilityRunInput>,
+) -> DashboardReadModel {
     let mut active_runs = latest_runs
         .values()
         .filter(|run| matches!(run.status, WaveRunStatus::Planned | WaveRunStatus::Running))
@@ -761,8 +862,20 @@ pub fn build_operator_snapshot_inputs(
     latest_runs: &HashMap<u32, WaveRunRecord>,
     launcher_ready: bool,
 ) -> OperatorSnapshotInputs {
+    build_operator_snapshot_inputs_from_compatibility_runs(
+        planning,
+        &compatibility_run_inputs_by_wave(latest_runs),
+        launcher_ready,
+    )
+}
+
+pub fn build_operator_snapshot_inputs_from_compatibility_runs(
+    planning: &PlanningProjectionBundle,
+    latest_runs: &HashMap<u32, CompatibilityRunInput>,
+    launcher_ready: bool,
+) -> OperatorSnapshotInputs {
     OperatorSnapshotInputs {
-        dashboard: build_dashboard_read_model(&planning.status, latest_runs),
+        dashboard: build_dashboard_read_model_from_compatibility_runs(&planning.status, latest_runs),
         run: planning.projection.run.clone(),
         agents: planning.projection.agents.clone(),
         queue: build_queue_panel_read_model(&planning.projection),
@@ -1356,6 +1469,7 @@ mod tests {
                 created_at_ms: 1,
                 started_at_ms: Some(1),
                 launcher_pid: None,
+                launcher_started_at_ms: None,
                 completed_at_ms: Some(2),
                 agents: Vec::new(),
                 error: None,
@@ -1403,6 +1517,7 @@ mod tests {
                     created_at_ms: 1,
                     started_at_ms: Some(1),
                     launcher_pid: None,
+                    launcher_started_at_ms: None,
                     completed_at_ms: None,
                     agents: Vec::new(),
                     error: None,
@@ -1423,6 +1538,7 @@ mod tests {
                     created_at_ms: 1,
                     started_at_ms: Some(1),
                     launcher_pid: None,
+                    launcher_started_at_ms: None,
                     completed_at_ms: Some(2),
                     agents: Vec::new(),
                     error: None,
@@ -1484,6 +1600,7 @@ mod tests {
                 created_at_ms: 1,
                 started_at_ms: Some(1),
                 launcher_pid: None,
+                launcher_started_at_ms: None,
                 completed_at_ms: None,
                 agents: Vec::new(),
                 error: None,
@@ -1536,6 +1653,7 @@ mod tests {
                     created_at_ms: 1,
                     started_at_ms: Some(1),
                     launcher_pid: None,
+                    launcher_started_at_ms: None,
                     completed_at_ms: None,
                     agents: Vec::new(),
                     error: None,
@@ -1556,6 +1674,7 @@ mod tests {
                     created_at_ms: 1,
                     started_at_ms: Some(1),
                     launcher_pid: None,
+                    launcher_started_at_ms: None,
                     completed_at_ms: Some(2),
                     agents: Vec::new(),
                     error: None,
@@ -1601,6 +1720,7 @@ mod tests {
                 created_at_ms: 1,
                 started_at_ms: None,
                 launcher_pid: None,
+                launcher_started_at_ms: None,
                 completed_at_ms: Some(1),
                 agents: Vec::new(),
                 error: None,
@@ -1670,6 +1790,7 @@ mod tests {
                 created_at_ms: 1,
                 started_at_ms: Some(1),
                 launcher_pid: None,
+                launcher_started_at_ms: None,
                 completed_at_ms: Some(2),
                 agents: Vec::new(),
                 error: None,

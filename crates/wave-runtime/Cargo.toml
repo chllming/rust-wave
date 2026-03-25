@@ -6,10 +6,14 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+libc = "0.2"
 serde.workspace = true
 serde_json.workspace = true
 wave-config.workspace = true
 wave-control-plane.workspace = true
 wave-dark-factory.workspace = true
+wave-domain.workspace = true
+wave-events.workspace = true
+wave-results.workspace = true
 wave-spec.workspace = true
 wave-trace.workspace = true

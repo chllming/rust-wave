@@ -167,6 +167,15 @@ pub enum ArtifactKind {
     Other,
 }
 
+impl ArtifactKind {
+    pub fn supports_machine_readable_proof(self) -> bool {
+        matches!(
+            self,
+            Self::Patch | Self::TestLog | Self::Review | Self::ResultEnvelope
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ResultEnvelopeSource {
@@ -251,6 +260,12 @@ pub struct DocDeltaEnvelope {
     pub paths: Vec<String>,
 }
 
+impl DocDeltaEnvelope {
+    pub fn has_recorded_payload(&self) -> bool {
+        self.summary.is_some() || !self.paths.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MarkerEvidence {
     pub marker: String,
@@ -279,7 +294,10 @@ impl ProofEnvelope {
             || !self.proof_bundle_ids.is_empty()
             || !self.fact_ids.is_empty()
             || !self.contradiction_ids.is_empty()
-            || !self.artifacts.is_empty()
+            || self
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.kind.supports_machine_readable_proof())
     }
 }
 
@@ -309,6 +327,12 @@ pub enum ClosureVerdictPayload {
     ContQa(ContQaClosureVerdict),
     Integration(IntegrationClosureVerdict),
     Documentation(DocumentationClosureVerdict),
+}
+
+impl ClosureVerdictPayload {
+    pub fn is_present(&self) -> bool {
+        !matches!(self, Self::None)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -507,6 +531,48 @@ impl ClosureState {
             verdict: ClosureVerdictPayload::None,
         }
     }
+
+    pub fn expected_result_envelope_disposition(
+        attempt_state: AttemptState,
+        final_markers: &FinalMarkerEnvelope,
+        blocking_reasons: &[String],
+    ) -> ClosureDisposition {
+        match attempt_state {
+            AttemptState::Succeeded
+                if final_markers.is_satisfied() && blocking_reasons.is_empty() =>
+            {
+                ClosureDisposition::Ready
+            }
+            AttemptState::Planned | AttemptState::Running => ClosureDisposition::Pending,
+            _ => ClosureDisposition::Blocked,
+        }
+    }
+
+    pub fn matches_result_envelope_disposition(
+        &self,
+        attempt_state: AttemptState,
+        final_markers: &FinalMarkerEnvelope,
+    ) -> bool {
+        let expected = Self::expected_result_envelope_disposition(
+            attempt_state,
+            final_markers,
+            &self.blocking_reasons,
+        );
+
+        self.disposition == expected
+            || matches!(
+                (self.disposition, expected),
+                (ClosureDisposition::Closed, ClosureDisposition::Ready)
+            )
+    }
+
+    pub fn has_machine_readable_signal(&self) -> bool {
+        self.disposition != ClosureDisposition::Pending
+            || !self.blocking_reasons.is_empty()
+            || !self.satisfied_fact_ids.is_empty()
+            || !self.contradiction_ids.is_empty()
+            || self.verdict.is_present()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -667,12 +733,36 @@ pub struct ResultEnvelope {
 
 impl ResultEnvelope {
     pub fn is_terminal(&self) -> bool {
+        self.attempt_state.is_terminal()
+    }
+
+    pub fn is_completed_or_failed(&self) -> bool {
         matches!(
+            self.disposition,
+            ResultDisposition::Completed | ResultDisposition::Failed
+        )
+    }
+
+    pub fn expected_disposition(&self) -> ResultDisposition {
+        ResultDisposition::from_attempt_state(
             self.attempt_state,
-            AttemptState::Succeeded
-                | AttemptState::Failed
-                | AttemptState::Aborted
-                | AttemptState::Refused
+            self.closure_input.final_markers.missing.len(),
+        )
+    }
+
+    pub fn should_surface_as_latest_relevant(&self) -> bool {
+        matches!(
+            self.disposition,
+            ResultDisposition::Completed | ResultDisposition::Failed
+        )
+    }
+}
+
+impl AttemptState {
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Aborted | Self::Refused
         )
     }
 }
@@ -1303,6 +1393,50 @@ mod tests {
     }
 
     #[test]
+    fn closure_state_result_envelope_disposition_tracks_attempt_state_and_blockers() {
+        let final_markers = FinalMarkerEnvelope::from_contract(
+            vec!["[wave-proof]".to_string()],
+            vec!["[wave-proof]".to_string()],
+        );
+        assert_eq!(
+            ClosureState::expected_result_envelope_disposition(
+                AttemptState::Succeeded,
+                &final_markers,
+                &[],
+            ),
+            ClosureDisposition::Ready
+        );
+
+        let blocked_reasons =
+            vec!["cont-QA report is missing structured closure verdict".to_string()];
+        assert_eq!(
+            ClosureState::expected_result_envelope_disposition(
+                AttemptState::Succeeded,
+                &final_markers,
+                &blocked_reasons,
+            ),
+            ClosureDisposition::Blocked
+        );
+
+        let closed = ClosureState {
+            disposition: ClosureDisposition::Closed,
+            required_final_markers: final_markers.required.clone(),
+            observed_final_markers: final_markers.observed.clone(),
+            blocking_reasons: Vec::new(),
+            satisfied_fact_ids: Vec::new(),
+            contradiction_ids: Vec::new(),
+            verdict: ClosureVerdictPayload::Documentation(DocumentationClosureVerdict {
+                state: Some("closed".to_string()),
+                paths: vec!["docs/implementation/rust-wave-0.3-notes.md".to_string()],
+                detail: Some("machine readable closure is present".to_string()),
+            }),
+        };
+        assert!(
+            closed.matches_result_envelope_disposition(AttemptState::Succeeded, &final_markers)
+        );
+    }
+
+    #[test]
     fn final_marker_envelope_deduplicates_and_tracks_missing_markers() {
         let final_markers = FinalMarkerEnvelope::from_contract(
             vec![
@@ -1331,6 +1465,11 @@ mod tests {
 
     #[test]
     fn proof_and_closure_input_payloads_track_machine_readable_content() {
+        let doc_delta = DocDeltaEnvelope {
+            status: ResultPayloadStatus::Recorded,
+            summary: Some("owned docs updated".to_string()),
+            paths: vec!["docs/implementation/rust-wave-0.3-notes.md".to_string()],
+        };
         let proof = ProofEnvelope {
             status: ResultPayloadStatus::Recorded,
             summary: Some("cargo test -p wave-results".to_string()),
@@ -1345,6 +1484,7 @@ mod tests {
             }],
         };
         assert!(proof.has_recorded_payload());
+        assert!(doc_delta.has_recorded_payload());
 
         let closure_input = ClosureInputEnvelope {
             status: ResultPayloadStatus::EvidenceOnly,
@@ -1359,6 +1499,85 @@ mod tests {
             }],
         };
         assert!(closure_input.has_evidence());
+
+        let closure = ClosureState {
+            disposition: ClosureDisposition::Ready,
+            required_final_markers: vec!["[wave-proof]".to_string()],
+            observed_final_markers: vec!["[wave-proof]".to_string()],
+            blocking_reasons: Vec::new(),
+            satisfied_fact_ids: vec![FactId::new("fact-12-a1")],
+            contradiction_ids: Vec::new(),
+            verdict: ClosureVerdictPayload::Documentation(DocumentationClosureVerdict {
+                state: Some("closed".to_string()),
+                paths: vec!["docs/implementation/rust-wave-0.3-notes.md".to_string()],
+                detail: None,
+            }),
+        };
+        assert!(closure.verdict.is_present());
+        assert!(closure.has_machine_readable_signal());
+
+        let envelope = ResultEnvelope {
+            result_envelope_id: ResultEnvelopeId::new("result-12-a9"),
+            wave_id: 12,
+            task_id: task_id_for_agent(12, "A9"),
+            attempt_id: AttemptId::new("attempt-12-a9-1"),
+            agent_id: "A9".to_string(),
+            task_role: TaskRole::Documentation,
+            closure_role: Some(ClosureRole::Documentation),
+            source: ResultEnvelopeSource::Structured,
+            attempt_state: AttemptState::Succeeded,
+            disposition: ResultDisposition::Completed,
+            summary: Some("documentation closure recorded".to_string()),
+            output_text: None,
+            proof,
+            doc_delta,
+            closure_input,
+            closure,
+            created_at_ms: 12,
+        };
+        assert!(envelope.is_completed_or_failed());
+        assert_eq!(
+            envelope.expected_disposition(),
+            ResultDisposition::Completed
+        );
+        assert!(envelope.should_surface_as_latest_relevant());
+    }
+
+    #[test]
+    fn proof_payload_only_records_machine_readable_artifacts() {
+        let generic_runtime_payload = ProofEnvelope {
+            status: ResultPayloadStatus::Missing,
+            summary: None,
+            proof_bundle_ids: Vec::new(),
+            fact_ids: Vec::new(),
+            contradiction_ids: Vec::new(),
+            artifacts: vec![
+                ProofArtifact {
+                    path: ".wave/state/build/specs/wave-12/agents/A1/last-message.txt".to_string(),
+                    kind: ArtifactKind::Other,
+                    digest: None,
+                    note: Some("last-message".to_string()),
+                },
+                ProofArtifact {
+                    path: ".wave/traces/runs/wave-12.json".to_string(),
+                    kind: ArtifactKind::Trace,
+                    digest: None,
+                    note: Some("trace".to_string()),
+                },
+            ],
+        };
+        assert!(!generic_runtime_payload.has_recorded_payload());
+
+        let machine_readable_payload = ProofEnvelope {
+            artifacts: vec![ProofArtifact {
+                path: "artifacts/proof.log".to_string(),
+                kind: ArtifactKind::TestLog,
+                digest: Some("abc123".to_string()),
+                note: None,
+            }],
+            ..generic_runtime_payload
+        };
+        assert!(machine_readable_payload.has_recorded_payload());
     }
 
     fn agent(id: &str, title: &str, skills: Vec<&str>, file_ownership: Vec<&str>) -> WaveAgent {
