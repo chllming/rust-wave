@@ -8,8 +8,8 @@
 - `waves/*.md` is the canonical authored-wave source directory and is parsed directly by the Rust crates into typed wave and agent models.
 - `wave-domain`, `wave-events`, and `wave-coordination` now define the typed authority-core baseline for task seeds, control events, and coordination records.
 - Wave 12 is the current result-envelope and proof-lifecycle landing: planning status, queue/control JSON, app-server status inputs, and TUI queue/control truth now flow through reducer-backed projections over canonical scheduler authority plus compatibility run records, while proof and closure surfaces are envelope-first for the active run and the latest completed or failed run and replay ratification still uses compatibility run and trace artifacts.
-- The next executable architecture work is now the post-authority follow-through: scheduler authority is landed, so Wave 13-class work moves to true parallel admission and execution mechanics rather than paper-only scheduler modeling.
-- Wave 14 remains the targeted mid-wave checkpoint and retry design point, and Wave 19 remains the planner-emitted invariants plus staged gate-plan design point.
+- Wave 13 is now the landed scheduler-authority checkpoint: reducer-backed queue state no longer treats readiness as ownership, concurrent local launchers admit claims exclusively, and live leases renew and expire through canonical scheduler events while runtime execution stays serial.
+- The next executable architecture work is Wave 14: true parallel admission and execution mechanics with per-wave worktree isolation. Wave 15 remains the runtime-policy and multi-runtime design point, and Wave 19 remains the planner-emitted invariants plus staged gate-plan design point.
 - The repo-local operator/runtime surface now extends through the Codex-backed launcher and agent lifecycle manager, TUI, autonomous scheduling, dependency-aware queue gating, and replay-aware traces.
 - The live TUI operator surface includes the right-side panel as the direct queue/control dashboard, not just a passive status view.
 - Operators can directly inspect run, agent, queue, and control truth from the shell without switching to a separate CLI status path first, and they can act on queue selection and rerun intents in-place.
@@ -42,7 +42,7 @@
 ## Target-State Boundaries
 
 - True parallel waves are not live yet. The current runtime still executes one selected wave at a time and one agent at a time inside that wave.
-- Durable claims and leases are now live authority in the reducer and canonical scheduler event stream, but they do not yet power true parallel execution. The current runtime still uses them to describe serial admission truth honestly.
+- Durable claims and leases are now live authority in the reducer and canonical scheduler event stream, and the current runtime enforces exclusive local claim admission plus heartbeat-backed lease renewal and expiry. They still do not power true parallel execution yet.
 - Claude is not a live Rust runtime yet. Any Claude runtime docs in this repo should be read as target-state/reference until the Rust executor boundary actually lands.
 - Runtime-aware skill projection is still target-state. The live Rust surface still relies on explicit per-agent `### Skills`.
 - Contradiction-aware closure and human-input workflow state exist in the domain model and docs direction, but they are not yet the dominant live execution path.
@@ -73,7 +73,7 @@
 - `wave control status` exposes queue readiness, per-wave agent counts, closure totals, blocker categories, and skill-catalog health from the same reducer-backed planning projection that feeds `wave doctor`; compatibility run records remain adapter inputs at this stage.
 - `wave control proof show` and app-server proof snapshots now resolve stored result envelopes first for the active run or the latest completed or failed run; explicit `compatibility-adapter` fallback remains only through `wave-results` for legacy attempts, and replay ratification stays on compatibility artifacts.
 - The committed authored-wave backlog currently lints cleanly and has complete closure coverage across the wave set.
-- Wave 12 shared-plan docs now record the result-envelope and proof-lifecycle landing, keep the remaining replay compatibility boundary explicit, move the next migration to Wave 13 runtime breakup plus post-agent gates, and keep Wave 14 checkpoint/retry plus Wave 19 planner invariants and staged gate plans explicit; Wave 12 cont-QA closure is not claimed here because that final gate still belongs to `A0`.
+- Wave 12 shared-plan docs now record the result-envelope and proof-lifecycle landing, keep the remaining replay compatibility boundary explicit, record Wave 13 as the landed scheduler-authority and serial lease-enforcement cutover, and move the next migration to Wave 14 true parallel execution plus worktree isolation; Wave 12 cont-QA closure is not claimed here because that final gate still belongs to `A0`.
 - Wave 9's repo-local self-host dogfood loop and durable evidence remain baseline proof surfaces; Wave 11 does not reopen that proof slice.
 - Wave 5's direct shell control remains baseline behavior without changing closure sequencing or planning-status semantics.
 - Dark-factory remains an enforced execution profile at launch, so later queue and dogfood waves must be authored with complete preflightable contract data before they are considered ready.

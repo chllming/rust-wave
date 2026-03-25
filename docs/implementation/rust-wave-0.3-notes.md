@@ -92,10 +92,10 @@ Examples:
 ## Natural Placement In The 0.2 Waves
 
 - Wave `12` is the natural home for machine-readable closure evidence. Result envelopes and proof lifecycle are where doc deltas, proof claims, and closure inputs should stop being plain-text-only markers and start becoming typed gate inputs.
-- Wave `13` is the natural home for mandatory post-agent gates. The launcher and supervisor split should make the orchestration layer responsible for stopping after each implementation slice, running build and status checks, and refusing to advance on a broken source workspace.
-- Wave `14` is the natural home for mid-wave checkpoints and selective retries. Once task graph state, retry planning, invalidation scope, and reuse rules exist, an `A8-lite` checkpoint can fail only the implicated owners instead of collapsing the whole wave into a blunt rerun.
-- Wave `15` is the natural home for architecture contradictions and clarification flow. If canonical docs, component state, or implementation reality disagree, that should become durable contradiction and clarification state rather than an informal review note.
-- Wave `16` is the natural home for stronger parity replay. Replay should ratify reducer state, projections, gate outcomes, and closure evidence, not just artifact presence.
+- Wave `13` is now the landed scheduler-authority checkpoint. Claims and leases are canonical, local launchers admit claims exclusively, and live leases renew and expire through scheduler events while execution remains serial.
+- Wave `14` is the natural home for true parallel-wave execution and worktree isolation. Once parallel admission is live, merge discipline and closure-capacity policy can become real operator-visible scheduler state.
+- Wave `15` is the natural home for runtime policy and multi-runtime adapters. That is where Codex and Claude should stop being launcher folklore and become sibling adapter paths.
+- Wave `16` is the natural home for architecture contradictions and clarification flow. If canonical docs, component state, or implementation reality disagree, that should become durable contradiction and clarification state rather than an informal review note.
 - Wave `18` is the natural home for enforcing the final authority boundary. By hard cutover time, compatibility run artifacts and marker-first closure should no longer be able to re-enter as hidden authority paths.
 - Wave `19` is the natural home for the planner-facing half of these ideas. That is where the planner should generate wave specs, draft packets, and ad-hoc plans that already encode the stronger architecture and gate expectations.
 - Wave `20` is the natural home for historical visibility. Telemetry can record how often gates, doc-parity checks, architecture contradictions, and mid-wave checkpoints fail without making any remote service authoritative.

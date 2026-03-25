@@ -134,7 +134,7 @@ Specific expectations:
 - treat a wave slice that cannot land an architecture-required dependency edge because of manifest ownership as a wave-contract defect; do not downgrade that into a narrative follow-up
 - require proof source for new-run implementation agents to close as `structured-envelope`; `compatibility-adapter` is acceptable only for legacy attempts or explicit fallback views
 - require replay mismatches to be semantic: raw path-format-only divergence still blocks until the trace contract normalizes or compares canonical envelope identity
-- require the docs to keep the next control-discipline work explicit: Wave 13 owns post-agent gates, Wave 14 owns targeted mid-wave checkpoints, and Wave 19 owns planner-emitted invariants and staged gate plans
+- require the docs to keep the next control-discipline work explicit: Wave 13 is the landed scheduler-authority checkpoint, Wave 14 owns true parallel execution and worktree isolation, Wave 15 owns runtime policy and multi-runtime adapters, and Wave 19 owns planner-emitted invariants and staged gate plans
 - name the exact proof surface, owner, and resolution condition for every blocker; summary-level parity is not enough if a single proof consumer still relies on raw marker scans
 - emit the final [wave-integration] state=<ready-for-doc-closure|needs-more-work> claims=<n> conflicts=<n> blockers=<n> detail=<text> marker as a plain last line
 
@@ -185,10 +185,10 @@ Required context before coding:
 - Read docs/plans/current-state.md.
 
 Specific expectations:
-- record Wave 12 as the result-envelope and proof-lifecycle landing and move the next executable work to Wave 13 runtime breakup plus post-agent gate foundations
+- record Wave 12 as the result-envelope and proof-lifecycle landing and move the next executable work to Wave 14 true parallel execution plus worktree isolation after the landed Wave 13 scheduler-authority cutover
 - keep the component matrix honest about what is envelope-first now versus what still depends on compatibility trace or replay artifacts
 - describe proof surfaces as envelope-first for active and latest completed or failed runs, not as active-run-only views
-- explicitly carry the hardening mapping forward in the shared-plan docs: Wave 13 for post-agent gates, Wave 14 for targeted mid-wave checkpoints and retry, Wave 19 for planner-emitted invariants and staged gate plans
+- explicitly carry the hardening mapping forward in the shared-plan docs: Wave 13 as landed scheduler authority, Wave 14 for true parallel execution and worktree isolation, Wave 15 for runtime policy and multi-runtime adapters, and Wave 19 for planner-emitted invariants and staged gate plans
 - do not mark cont-QA closed before A0 runs; shared-plan docs may describe the landing and next wave, but final QA closure belongs to the A0 gate
 - use `state=closed` when shared-plan docs were updated successfully, `state=no-change` when no shared-plan delta was needed, and `state=delta` only if documentation closure is still incomplete
 - emit the final [wave-doc-closure] state=<closed|no-change|delta> paths=<comma-separated-paths> detail=<text> marker as a plain last line
@@ -375,7 +375,7 @@ Specific expectations:
 - if this seam requires crate-manifest or dependency-edge edits, land them in the owned manifest slice during this agent instead of handing the requirement off as prose
 - do not emit final implementation markers while new-run proof still closes as mixed envelope and compatibility state for the owned consumers
 - prove parity across `wave control proof show`, app-server proof snapshots, and closure-gate input from the same envelope truth, then cite the exact commands or fixtures in the final proof
-- update the live Rust implementation and runtime-reference docs to explain the new envelope-first proof boundary and the upcoming Wave 13 post-agent gate work
+- update the live Rust implementation and runtime-reference docs to explain the new envelope-first proof boundary, the landed Wave 13 scheduler-authority checkpoint, and the upcoming Wave 14 true parallel execution work
 - emit the final [wave-proof], [wave-doc-delta], and [wave-component] markers as plain lines by themselves at the end of the output
 
 File ownership (only touch these paths):

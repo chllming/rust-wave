@@ -51,8 +51,9 @@ This matrix is the canonical place to record the authored-wave rewrite component
 The dogfood-evidence components are now `repo-landed`: the repo has the executable runtime/operator surface plus the self-host evidence to describe it honestly.
 Wave `10` makes the authority-core components `repo-landed`, and Wave `11` raises the reducer/projection slice to `baseline-proved`: planning status, queue/control JSON, and operator-facing status truth are now reducer-backed over compatibility run records.
 Wave `12` lands `result-envelope-lifecycle`, `proof-lifecycle-spine`, and `envelope-first-closure`: new-run persistence flows through `wave-results`, proof surfaces are envelope-first for the active run and the latest completed or failed run, legacy compatibility adapters stay explicit for legacy attempts, and replay mismatches compare normalized or semantic envelope references while replay ratification remains later work.
-The next executable cutover is Wave `13`: break up runtime orchestration and add mandatory post-agent gate foundations in the launcher/supervisor path without changing the current queue/control or replay authority boundary.
-Wave `14` remains the targeted mid-wave checkpoint and selective retry cutover, and Wave `19` remains the planner-emitted invariants plus staged gate-plan cutover.
+Wave `13` is now the landed scheduler-authority cutover: queue/control truth remains reducer-backed, local claim admission is exclusive, and live leases renew and expire in canonical scheduler authority while execution remains serial.
+The next executable cutover is Wave `14`: true parallel-wave execution, wave-scoped worktree isolation, and merge discipline without regressing the current queue/control or replay authority boundary.
+Wave `15` remains the runtime-policy and multi-runtime adapter cutover, and Wave `19` remains the planner-emitted invariants plus staged gate-plan cutover.
 Wave `11` only promotes the four reducer/projection components listed below. Wave `12` only promotes the three envelope/proof lifecycle components listed below. Gate verdict helpers, launcher substrate, and other consumers reflect the landed boundary but keep their existing levels until later waves promote them.
 Wave `12` is recorded here for shared-plan parity, but final cont-QA closure still belongs to `A0` and is not claimed by this matrix.
 

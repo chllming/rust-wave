@@ -813,9 +813,9 @@ The architectural waves should also absorb the control-discipline hardening that
 - Wave `12`
   typed result envelopes should carry machine-readable proof, doc-delta, and closure input so gate evaluation stops depending directly on free-form marker scans
 - Wave `13`
-  the launcher and supervisor split should add mandatory post-agent gates so a broken source workspace cannot advance just because one agent emitted markers
+  scheduler authority is now canonical and locally enforced: claims are exclusive under concurrent local launchers and live leases renew and expire through scheduler events while execution remains serial
 - Wave `14`
-  task graph and retry planning should support mid-wave checkpoints and targeted retry instead of whole-wave restarts by default
+  true parallel-wave execution and wave-scoped worktree isolation should replace the current serial scheduler-enforcement boundary
 - Wave `15`
   code, docs, and component-state mismatches should become durable contradiction and clarification state instead of review-only observations
 - Wave `16`
@@ -828,6 +828,11 @@ The architectural waves should also absorb the control-discipline hardening that
   telemetry should record gate failures, doc-parity drift, and contradiction-driven repair loops without making any remote service authoritative
 
 ### Wave 10: Authority Reset
+
+Note:
+
+- the detailed wave numbering below predates the current shared-plan resequencing
+- for live numbering, treat Wave `13` as the landed scheduler-authority checkpoint, Wave `14` as the next true parallel-execution wave, and prefer `docs/plans/master-plan.md` plus `waves/*.md` over this section when they disagree
 
 Primary goal:
 
@@ -877,81 +882,80 @@ Must be true at closure:
 - replay may remain compatibility-backed in this wave, but replay mismatches must compare normalized or semantic envelope references rather than raw path-string drift
 - any manifest or dependency-edge changes required to complete the seam belong to the same wave slice that owns that architectural cutover
 
-### Wave 13: Runtime Breakup And Executor Boundary
+### Wave 13: Scheduler Authority And Serial Lease Enforcement
 
 Primary goal:
 
-- separate orchestration, supervision, executor wiring, and result collection
+- land canonical scheduler claims, leases, budgets, and reducer-visible ownership state
 
 Must be true at closure:
 
-- queue and retry policy no longer live inside the process supervisor
-- Codex-specific behavior is isolated to the Codex adapter
-- launcher code coordinates engines instead of owning all semantics itself
-- launcher flow can stop after implementation slices, run post-agent verification gates, and refuse to advance on a broken source workspace
-- ownership or dependency-edge blockers discovered during a slice are surfaced as typed wave blockers, not reduced to generic missing-marker failures
+- readiness is no longer treated as ownership
+- concurrent local launchers cannot admit the same wave twice before execution starts
+- live leases renew and expire through canonical scheduler events and surface through reducer-backed projections
+- full parallel-wave execution and per-wave worktree mutation are still explicitly out of scope
 
-### Wave 14: Task Graph And Targeted Retry
+### Wave 14: True Parallel Execution And Worktree Isolation
 
 Primary goal:
 
-- introduce stable task identities
-- make reruns task-targeted
-- make retry reuse and invalidation deterministic
+- admit more than one non-conflicting wave concurrently
+- isolate each active parallel wave in its own worktree
+- capture merge discipline and protected closure capacity as scheduler-visible state
 
 Must be true at closure:
 
-- retry plans are explainable from reducer state
-- reruns do not require whole-wave restarts by default
-- `owned_slice_proven` is distinct from final wave closure
+- at least two non-conflicting waves can run concurrently without sharing one mutable worktree
+- merge and promotion state are explicit and durable
+- fairness or protected closure capacity is visible in scheduler-facing state rather than launcher folklore
 - mid-wave checkpoints can fail only the implicated owners and feed targeted retry scope
 - ownership-blocked architectural seams can target the exact owner or manifest slice that must rerun
 
-### Wave 15: Contradictions, Clarifications, And Human Input
+### Wave 15: Runtime Policy And Multi-Runtime Adapters
 
 Primary goal:
 
-- add first-class contradictions and fact lineage
+- add at least one non-Codex executor path on the new architecture
+- introduce runtime policy and adapter boundaries that keep runtime-specific semantics out of the core wave model
+- make skill resolution and projection runtime-aware after executor selection
+
+Must be true at closure:
+
+- the same wave declaration and reducer state can drive Codex and one additional runtime
+- runtime selection and fallback are explicit policy rather than launcher folklore
+- runtime-specific overlays do not leak into the reducer or declaration model
+- skill projection is recomputed after executor resolution and fallback
+
+### Wave 16: Decision Lineage, Invalidation, And Human Input
+
+Primary goal:
+
+- add first-class questions, assumptions, decisions, contradictions, and invalidation lineage
 - add clarification and human-input chains as durable workflow state
 - make integration closure block on unresolved material conflicts
 
 Must be true at closure:
 
-- integration summaries can cite specific contradictory facts
-- closure state can explain why reconciliation is blocked
-- self-host runs can record contradiction-aware repair loops
+- question, assumption, and decision lineage can reopen or block the correct downstream wave
+- integration summaries can cite specific contradictory facts and unresolved assumptions
+- closure state can explain why reconciliation or human input is blocked
 - clarification routing and escalation stay inside durable workflow state
 - doc, component, and implementation mismatches can be persisted as contradictions instead of remaining review-only notes
 
-### Wave 16: Trace V2 And Replay Ratification
+### Wave 17: Portfolio, Release, And Acceptance Packages
 
 Primary goal:
 
-- make replay reducer-driven
-- replace the current v1 run-record-centered trace shape with attempt-scoped trace bundles and launch previews
-- treat historical traces as regression fixtures
+- add initiative, portfolio, release, and acceptance-package state above waves
+- make ship or no-ship evidence explicit delivery truth instead of summary prose
+- keep rollout readiness, known risks, and outstanding debt durable
 
 Must be true at closure:
 
-- replay compares stored outcomes against recomputed reducer and gate state
-- artifact presence alone is not considered sufficient replay proof
-- replay mismatches distinguish semantic divergence from storage-format-only path drift
-- regression fixtures cover success, failure, rerun, and contradiction paths
-- replay evidence can explain mismatches in projection state and gate outcomes, not just missing artifacts
-
-### Wave 17: Runtime Plurality And Skill Projection
-
-Primary goal:
-
-- add at least one non-Codex executor path on the new architecture
-- make skill resolution and projection runtime-aware without changing the higher-level wave contract
-- preserve executor-native settings behind the adapter seam
-
-Must be true at closure:
-
-- the same wave declaration and reducer state can drive Codex and one additional runtime
-- runtime-specific overlays do not leak into the reducer or declaration model
-- skill projection is recomputed after executor resolution and fallback
+- one initiative or release object can aggregate multiple waves into a coherent delivery state
+- release state explains outstanding blockers, risks, and debt rather than inferring readiness from wave completion alone
+- acceptance packages connect machine-readable evidence and human sign-off to ship decisions
+- operator surfaces can distinguish wave success from release readiness
 
 ### Wave 18: Backend Boundary And 0.2 Cutover
 

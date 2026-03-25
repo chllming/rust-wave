@@ -408,7 +408,7 @@ The intended self-host loop for this repository is the same one the code already
 6. `wave control show --wave <id> --json`, `wave control proof show --wave <id> --json`, `wave control task list --wave <id> --json`, `wave trace latest --json`, and `wave trace replay --json` expose queue, proof, and trace evidence for the latest relevant run. Proof state is recomputed from the current stored result envelopes first, with compatibility run records used only through the explicit `wave-results` legacy adapter while `wave-trace` stays limited to persisted envelope loading and replay over compatibility-backed artifacts with normalized envelope references.
 7. `wave` on an interactive terminal shows the same state in the built-in TUI.
 
-This is dogfood evidence, not a claim that live-host deployment, remote fleet control, or a separate dashboard product has landed. Wave 13 is still the planned home for mandatory post-agent gates and the launcher-side stop-and-check discipline that should run after each implementation slice.
+This is dogfood evidence, not a claim that live-host deployment, remote fleet control, or a separate dashboard product has landed. Wave 13 is now the landed scheduler-authority and serial lease-enforcement checkpoint. True parallel-wave execution and per-wave worktree isolation remain future work in Wave 14-class follow-through.
 
 ## Narrow-Terminal Fallback
 

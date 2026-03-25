@@ -7,9 +7,15 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::BufRead;
 use std::io::BufReader;
+use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::thread;
+use std::time::Duration;
+use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 use wave_config::DEFAULT_STATE_EVENTS_CONTROL_DIR;
 use wave_config::DEFAULT_STATE_EVENTS_SCHEDULER_DIR;
 use wave_domain::AttemptId;
@@ -24,6 +30,89 @@ const CONTROL_LOG_FILE_PREFIX: &str = "wave-";
 const CONTROL_LOG_FILE_SUFFIX: &str = ".jsonl";
 pub const SCHEDULER_EVENT_SCHEMA_VERSION: u32 = 1;
 pub const SCHEDULER_LOG_FILE_NAME: &str = "scheduler.jsonl";
+const SCHEDULER_LOCK_RETRY_DELAY_MS: u64 = 50;
+const SCHEDULER_LOCK_TIMEOUT_MS: u64 = 10_000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SchedulerMutationLockMetadata {
+    pid: u32,
+    process_started_at_ms: Option<u128>,
+    acquired_at_ms: u128,
+}
+
+#[derive(Debug)]
+pub struct SchedulerMutationLock {
+    path: PathBuf,
+    metadata: SchedulerMutationLockMetadata,
+}
+
+impl SchedulerMutationLock {
+    pub fn acquire(path: impl Into<PathBuf>) -> Result<Self> {
+        let path = path.into();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        let started = Instant::now();
+        loop {
+            let metadata = SchedulerMutationLockMetadata {
+                pid: std::process::id(),
+                process_started_at_ms: current_process_started_at_ms(),
+                acquired_at_ms: unix_epoch_ms(),
+            };
+            match try_acquire_scheduler_mutation_lock(&path, &metadata) {
+                Ok(()) => {
+                    return Ok(Self { path, metadata });
+                }
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                    if scheduler_mutation_lock_is_stale(&path) {
+                        match fs::remove_file(&path) {
+                            Ok(()) => continue,
+                            Err(remove_error) if remove_error.kind() == ErrorKind::NotFound => {}
+                            Err(remove_error) => {
+                                return Err(remove_error).with_context(|| {
+                                    format!(
+                                        "failed to remove stale scheduler lock {}",
+                                        path.display()
+                                    )
+                                });
+                            }
+                        }
+                    }
+                    if started.elapsed() > Duration::from_millis(SCHEDULER_LOCK_TIMEOUT_MS) {
+                        anyhow::bail!(
+                            "timed out waiting for scheduler mutation lock {}",
+                            path.display()
+                        );
+                    }
+                    thread::sleep(Duration::from_millis(SCHEDULER_LOCK_RETRY_DELAY_MS));
+                }
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to acquire {}", path.display()));
+                }
+            }
+        }
+    }
+}
+
+impl Drop for SchedulerMutationLock {
+    fn drop(&mut self) {
+        let current = read_scheduler_mutation_lock_metadata(&self.path).ok();
+        if current.as_ref() != Some(&self.metadata) {
+            return;
+        }
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+pub fn with_scheduler_mutation_lock<T>(
+    path: impl Into<PathBuf>,
+    f: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let _lock = SchedulerMutationLock::acquire(path)?;
+    f()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -654,9 +743,95 @@ fn scheduler_owner_session_id(event: &SchedulerEvent) -> Option<&str> {
     }
 }
 
+fn try_acquire_scheduler_mutation_lock(
+    path: &Path,
+    metadata: &SchedulerMutationLockMetadata,
+) -> std::io::Result<()> {
+    let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
+    serde_json::to_writer(&mut file, metadata).map_err(std::io::Error::other)?;
+    file.write_all(b"\n")?;
+    Ok(())
+}
+
+fn read_scheduler_mutation_lock_metadata(path: &Path) -> Result<SchedulerMutationLockMetadata> {
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_str(raw.trim()).with_context(|| {
+        format!(
+            "failed to parse scheduler mutation lock metadata {}",
+            path.display()
+        )
+    })
+}
+
+fn scheduler_mutation_lock_is_stale(path: &Path) -> bool {
+    let Ok(metadata) = read_scheduler_mutation_lock_metadata(path) else {
+        return false;
+    };
+    if !process_is_alive(metadata.pid) {
+        return true;
+    }
+    match (
+        metadata.process_started_at_ms,
+        process_started_at_ms(metadata.pid),
+    ) {
+        (Some(expected), Some(observed)) => expected.abs_diff(observed) > 1_000,
+        _ => false,
+    }
+}
+
+fn unix_epoch_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn current_process_started_at_ms() -> Option<u128> {
+    process_started_at_ms(std::process::id())
+}
+
+#[cfg(target_os = "linux")]
+fn process_is_alive(pid: u32) -> bool {
+    Path::new("/proc").join(pid.to_string()).exists()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_is_alive(_pid: u32) -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn process_started_at_ms(pid: u32) -> Option<u128> {
+    let stat = fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("stat")).ok()?;
+    let close_paren = stat.rfind(')')?;
+    let remainder = stat.get(close_paren + 2..)?;
+    let fields = remainder.split_whitespace().collect::<Vec<_>>();
+    let start_ticks = fields.get(19)?.parse::<u128>().ok()?;
+    let ticks_per_second = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if ticks_per_second <= 0 {
+        return None;
+    }
+    let ticks_per_second = u128::try_from(ticks_per_second).ok()?;
+    let uptime = fs::read_to_string("/proc/uptime").ok()?;
+    let uptime_secs = uptime.split_whitespace().next()?.parse::<f64>().ok()?;
+    let uptime_ms = (uptime_secs * 1000.0) as u128;
+    let boot_time_ms = unix_epoch_ms().checked_sub(uptime_ms)?;
+    Some(boot_time_ms + (start_ticks * 1000 / ticks_per_second))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_started_at_ms(_pid: u32) -> Option<u128> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+    use std::time::Instant;
     use std::time::SystemTime;
     use std::time::UNIX_EPOCH;
     use wave_domain::AttemptRecord;
@@ -792,6 +967,8 @@ mod tests {
             runtime: Some("codex".to_string()),
             executor: Some("codex".to_string()),
             session_id: Some("wave-13-run".to_string()),
+            process_id: None,
+            process_started_at_ms: None,
         };
         let claim = WaveClaimRecord {
             claim_id: WaveClaimId::new("claim-wave-13"),
@@ -884,6 +1061,8 @@ mod tests {
                 runtime: Some("codex".to_string()),
                 executor: Some("codex".to_string()),
                 session_id: Some("budget-bootstrap".to_string()),
+                process_id: None,
+                process_started_at_ms: None,
             },
             updated_at_ms: 1,
             detail: Some("default serial budget".to_string()),
@@ -900,6 +1079,37 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, SchedulerEventKind::SchedulerBudgetUpdated);
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scheduler_mutation_lock_serializes_concurrent_writers() {
+        let root = temp_root("scheduler-lock");
+        let lock_path = root.join(".wave/state/derived/scheduler/mutation.lock");
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let first_lock_path = lock_path.clone();
+        let first = thread::spawn(move || {
+            let _lock = SchedulerMutationLock::acquire(first_lock_path).expect("first lock");
+            entered_tx.send(()).expect("entered");
+            release_rx.recv().expect("release");
+        });
+
+        entered_rx.recv().expect("first lock entered");
+        let second_lock_path = lock_path.clone();
+        let second = thread::spawn(move || {
+            let started = Instant::now();
+            let _lock = SchedulerMutationLock::acquire(second_lock_path).expect("second lock");
+            started.elapsed()
+        });
+
+        thread::sleep(Duration::from_millis(100));
+        release_tx.send(()).expect("release first");
+        let waited = second.join().expect("join second");
+        first.join().expect("join first");
+
+        assert!(waited >= Duration::from_millis(100));
         let _ = fs::remove_dir_all(root);
     }
 

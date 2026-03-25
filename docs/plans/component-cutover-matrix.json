@@ -33,8 +33,8 @@
         "proof-lifecycle-spine",
         "envelope-first-closure"
       ],
-      "nextExecutableWave": 13,
-      "nextWork": "Break up runtime orchestration and add mandatory post-agent gate foundations in Wave 13; Wave 14 adds targeted mid-wave checkpoints and retry, and Wave 19 adds planner-emitted invariants plus staged gate plans.",
+      "nextExecutableWave": 14,
+      "nextWork": "Wave 13 landed scheduler authority with exclusive local claim admission and heartbeat-backed lease enforcement while remaining serial; Wave 14 adds true parallel-wave execution plus per-wave worktree isolation, Wave 15 adds runtime policy and multi-runtime adapters, and Wave 19 adds planner-emitted invariants plus staged gate plans.",
       "promotionScopeNote": "Queue/control truth remains reducer-backed over compatibility run records; gate verdict helpers and launcher substrate consume the landed result-envelope boundary but keep their existing levels.",
       "remainingCompatibilityBoundary": "Replay ratification still depends on compatibility run and trace artifacts, legacy attempts still use explicit compatibility adapters, and structured result envelopes are not yet the universal reducer/control authority.",
       "qaClosure": "Wave 12 cont-QA closure is owned by A0 and is not claimed by the component matrix."

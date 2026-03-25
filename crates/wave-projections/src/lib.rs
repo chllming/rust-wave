@@ -2106,6 +2106,8 @@ mod tests {
             runtime: Some("codex".to_string()),
             executor: Some("codex".to_string()),
             session_id: Some(session_id.to_string()),
+            process_id: None,
+            process_started_at_ms: None,
         }
     }
 

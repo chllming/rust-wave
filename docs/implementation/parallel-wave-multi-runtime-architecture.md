@@ -38,7 +38,7 @@ The main gap is runtime behavior. The live runtime is still effectively:
 - one selected wave at a time
 - one agent at a time
 - Codex-only
-- readiness-driven rather than lease-driven
+- scheduler-enforced and lease-aware, but still serial rather than truly parallel
 
 So the target architecture should not be “make the current launcher slightly smarter.”
 
@@ -140,6 +140,29 @@ Projections should render:
 - operator actions
 
 The TUI, CLI, and app-server should remain consumers of that projection spine.
+
+## 6. Isolate execution per parallel wave
+
+True parallel implementation waves need filesystem isolation.
+
+The isolation unit should be:
+
+- one worktree per active parallel wave
+
+It should **not** be:
+
+- one worktree per agent
+
+Agents participating in the same wave should share that wave-local worktree so they are collaborating on one coherent wave state, while different active waves stay isolated from one another.
+
+That implies the target architecture needs:
+
+- a wave-scoped worktree/workspace manager
+- wave-local temp state and artifacts
+- explicit merge and integration handling back into the main line
+- conflict detection before closure
+
+Without wave-level workspace isolation, true parallel waves are operationally unsafe even if claims and leases exist on paper.
 
 ## The Intended End-State Model
 
@@ -344,6 +367,12 @@ Within a wave, tasks should only run in parallel if:
 
 Design/spec/product tasks may run in parallel where ownership and artifacts do not overlap. Synthesis, integration, documentation, QA, and rollout closure remain phase-gated.
 
+Across waves, the scheduler should assume:
+
+- each active parallel wave gets its own isolated worktree
+- agents inside that wave operate against the same wave-local filesystem view
+- merge or promotion back to the shared line is an explicit step, not an accidental side effect of concurrent root-workspace edits
+
 ## Result And Gate Model
 
 The current result-envelope direction is correct, but it should be generalized beyond marker-driven closure.
@@ -441,6 +470,131 @@ Then runtime projection should happen after executor choice:
 
 This is the right place to share one planning/skills model across both runtimes.
 
+## Portfolio And Release Layer
+
+Waves are necessary, but they are not sufficient for a real product-delivery harness.
+
+The architecture also needs a layer above waves that can answer:
+
+- what customer or product outcome is being delivered
+- which waves belong to that outcome
+- what is on the critical path
+- what can slip
+- what is the ship or no-ship decision
+
+That suggests first-class portfolio concepts such as:
+
+- `Initiative`
+- `Milestone`
+- `ReleaseTrain`
+- `OutcomeContract`
+- `DeliveryPacket`
+
+This is the layer that turns a strong coding harness into a real delivery harness.
+
+## Ownership Beyond File Paths
+
+Owned paths are necessary, but not sufficient for safe full-cycle delivery.
+
+The scheduler and reducer should eventually reason about richer ownership scopes such as:
+
+- `path`
+- `component`
+- `api_contract`
+- `schema`
+- `env`
+- `decision`
+- `product_surface`
+
+Parallel-wave admission should use these scopes, not only file overlap.
+
+## Dependency And Handshake Model
+
+A product-delivery harness also needs explicit external dependency handling.
+
+That means durable state for concepts such as:
+
+- `DependencyTicket`
+- `HandshakeRequest`
+- `InboundDependency`
+- `OutboundDependency`
+
+These should support due dates, escalation rules, and blocking semantics so external coordination does not collapse back into markdown notes.
+
+## Runtime Policy Engine
+
+Runtime plurality needs a policy layer, not only sibling adapters.
+
+Between the scheduler and the runtime adapters, the architecture should have explicit policy for:
+
+- runtime selection
+- cost budgets
+- privacy constraints
+- sandbox requirements
+- concurrency budgets per runtime
+- fallback order
+- capability floors
+- allowed tools
+
+That implies a policy layer with concepts such as:
+
+- `ExecutionPolicy`
+- `RuntimeSelectionPolicy`
+- `CostBudget`
+- `SandboxPolicy`
+- `PrivacyPolicy`
+- `FallbackPolicy`
+
+This keeps multi-runtime execution from becoming ad hoc adapter choice.
+
+## Acceptance Packages
+
+Gates and result envelopes are necessary, but product delivery also needs an artifact above them:
+
+- an `AcceptancePackage`
+- a `ShipDecision`
+- a `KnownRiskSet`
+- an `OutstandingDebtSet`
+
+This is the durable answer to:
+
+- why did we think this was ready to ship
+- what evidence supported that
+- what debt or risk remained open
+
+## Invalidation And Supersession
+
+Design-first delivery needs explicit invalidation semantics.
+
+The reducer should eventually be able to answer:
+
+- what changed
+- which downstream waves are now degraded
+- which proofs remain reusable
+- which acceptance packages are superseded
+- which leases or claims must be revoked
+
+That means first-class supersession and invalidation state, not just operator judgment after the fact.
+
+## Phase Proof Ladder
+
+Every major phase needs live proof, not only code tests.
+
+The intended ladder should be:
+
+1. scheduler and lease authority
+   live proof: ready versus claimed versus released, lease visibility, wave-local worktree reservation
+2. runtime policy and plurality
+   live proof: the same wave contract exercised through Codex and Claude or a fixture-backed equivalent, with runtime identity preserved in projections
+3. question, decision, contradiction, and invalidation flow
+   live proof: upstream ambiguity or superseded decisions reopening the right downstream work and invalidating the right proofs
+4. portfolio, release, and acceptance packages
+   live proof: one initiative or release aggregating multiple waves into a coherent ship/no-ship state
+5. true parallel-wave execution
+   live proof: two non-conflicting waves active concurrently in separate worktrees, merge state captured explicitly, and scheduler fairness visible to operators
+
+Until a phase has both deterministic tests and this kind of repo-local live proof, it should not be described as landed.
+
 ## End-to-End Full-Cycle Flow
 
 The intended flow should look like this:
@@ -449,7 +603,7 @@ The intended flow should look like this:
 2. the scheduler admits parallel design waves such as spec, architecture, product, and ops where ownership allows it
 3. the reducer tracks facts, decisions, contradictions, questions, and design completeness
 4. a synthesis gate produces implementation-ready packets with ownership and acceptance criteria
-5. implementation waves run in parallel where dependencies, ownership, and budget allow it
+5. implementation waves run in parallel where dependencies, ownership, budget, and wave-level worktree isolation allow it
 6. integration, verification, QA, docs, and rollout-hardening close the loop
 7. if implementation exposes ambiguity, the scheduler reopens the relevant upstream design wave and blocks or degrades dependent work accordingly
 
@@ -482,6 +636,12 @@ Useful full-cycle operator actions include:
 - inspect overlap or contention
 - admit downstream implementation waves
 
+Useful operator visibility should also include:
+
+- which worktree a wave currently owns
+- whether the wave-local branch/worktree is clean, conflicted, or merge-blocked
+- whether closure is blocked on merge or integration reconciliation
+
 These remain projection-driven control actions, not local planning logic inside the TUI.
 
 ## Current-State Gap Summary
@@ -501,6 +661,7 @@ The live behavior still falls short in four ways:
 3. multi-runtime execution is not yet live in Rust
 4. the domain is richer than the runtime currently exercises
 5. the live harness is still implementation-first operationally, not yet a true full-cycle design-to-hardening system
+6. execution isolation for true parallel waves is not yet modeled as one worktree per active wave
 
 ## Non-Goals
 
@@ -519,11 +680,12 @@ The repo should describe the path forward in this order:
 
 1. repair research and architecture docs so live and target-state boundaries are explicit
 2. align the target architecture with the full-cycle wave model so design/spec/product loops, implementation, and hardening all live on the same substrate
-3. document the scheduler-plus-lease model as the missing foundation for parallel waves
-4. split launcher, supervisor, and executor concerns in the architecture
-5. document Codex and Claude as sibling adapters behind one runtime-neutral planner/reducer model
-6. document late-bound runtime skill projection as the shared abstraction for planning and skills
-7. keep post-slice gates and targeted retry as mandatory design rules for future runtime work
+3. document wave-level worktree isolation as a hard requirement for safe parallel execution
+4. document the scheduler-plus-lease model as the missing foundation for parallel waves
+5. split launcher, supervisor, and executor concerns in the architecture
+6. document Codex and Claude as sibling adapters behind one runtime-neutral planner/reducer model
+7. document late-bound runtime skill projection as the shared abstraction for planning and skills
+8. keep post-slice gates and targeted retry as mandatory design rules for future runtime work
 
 ## Validation And Proof Expectations
 

@@ -187,6 +187,8 @@ pub struct SchedulerOwner {
     pub runtime: Option<String>,
     pub executor: Option<String>,
     pub session_id: Option<String>,
+    pub process_id: Option<u32>,
+    pub process_started_at_ms: Option<u128>,
 }
 
 impl SchedulerOwner {
@@ -1511,6 +1513,8 @@ mod tests {
             runtime: Some("codex".to_string()),
             executor: Some("codex".to_string()),
             session_id: Some("wave-13-run".to_string()),
+            process_id: None,
+            process_started_at_ms: None,
         };
         assert_eq!(owner.display_label(), "wave-runtime/codex");
         assert!(WaveClaimState::Held.is_held());

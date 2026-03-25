@@ -1,130 +1,189 @@
 {
   "phase": "phase-1-scheduler-authority",
-  "queue": {
-    "next_ready_wave_ids": [20],
-    "next_ready_wave_id": 20,
-    "claimable_wave_ids": [20],
-    "claimed_wave_ids": [21, 23],
-    "ready_wave_count": 1,
-    "claimed_wave_count": 2,
-    "active_wave_count": 1,
-    "blocked_wave_count": 0,
-    "completed_wave_count": 0,
-    "queue_ready": true,
-    "queue_ready_reason": "ready waves are available to claim"
-  },
-  "waves": [
-    {
-      "id": 20,
-      "slug": "ready-unclaimed",
-      "readiness": {
-        "state": "ready",
-        "planning_ready": true,
-        "claimable": true
+  "scenarios": {
+    "ready_unclaimed": {
+      "queue": {
+        "claimable_wave_ids": [20],
+        "claimed_wave_ids": [],
+        "queue_ready": true,
+        "queue_ready_reason": "ready waves are available to claim"
       },
-      "ownership": {
-        "claim": null,
-        "active_leases": [],
-        "stale_leases": [],
-        "contention_reasons": []
+      "wave": {
+        "id": 20,
+        "slug": "ready-unclaimed",
+        "readiness": {
+          "state": "ready",
+          "planning_ready": true,
+          "claimable": true
+        },
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": []
+        }
       }
     },
-    {
-      "id": 21,
-      "slug": "claimed-only",
-      "readiness": {
-        "state": "claimed",
-        "planning_ready": true,
-        "claimable": false
+    "claimed_and_nonclaimable": {
+      "queue": {
+        "claimable_wave_ids": [],
+        "claimed_wave_ids": [21],
+        "queue_ready": false,
+        "queue_ready_reason": "ready waves are blocked by scheduler ownership or budget"
       },
-      "blocked_by": [
-        "ownership:claimed-by:wave-runtime/codex"
-      ],
-      "ownership": {
-        "claim": {
-          "claim_id": "claim-wave-21",
-          "owner": {
-            "scheduler_path": "wave-runtime/codex",
-            "session_id": "wave-21-run"
-          }
+      "wave": {
+        "id": 21,
+        "slug": "claimed-only",
+        "readiness": {
+          "state": "claimed",
+          "planning_ready": true,
+          "claimable": false
         },
-        "active_leases": [],
-        "stale_leases": [],
-        "contention_reasons": []
-      }
-    },
-    {
-      "id": 22,
-      "slug": "active-with-lease",
-      "readiness": {
-        "state": "active",
-        "planning_ready": true,
-        "claimable": false
-      },
-      "ownership": {
-        "claim": {
-          "claim_id": "claim-wave-22",
-          "owner": {
-            "scheduler_path": "wave-runtime/codex",
-            "session_id": "wave-22-run"
-          }
-        },
-        "active_leases": [
-          {
-            "lease_id": "lease-wave-22-a1",
-            "task_id": "wave-22:agent-a1",
-            "state": "granted",
-            "stale": false,
-            "owner": {
-              "session_id": "wave-22-run"
-            }
-          }
+        "blocked_by": [
+          "ownership:claimed-by:wave-runtime/codex"
         ],
-        "stale_leases": [],
-        "contention_reasons": []
+        "ownership": {
+          "claim": {
+            "claim_id": "claim-wave-21-wave-21-run",
+            "owner": {
+              "scheduler_path": "wave-runtime/codex",
+              "session_id": "wave-21-run",
+              "process_id": 4242
+            }
+          },
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": []
+        }
       }
     },
-    {
-      "id": 23,
-      "slug": "claimed-stale-lease",
-      "readiness": {
-        "state": "claimed",
-        "planning_ready": true,
-        "claimable": false
+    "active_with_live_lease": {
+      "queue": {
+        "claimable_wave_ids": [],
+        "claimed_wave_ids": [30],
+        "queue_ready": false,
+        "queue_ready_reason": "ready waves are blocked by scheduler ownership or budget"
       },
-      "blocked_by": [
-        "ownership:claimed-by:wave-runtime/codex",
-        "lease-expired:wave-23:agent-a1:expired"
-      ],
-      "ownership": {
-        "claim": {
-          "claim_id": "claim-wave-23",
-          "owner": {
-            "scheduler_path": "wave-runtime/codex",
-            "session_id": "wave-23-run"
-          }
+      "wave": {
+        "id": 30,
+        "slug": "active-with-live-lease",
+        "readiness": {
+          "state": "active",
+          "planning_ready": true,
+          "claimable": false
         },
-        "active_leases": [],
-        "stale_leases": [
-          {
-            "lease_id": "lease-wave-23-a1",
-            "task_id": "wave-23:agent-a1",
-            "state": "expired",
-            "stale": true,
+        "ownership": {
+          "claim": {
+            "claim_id": "claim-wave-30-wave-30-run",
             "owner": {
-              "session_id": "wave-23-run"
+              "scheduler_path": "wave-runtime/codex",
+              "session_id": "wave-30-run",
+              "process_id": 4242
             }
-          }
+          },
+          "active_leases": [
+            {
+              "lease_id": "lease-wave-30-a1",
+              "task_id": "wave-30:agent-a1",
+              "state": "granted",
+              "heartbeat_at_ms": 21,
+              "expires_at_ms": 41,
+              "stale": false,
+              "owner": {
+                "session_id": "wave-30-run",
+                "process_id": 4242
+              }
+            }
+          ],
+          "stale_leases": [],
+          "contention_reasons": []
+        }
+      }
+    },
+    "expired_lease": {
+      "queue": {
+        "claimable_wave_ids": [],
+        "claimed_wave_ids": [31],
+        "queue_ready": false,
+        "queue_ready_reason": "ready waves are blocked by scheduler ownership or budget"
+      },
+      "wave": {
+        "id": 31,
+        "slug": "expired-lease",
+        "readiness": {
+          "state": "claimed",
+          "planning_ready": true,
+          "claimable": false
+        },
+        "blocked_by": [
+          "ownership:claimed-by:wave-runtime/codex",
+          "lease-expired:wave-31:agent-a1:expired"
         ],
-        "contention_reasons": []
+        "ownership": {
+          "claim": {
+            "claim_id": "claim-wave-31-wave-31-run",
+            "owner": {
+              "scheduler_path": "wave-runtime/codex",
+              "session_id": "wave-31-run",
+              "process_id": 4242
+            }
+          },
+          "active_leases": [],
+          "stale_leases": [
+            {
+              "lease_id": "lease-wave-31-a1",
+              "task_id": "wave-31:agent-a1",
+              "state": "expired",
+              "heartbeat_at_ms": 61,
+              "expires_at_ms": 61,
+              "stale": true,
+              "owner": {
+                "session_id": "wave-31-run",
+                "process_id": 4242
+              }
+            }
+          ],
+          "contention_reasons": []
+        }
+      }
+    },
+    "budget_blocked": {
+      "queue": {
+        "claimable_wave_ids": [],
+        "claimed_wave_ids": [30],
+        "queue_ready": false,
+        "queue_ready_reason": "ready waves are blocked by scheduler ownership or budget"
+      },
+      "wave": {
+        "id": 32,
+        "slug": "budget-blocked",
+        "readiness": {
+          "state": "blocked",
+          "planning_ready": true,
+          "claimable": false
+        },
+        "blocked_by": [
+          "budget:wave-claims:1/1"
+        ],
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "budget": {
+            "max_active_wave_claims": 1,
+            "active_wave_claims": 1,
+            "budget_blocked": true
+          }
+        }
       }
     }
-  ],
+  },
   "notes": [
-    "wave 20 is ready without being claimed",
-    "wave 21 is claimed and therefore absent from claimable_wave_ids",
-    "wave 22 is active because a live lease exists",
-    "wave 23 exposes an expired lease through ownership and blocker state",
-    "release semantics are represented in scheduler-events.jsonl for wave 30"
+    "ready waves remain distinct from claimed waves",
+    "a held claim removes a wave from claimable admission before execution starts",
+    "live leases carry heartbeat and expiry timestamps",
+    "expired leases remain projection-visible as stale ownership state",
+    "scheduler capacity can block a planning-ready wave without pretending it is owned"
   ]
 }

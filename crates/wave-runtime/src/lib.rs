@@ -15,11 +15,16 @@ use std::collections::HashSet;
 use std::env;
 use std::fmt;
 use std::fs;
+use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Child;
 use std::process::Command;
+use std::process::ExitStatus;
 use std::process::Stdio;
+use std::thread;
+use std::time::Duration;
 use wave_config::ProjectConfig;
 use wave_control_plane::PlanningStatus;
 use wave_domain::AttemptId;
@@ -119,6 +124,33 @@ pub struct AutonomousOptions {
     pub dry_run: bool,
 }
 
+const DEFAULT_LEASE_HEARTBEAT_INTERVAL_MS: u64 = 5_000;
+const DEFAULT_LEASE_TTL_MS: u64 = 20_000;
+const DEFAULT_AGENT_POLL_INTERVAL_MS: u64 = 250;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LeaseTiming {
+    heartbeat_interval_ms: u64,
+    ttl_ms: u64,
+    poll_interval_ms: u64,
+}
+
+impl Default for LeaseTiming {
+    fn default() -> Self {
+        Self {
+            heartbeat_interval_ms: DEFAULT_LEASE_HEARTBEAT_INTERVAL_MS,
+            ttl_ms: DEFAULT_LEASE_TTL_MS,
+            poll_interval_ms: DEFAULT_AGENT_POLL_INTERVAL_MS,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ExecutedAgent {
+    record: AgentRunRecord,
+    lease: TaskLeaseRecord,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AutonomousQueueDecision {
     pub selected: Option<AutonomousWaveSelection>,
@@ -202,6 +234,20 @@ impl LaunchPreflightError {
         &self.report
     }
 }
+
+#[derive(Debug)]
+struct SchedulerAdmissionError {
+    wave_id: u32,
+    detail: String,
+}
+
+impl fmt::Display for SchedulerAdmissionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "wave {} is not claimable: {}", self.wave_id, self.detail)
+    }
+}
+
+impl std::error::Error for SchedulerAdmissionError {}
 
 pub fn codex_binary_available() -> bool {
     Command::new("codex")
@@ -437,7 +483,7 @@ pub fn select_wave<'a>(
             .with_context(|| format!("missing status entry for wave {}", wave_id))?;
         if !is_claimable_wave(status, wave_id) {
             bail!(
-                "wave {} is not ready: {}",
+                "wave {} is not claimable: {}",
                 wave_id,
                 queue_entry_reason(entry)
             );
@@ -573,17 +619,6 @@ pub fn launch_wave(
     if !codex_binary_available() {
         bail!("codex binary is not available on PATH");
     }
-    ensure_default_scheduler_budget(root, config)?;
-    let refreshed_status = refresh_planning_status(root, config, waves)?;
-    if !is_claimable_wave(&refreshed_status, wave.metadata.id) {
-        let detail = refreshed_status
-            .waves
-            .iter()
-            .find(|entry| entry.id == wave.metadata.id)
-            .map(queue_entry_reason)
-            .unwrap_or_else(|| refreshed_status.queue.queue_ready_reason.clone());
-        bail!("wave {} is not claimable: {detail}", wave.metadata.id);
-    }
 
     let codex_home = bootstrap_project_codex_home(root, config)?;
     fs::create_dir_all(trace_runs_dir(root, config)).with_context(|| {
@@ -600,7 +635,7 @@ pub fn launch_wave(
     })?;
 
     let created_at_ms = now_epoch_ms()?;
-    let claim = acquire_wave_claim(root, config, wave, &run_id, created_at_ms)?;
+    let claim = claim_wave_for_launch(root, config, waves, wave, &run_id, created_at_ms)?;
     let launcher_pid = std::process::id();
     let mut record = WaveRunRecord {
         run_id: run_id.clone(),
@@ -659,8 +694,9 @@ pub fn launch_wave(
     }
 
     let execution_agents = ordered_agents(wave);
+    let lease_timing = LeaseTiming::default();
     for (index, agent) in execution_agents.iter().enumerate() {
-        let lease = match grant_task_lease(root, config, &record, agent, &claim) {
+        let lease = match grant_task_lease(root, config, &record, agent, &claim, lease_timing) {
             Ok(lease) => lease,
             Err(error) => {
                 return finish_failed_launch(
@@ -673,8 +709,6 @@ pub fn launch_wave(
                     &mut record,
                     agent,
                     index,
-                    &claim,
-                    None,
                     error,
                 );
             }
@@ -722,21 +756,22 @@ pub fn launch_wave(
                         &mut record,
                         agent,
                         index,
-                        &claim,
-                        Some(&lease),
                         error,
                     );
                 }
             };
-        let agent_record = match execute_agent(
+        let (agent_record, lease) = match execute_agent(
             root,
+            config,
             &record,
             agent,
             &record.agents[index],
             &prompt,
             &codex_home,
+            &lease,
+            lease_timing,
         ) {
-            Ok(agent_record) => agent_record,
+            Ok(execution) => (execution.record, execution.lease),
             Err(error) => {
                 return finish_failed_launch(
                     root,
@@ -748,8 +783,6 @@ pub fn launch_wave(
                     &mut record,
                     agent,
                     index,
-                    &claim,
-                    Some(&lease),
                     error,
                 );
             }
@@ -768,8 +801,6 @@ pub fn launch_wave(
                         &mut record,
                         agent,
                         index,
-                        &claim,
-                        Some(&lease),
                         error,
                     );
                 }
@@ -792,8 +823,6 @@ pub fn launch_wave(
                     &mut record,
                     agent,
                     index,
-                    &claim,
-                    Some(&lease),
                     error,
                 );
             }
@@ -875,7 +904,7 @@ pub fn autonomous_launch(
         }
 
         let wave_id = selection.wave_id;
-        let report = launch_wave(
+        let report = match launch_wave(
             root,
             config,
             waves,
@@ -884,7 +913,18 @@ pub fn autonomous_launch(
                 wave_id: Some(wave_id),
                 dry_run: options.dry_run,
             },
-        )?;
+        ) {
+            Ok(report) => report,
+            Err(error)
+                if error
+                    .chain()
+                    .any(|cause| cause.downcast_ref::<SchedulerAdmissionError>().is_some()) =>
+            {
+                status = refresh_planning_status(root, config, waves)?;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         let failed = report.status == WaveRunStatus::Failed;
         launched.push(report);
 
@@ -1043,6 +1083,26 @@ fn scheduler_event_log(root: &Path, config: &ProjectConfig) -> SchedulerEventLog
     )
 }
 
+fn scheduler_mutation_lock_path(root: &Path, config: &ProjectConfig) -> PathBuf {
+    config
+        .resolved_paths(root)
+        .authority
+        .state_derived_dir
+        .join("scheduler")
+        .join("mutation.lock")
+}
+
+fn with_scheduler_mutation<T>(
+    root: &Path,
+    config: &ProjectConfig,
+    f: impl FnOnce(&SchedulerEventLog) -> Result<T>,
+) -> Result<T> {
+    let log = scheduler_event_log(root, config);
+    wave_events::with_scheduler_mutation_lock(scheduler_mutation_lock_path(root, config), || {
+        f(&log)
+    })
+}
+
 fn runtime_scheduler_owner(session_id: impl Into<String>) -> SchedulerOwner {
     SchedulerOwner {
         scheduler_id: "wave-runtime".to_string(),
@@ -1050,11 +1110,17 @@ fn runtime_scheduler_owner(session_id: impl Into<String>) -> SchedulerOwner {
         runtime: Some("codex".to_string()),
         executor: Some("codex".to_string()),
         session_id: Some(session_id.into()),
+        process_id: Some(std::process::id()),
+        process_started_at_ms: current_process_started_at_ms(),
     }
 }
 
+#[cfg(test)]
 fn ensure_default_scheduler_budget(root: &Path, config: &ProjectConfig) -> Result<()> {
-    let log = scheduler_event_log(root, config);
+    with_scheduler_mutation(root, config, ensure_default_scheduler_budget_in_log)
+}
+
+fn ensure_default_scheduler_budget_in_log(log: &SchedulerEventLog) -> Result<()> {
     if log
         .load_all()?
         .iter()
@@ -1074,7 +1140,8 @@ fn ensure_default_scheduler_budget(root: &Path, config: &ProjectConfig) -> Resul
         updated_at_ms: created_at_ms,
         detail: Some("default serial scheduler budget".to_string()),
     };
-    log.append(
+    append_scheduler_event_in_log(
+        log,
         &SchedulerEvent::new(
             format!("sched-budget-default-{created_at_ms}"),
             SchedulerEventKind::SchedulerBudgetUpdated,
@@ -1090,44 +1157,68 @@ fn append_scheduler_event(
     config: &ProjectConfig,
     event: SchedulerEvent,
 ) -> Result<()> {
-    scheduler_event_log(root, config).append(&event)
+    with_scheduler_mutation(root, config, |log| {
+        append_scheduler_event_in_log(log, &event)
+    })
 }
 
-fn acquire_wave_claim(
+fn append_scheduler_event_in_log(log: &SchedulerEventLog, event: &SchedulerEvent) -> Result<()> {
+    log.append(event)
+}
+
+fn claim_wave_for_launch(
     root: &Path,
     config: &ProjectConfig,
+    waves: &[WaveDocument],
     wave: &WaveDocument,
     run_id: &str,
     created_at_ms: u128,
 ) -> Result<WaveClaimRecord> {
-    let claim = WaveClaimRecord {
-        claim_id: WaveClaimId::new(format!("claim-wave-{:02}-{run_id}", wave.metadata.id)),
-        wave_id: wave.metadata.id,
-        state: WaveClaimState::Held,
-        owner: runtime_scheduler_owner(run_id),
-        claimed_at_ms: created_at_ms,
-        released_at_ms: None,
-        detail: Some(format!(
-            "wave {} claimed for runtime launch",
-            wave.metadata.id
-        )),
-    };
-    append_scheduler_event(
-        root,
-        config,
-        SchedulerEvent::new(
-            format!("sched-claim-acquired-{}-{created_at_ms}", wave.metadata.id),
-            SchedulerEventKind::WaveClaimAcquired,
-        )
-        .with_wave_id(wave.metadata.id)
-        .with_claim_id(claim.claim_id.clone())
-        .with_created_at_ms(created_at_ms)
-        .with_correlation_id(run_id.to_string())
-        .with_payload(SchedulerEventPayload::WaveClaimUpdated {
-            claim: claim.clone(),
-        }),
-    )?;
-    Ok(claim)
+    with_scheduler_mutation(root, config, |log| {
+        ensure_default_scheduler_budget_in_log(log)?;
+        let refreshed_status = refresh_planning_status(root, config, waves)?;
+        if !is_claimable_wave(&refreshed_status, wave.metadata.id) {
+            let detail = refreshed_status
+                .waves
+                .iter()
+                .find(|entry| entry.id == wave.metadata.id)
+                .map(queue_entry_reason)
+                .unwrap_or_else(|| refreshed_status.queue.queue_ready_reason.clone());
+            return Err(SchedulerAdmissionError {
+                wave_id: wave.metadata.id,
+                detail,
+            }
+            .into());
+        }
+
+        let claim = WaveClaimRecord {
+            claim_id: WaveClaimId::new(format!("claim-wave-{:02}-{run_id}", wave.metadata.id)),
+            wave_id: wave.metadata.id,
+            state: WaveClaimState::Held,
+            owner: runtime_scheduler_owner(run_id),
+            claimed_at_ms: created_at_ms,
+            released_at_ms: None,
+            detail: Some(format!(
+                "wave {} claimed for runtime launch",
+                wave.metadata.id
+            )),
+        };
+        append_scheduler_event_in_log(
+            log,
+            &SchedulerEvent::new(
+                format!("sched-claim-acquired-{}-{created_at_ms}", wave.metadata.id),
+                SchedulerEventKind::WaveClaimAcquired,
+            )
+            .with_wave_id(wave.metadata.id)
+            .with_claim_id(claim.claim_id.clone())
+            .with_created_at_ms(created_at_ms)
+            .with_correlation_id(run_id.to_string())
+            .with_payload(SchedulerEventPayload::WaveClaimUpdated {
+                claim: claim.clone(),
+            }),
+        )?;
+        Ok(claim)
+    })
 }
 
 fn release_wave_claim(
@@ -1168,6 +1259,7 @@ fn grant_task_lease(
     run: &WaveRunRecord,
     agent: &WaveAgent,
     claim: &WaveClaimRecord,
+    timing: LeaseTiming,
 ) -> Result<TaskLeaseRecord> {
     let granted_at_ms = now_epoch_ms()?;
     let lease = TaskLeaseRecord {
@@ -1183,7 +1275,7 @@ fn grant_task_lease(
         owner: runtime_scheduler_owner(run.run_id.clone()),
         granted_at_ms,
         heartbeat_at_ms: Some(granted_at_ms),
-        expires_at_ms: None,
+        expires_at_ms: Some(lease_expiry_ms(granted_at_ms, timing)),
         finished_at_ms: None,
         detail: Some(format!("lease granted for agent {}", agent.id)),
     };
@@ -1207,6 +1299,46 @@ fn grant_task_lease(
     Ok(lease)
 }
 
+fn renew_task_lease(
+    root: &Path,
+    config: &ProjectConfig,
+    lease: &TaskLeaseRecord,
+    timing: LeaseTiming,
+    detail: impl Into<String>,
+) -> Result<TaskLeaseRecord> {
+    let renewed_at_ms = now_epoch_ms()?;
+    let mut renewed = lease.clone();
+    renewed.state = TaskLeaseState::Granted;
+    renewed.heartbeat_at_ms = Some(renewed_at_ms);
+    renewed.expires_at_ms = Some(lease_expiry_ms(renewed_at_ms, timing));
+    renewed.finished_at_ms = None;
+    renewed.detail = Some(detail.into());
+
+    let mut event = SchedulerEvent::new(
+        format!("sched-lease-renewed-{}-{renewed_at_ms}", lease.task_id),
+        SchedulerEventKind::TaskLeaseRenewed,
+    )
+    .with_wave_id(lease.wave_id)
+    .with_task_id(lease.task_id.clone())
+    .with_lease_id(lease.lease_id.clone())
+    .with_created_at_ms(renewed_at_ms)
+    .with_correlation_id(
+        renewed
+            .owner
+            .session_id
+            .clone()
+            .unwrap_or_else(|| lease.lease_id.as_str().to_string()),
+    )
+    .with_payload(SchedulerEventPayload::TaskLeaseUpdated {
+        lease: renewed.clone(),
+    });
+    if let Some(claim_id) = renewed.claim_id.clone() {
+        event = event.with_claim_id(claim_id);
+    }
+    append_scheduler_event(root, config, event)?;
+    Ok(renewed)
+}
+
 fn close_task_lease(
     root: &Path,
     config: &ProjectConfig,
@@ -1219,6 +1351,9 @@ fn close_task_lease(
     closed.state = state;
     closed.finished_at_ms = Some(finished_at_ms);
     closed.heartbeat_at_ms = Some(finished_at_ms);
+    if matches!(state, TaskLeaseState::Expired) && closed.expires_at_ms.is_none() {
+        closed.expires_at_ms = Some(finished_at_ms);
+    }
     closed.detail = Some(detail.into());
     let kind = match state {
         TaskLeaseState::Granted => SchedulerEventKind::TaskLeaseRenewed,
@@ -1261,6 +1396,10 @@ fn lease_state_label(state: TaskLeaseState) -> &'static str {
         TaskLeaseState::Expired => "expired",
         TaskLeaseState::Revoked => "revoked",
     }
+}
+
+fn lease_expiry_ms(heartbeat_at_ms: u128, timing: LeaseTiming) -> u128 {
+    heartbeat_at_ms + u128::from(timing.ttl_ms)
 }
 
 fn rerun_request_payload(record: &RerunIntentRecord, state: RerunState) -> RerunRequest {
@@ -1393,8 +1532,6 @@ fn finish_failed_launch(
     record: &mut WaveRunRecord,
     agent: &WaveAgent,
     agent_index: usize,
-    claim: &WaveClaimRecord,
-    lease: Option<&TaskLeaseRecord>,
     error: anyhow::Error,
 ) -> Result<LaunchReport> {
     let reason = error.to_string();
@@ -1419,16 +1556,7 @@ fn finish_failed_launch(
         record.created_at_ms,
         record.started_at_ms,
     )?;
-    if let Some(lease) = lease {
-        close_task_lease(
-            root,
-            config,
-            lease,
-            TaskLeaseState::Revoked,
-            format!("lease revoked because launch failed: {reason}"),
-        )?;
-    }
-    release_wave_claim(root, config, claim, format!("launch failed: {reason}"))?;
+    cleanup_scheduler_ownership_for_run(root, config, record, &format!("launch failed: {reason}"))?;
     write_run_record(state_path, record)?;
     write_trace_bundle(trace_path, record)?;
 
@@ -1548,14 +1676,14 @@ fn cleanup_scheduler_ownership_for_run(
         }
     }
 
+    let now_ms = now_epoch_ms()?;
     for lease in leases.into_values() {
-        close_task_lease(
-            root,
-            config,
-            &lease,
-            TaskLeaseState::Revoked,
-            detail.to_string(),
-        )?;
+        let state = if lease_is_expired(&lease, now_ms) {
+            TaskLeaseState::Expired
+        } else {
+            TaskLeaseState::Revoked
+        };
+        close_task_lease(root, config, &lease, state, detail.to_string())?;
     }
     if let Some(claim) = claim.as_ref() {
         release_wave_claim(root, config, claim, detail.to_string())?;
@@ -1683,18 +1811,25 @@ fn persist_agent_result_envelope(
 
 fn execute_agent(
     root: &Path,
+    config: &ProjectConfig,
     run: &WaveRunRecord,
     agent: &WaveAgent,
     base_record: &AgentRunRecord,
     prompt: &str,
     codex_home: &Path,
-) -> Result<AgentRunRecord> {
+    initial_lease: &TaskLeaseRecord,
+    timing: LeaseTiming,
+) -> Result<ExecutedAgent> {
     let agent_dir = base_record
         .prompt_path
         .parent()
         .context("agent prompt path has no parent directory")?;
     fs::create_dir_all(agent_dir)
         .with_context(|| format!("failed to create {}", agent_dir.display()))?;
+    let stdout = File::create(&base_record.events_path)
+        .with_context(|| format!("failed to create {}", base_record.events_path.display()))?;
+    let stderr = File::create(&base_record.stderr_path)
+        .with_context(|| format!("failed to create {}", base_record.stderr_path.display()))?;
 
     let mut command = Command::new("codex");
     command
@@ -1720,43 +1855,42 @@ fn execute_agent(
         .env("CODEX_HOME", codex_home)
         .env("CODEX_SQLITE_HOME", codex_home)
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
 
     let mut child = command.spawn().context("failed to start codex exec")?;
-    if let Some(stdin) = child.stdin.as_mut() {
+    if let Some(mut stdin) = child.stdin.take() {
         stdin
             .write_all(prompt.as_bytes())
             .context("failed to write prompt to codex exec stdin")?;
     }
-    let output = child
-        .wait_with_output()
-        .context("failed while waiting for codex exec")?;
+    let (status, lease) = wait_for_agent_exit_with_lease(
+        root,
+        config,
+        agent.id.as_str(),
+        &mut child,
+        initial_lease,
+        timing,
+    )?;
 
-    fs::write(&base_record.events_path, &output.stdout)
-        .with_context(|| format!("failed to write {}", base_record.events_path.display()))?;
-    fs::write(&base_record.stderr_path, &output.stderr)
-        .with_context(|| format!("failed to write {}", base_record.stderr_path.display()))?;
-
-    let initial_error = if output.status.success() {
+    let initial_error = if status.success() {
         None
     } else {
         Some(format!(
             "codex exec exited with {}",
-            output
-                .status
+            status
                 .code()
                 .map(|code| code.to_string())
                 .unwrap_or_else(|| "signal".to_string())
         ))
     };
     let provisional_record = AgentRunRecord {
-        status: if output.status.success() {
+        status: if status.success() {
             WaveRunStatus::Succeeded
         } else {
             WaveRunStatus::Failed
         },
-        exit_code: output.status.code(),
+        exit_code: status.code(),
         error: initial_error.clone(),
         observed_markers: Vec::new(),
         ..base_record.clone()
@@ -1765,50 +1899,133 @@ fn execute_agent(
         build_structured_result_envelope(root, run, agent, &provisional_record, now_epoch_ms()?)?;
     let observed_markers = envelope.closure_input.final_markers.observed.clone();
 
-    if !output.status.success() {
-        return Ok(AgentRunRecord {
-            status: WaveRunStatus::Failed,
-            exit_code: output.status.code(),
-            error: initial_error,
-            observed_markers,
-            ..base_record.clone()
+    if !status.success() {
+        return Ok(ExecutedAgent {
+            record: AgentRunRecord {
+                status: WaveRunStatus::Failed,
+                exit_code: status.code(),
+                error: initial_error,
+                observed_markers,
+                ..base_record.clone()
+            },
+            lease,
         });
     }
 
     if envelope.closure.disposition != ClosureDisposition::Ready {
-        return Ok(AgentRunRecord {
-            status: WaveRunStatus::Failed,
-            exit_code: output.status.code(),
-            error: Some(
-                envelope
-                    .closure
-                    .blocking_reasons
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "structured result envelope is not ready".to_string()),
-            ),
-            observed_markers,
-            ..base_record.clone()
+        return Ok(ExecutedAgent {
+            record: AgentRunRecord {
+                status: WaveRunStatus::Failed,
+                exit_code: status.code(),
+                error: Some(
+                    envelope
+                        .closure
+                        .blocking_reasons
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "structured result envelope is not ready".to_string()),
+                ),
+                observed_markers,
+                ..base_record.clone()
+            },
+            lease,
         });
     }
 
     if let Some(error) = result_closure_contract_error(agent.id.as_str(), &envelope.closure) {
-        return Ok(AgentRunRecord {
-            status: WaveRunStatus::Failed,
-            exit_code: output.status.code(),
-            error: Some(error),
-            observed_markers,
-            ..base_record.clone()
+        return Ok(ExecutedAgent {
+            record: AgentRunRecord {
+                status: WaveRunStatus::Failed,
+                exit_code: status.code(),
+                error: Some(error),
+                observed_markers,
+                ..base_record.clone()
+            },
+            lease,
         });
     }
 
-    Ok(AgentRunRecord {
-        status: WaveRunStatus::Succeeded,
-        exit_code: output.status.code(),
-        error: None,
-        observed_markers,
-        ..base_record.clone()
+    Ok(ExecutedAgent {
+        record: AgentRunRecord {
+            status: WaveRunStatus::Succeeded,
+            exit_code: status.code(),
+            error: None,
+            observed_markers,
+            ..base_record.clone()
+        },
+        lease,
     })
+}
+
+fn wait_for_agent_exit_with_lease(
+    root: &Path,
+    config: &ProjectConfig,
+    agent_id: &str,
+    child: &mut Child,
+    initial_lease: &TaskLeaseRecord,
+    timing: LeaseTiming,
+) -> Result<(ExitStatus, TaskLeaseRecord)> {
+    let mut lease = initial_lease.clone();
+    let mut next_heartbeat_at_ms = lease.granted_at_ms + u128::from(timing.heartbeat_interval_ms);
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .context("failed while waiting for codex exec")?
+        {
+            return Ok((status, lease));
+        }
+
+        let now = now_epoch_ms()?;
+        if now >= next_heartbeat_at_ms {
+            if lease_is_expired(&lease, now) {
+                terminate_child(child).context("failed to stop codex exec after lease expiry")?;
+                close_task_lease(
+                    root,
+                    config,
+                    &lease,
+                    TaskLeaseState::Expired,
+                    format!("lease expired while agent {agent_id} was still running"),
+                )?;
+                bail!("agent {agent_id} lost its lease before completion");
+            }
+            lease = match renew_task_lease(
+                root,
+                config,
+                &lease,
+                timing,
+                format!("lease heartbeat renewed for agent {agent_id}"),
+            ) {
+                Ok(lease) => lease,
+                Err(error) => {
+                    terminate_child(child)
+                        .context("failed to stop codex exec after lease renewal failure")?;
+                    return Err(error).context(format!(
+                        "lease renewal failed while agent {agent_id} was still running"
+                    ));
+                }
+            };
+            next_heartbeat_at_ms = now + u128::from(timing.heartbeat_interval_ms);
+        }
+
+        thread::sleep(Duration::from_millis(timing.poll_interval_ms));
+    }
+}
+
+fn terminate_child(child: &mut Child) -> Result<()> {
+    match child.kill() {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
+        Err(error) => return Err(error).context("failed to kill codex exec"),
+    }
+    let _ = child.wait();
+    Ok(())
+}
+
+fn lease_is_expired(lease: &TaskLeaseRecord, now_ms: u128) -> bool {
+    lease
+        .expires_at_ms
+        .map(|expires_at_ms| now_ms >= expires_at_ms)
+        .unwrap_or(false)
 }
 
 fn ordered_agents(wave: &WaveDocument) -> Vec<&WaveAgent> {
@@ -2156,11 +2373,15 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::collections::HashSet;
+    use std::sync::Arc;
+    use std::sync::Barrier;
     use wave_config::AuthorityConfig;
     use wave_config::ExecutionMode;
     use wave_control_plane::build_planning_status_with_state;
     use wave_events::SchedulerEventKind;
+    use wave_events::SchedulerEventLog;
     use wave_spec::CompletionLevel;
+    use wave_spec::ComponentPromotion;
     use wave_spec::Context7Defaults;
     use wave_spec::DeployEnvironment;
     use wave_spec::DocImpact;
@@ -2186,7 +2407,10 @@ mod tests {
             },
             heading_title: Some("Wave 0".to_string()),
             commit_message: Some("Feat: test".to_string()),
-            component_promotions: Vec::new(),
+            component_promotions: vec![ComponentPromotion {
+                component: "runtime-fixture".to_string(),
+                target: "baseline-proved".to_string(),
+            }],
             deploy_environments: Vec::new(),
             context7_defaults: None,
             agents: vec![
@@ -2808,6 +3032,299 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_claimers_only_allow_one_live_claim() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-atomic-claim-test-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        seed_lint_context(&root);
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let wave = launchable_test_wave(4);
+        let waves = vec![wave.clone()];
+        let findings = wave_dark_factory::lint_project(&root, &waves);
+        assert!(
+            findings.is_empty(),
+            "unexpected lint findings: {findings:?}"
+        );
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+
+        for run_suffix in ["a", "b"] {
+            let root = root.clone();
+            let config = config.clone();
+            let wave = wave.clone();
+            let waves = waves.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                claim_wave_for_launch(
+                    &root,
+                    &config,
+                    &waves,
+                    &wave,
+                    &format!("wave-04-run-{run_suffix}"),
+                    now_epoch_ms().expect("timestamp"),
+                )
+                .map(|claim| claim.claim_id.as_str().to_string())
+                .map_err(|error| error.to_string())
+            }));
+        }
+
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("join claim thread"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            results.iter().filter(|result| result.is_ok()).count(),
+            1,
+            "claim results: {results:?}"
+        );
+        assert_eq!(
+            results.iter().filter(|result| result.is_err()).count(),
+            1,
+            "claim results: {results:?}"
+        );
+        assert!(
+            results
+                .iter()
+                .filter_map(|result| result.as_ref().err())
+                .any(|error| error.contains("not claimable"))
+        );
+
+        let events = scheduler_event_log(&root, &config)
+            .load_all()
+            .expect("scheduler events");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == SchedulerEventKind::WaveClaimAcquired)
+                .count(),
+            1,
+            "exactly one claim acquisition event should exist"
+        );
+        assert!(
+            load_latest_runs(&root, &config)
+                .expect("latest runs")
+                .is_empty()
+        );
+        assert!(!state_runs_dir(&root, &config).exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn second_wave_claim_is_budget_blocked_until_first_claim_releases() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-budget-block-test-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        seed_lint_context(&root);
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let wave_a = launchable_test_wave(5);
+        let wave_b = launchable_test_wave(6);
+        let waves = vec![wave_a.clone(), wave_b.clone()];
+
+        let claim_a = claim_wave_for_launch(&root, &config, &waves, &wave_a, "wave-05-run", 1)
+            .expect("claim a");
+        let error = claim_wave_for_launch(&root, &config, &waves, &wave_b, "wave-06-run", 2)
+            .expect_err("budget should block second claim");
+        assert!(error.to_string().contains("budget"));
+
+        release_wave_claim(&root, &config, &claim_a, "wave complete").expect("release claim a");
+        let claim_b = claim_wave_for_launch(&root, &config, &waves, &wave_b, "wave-06-run", 3)
+            .expect("claim b");
+        assert_eq!(claim_b.wave_id, 6);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn heartbeat_renewal_updates_live_lease_state() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-heartbeat-renewal-test-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        seed_lint_context(&root);
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let wave = launchable_test_wave(7);
+        let run = WaveRunRecord {
+            run_id: "wave-07-run".to_string(),
+            wave_id: 7,
+            slug: wave.metadata.slug.clone(),
+            title: wave.metadata.title.clone(),
+            status: WaveRunStatus::Running,
+            dry_run: false,
+            bundle_dir: root.join(".wave/state/build/specs/wave-07-run"),
+            trace_path: root.join(".wave/traces/runs/wave-07-run.json"),
+            codex_home: root.join(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(1),
+            launcher_pid: Some(std::process::id()),
+            launcher_started_at_ms: current_process_started_at_ms(),
+            completed_at_ms: None,
+            agents: Vec::new(),
+            error: None,
+        };
+        let timing = LeaseTiming {
+            heartbeat_interval_ms: 25,
+            ttl_ms: 200,
+            poll_interval_ms: 10,
+        };
+
+        let claim = claim_wave_for_launch(&root, &config, &[wave.clone()], &wave, &run.run_id, 1)
+            .expect("claim");
+        let lease =
+            grant_task_lease(&root, &config, &run, &wave.agents[0], &claim, timing).expect("lease");
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 0.12")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn helper");
+
+        let (status, renewed_lease) = wait_for_agent_exit_with_lease(
+            &root,
+            &config,
+            wave.agents[0].id.as_str(),
+            &mut child,
+            &lease,
+            timing,
+        )
+        .expect("wait with heartbeat");
+        assert!(status.success());
+        assert!(
+            renewed_lease.heartbeat_at_ms.expect("heartbeat")
+                > lease.heartbeat_at_ms.expect("initial heartbeat")
+        );
+        close_task_lease(
+            &root,
+            &config,
+            &renewed_lease,
+            TaskLeaseState::Released,
+            "agent completed",
+        )
+        .expect("release lease");
+
+        let events = SchedulerEventLog::new(
+            config
+                .resolved_paths(&root)
+                .authority
+                .state_events_scheduler_dir,
+        )
+        .load_all()
+        .expect("scheduler events");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == SchedulerEventKind::TaskLeaseRenewed)
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == SchedulerEventKind::TaskLeaseReleased)
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn overdue_live_lease_expires_and_fails_closed() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-heartbeat-expiry-test-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        seed_lint_context(&root);
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let wave = launchable_test_wave(8);
+        let run = WaveRunRecord {
+            run_id: "wave-08-run".to_string(),
+            wave_id: 8,
+            slug: wave.metadata.slug.clone(),
+            title: wave.metadata.title.clone(),
+            status: WaveRunStatus::Running,
+            dry_run: false,
+            bundle_dir: root.join(".wave/state/build/specs/wave-08-run"),
+            trace_path: root.join(".wave/traces/runs/wave-08-run.json"),
+            codex_home: root.join(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(1),
+            launcher_pid: Some(std::process::id()),
+            launcher_started_at_ms: current_process_started_at_ms(),
+            completed_at_ms: None,
+            agents: Vec::new(),
+            error: None,
+        };
+        let timing = LeaseTiming {
+            heartbeat_interval_ms: 120,
+            ttl_ms: 50,
+            poll_interval_ms: 10,
+        };
+
+        let claim = claim_wave_for_launch(&root, &config, &[wave.clone()], &wave, &run.run_id, 1)
+            .expect("claim");
+        let lease =
+            grant_task_lease(&root, &config, &run, &wave.agents[0], &claim, timing).expect("lease");
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn helper");
+
+        let error = wait_for_agent_exit_with_lease(
+            &root,
+            &config,
+            wave.agents[0].id.as_str(),
+            &mut child,
+            &lease,
+            timing,
+        )
+        .expect_err("lease should expire");
+        assert!(error.to_string().contains("lost its lease"));
+
+        let events = scheduler_event_log(&root, &config)
+            .load_all()
+            .expect("scheduler events");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == SchedulerEventKind::TaskLeaseExpired)
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn orphan_cleanup_revokes_active_lease_and_releases_claim() {
         let root = std::env::temp_dir().join(format!(
             "wave-runtime-scheduler-cleanup-{}-{}",
@@ -2819,6 +3336,7 @@ mod tests {
             authority: AuthorityConfig::default(),
             ..ProjectConfig::default()
         };
+        seed_lint_context(&root);
         bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
         ensure_default_scheduler_budget(&root, &config).expect("budget");
 
@@ -2842,8 +3360,17 @@ mod tests {
             error: None,
         };
 
-        let claim = acquire_wave_claim(&root, &config, &wave, &run.run_id, 1).expect("claim");
-        let lease = grant_task_lease(&root, &config, &run, &wave.agents[0], &claim).expect("lease");
+        let claim = claim_wave_for_launch(&root, &config, &[wave.clone()], &wave, &run.run_id, 1)
+            .expect("claim");
+        let lease = grant_task_lease(
+            &root,
+            &config,
+            &run,
+            &wave.agents[0],
+            &claim,
+            LeaseTiming::default(),
+        )
+        .expect("lease");
         assert_eq!(lease.state, TaskLeaseState::Granted);
 
         cleanup_scheduler_ownership_for_run(&root, &config, &run, "repair").expect("cleanup");
@@ -2866,23 +3393,83 @@ mod tests {
     }
 
     fn test_agent(id: &str) -> WaveAgent {
+        match id {
+            "A0" | "A8" | "A9" => closure_test_agent(id),
+            _ => WaveAgent {
+                id: id.to_string(),
+                title: format!("Implementation {id}"),
+                role_prompts: Vec::new(),
+                executor: BTreeMap::from([("profile".to_string(), "codex".to_string())]),
+                context7: Some(Context7Defaults {
+                    bundle: "rust-control-plane".to_string(),
+                    query: Some(
+                        "runtime fixture for scheduler claims leases and queue behavior"
+                            .to_string(),
+                    ),
+                }),
+                skills: vec!["wave-core".to_string()],
+                components: vec!["runtime".to_string()],
+                capabilities: vec!["testing".to_string()],
+                exit_contract: Some(ExitContract {
+                    completion: CompletionLevel::Contract,
+                    durability: DurabilityLevel::Durable,
+                    proof: ProofLevel::Unit,
+                    doc_impact: DocImpact::Owned,
+                }),
+                deliverables: vec![format!("src/{id}.rs")],
+                file_ownership: vec![format!("src/{id}.rs")],
+                final_markers: vec![
+                    "[wave-proof]".to_string(),
+                    "[wave-doc-delta]".to_string(),
+                    "[wave-component]".to_string(),
+                ],
+                prompt: format!(
+                    "Primary goal:\n- implement fixture work\n\nRequired context before coding:\n- Read README.md.\n\nSpecific expectations:\n- Emit the final [wave-proof], [wave-doc-delta], and [wave-component] markers as plain lines by themselves at the end of the output.\n\nFile ownership (only touch these paths):\n- src/{id}.rs"
+                ),
+            },
+        }
+    }
+
+    fn closure_test_agent(id: &str) -> WaveAgent {
+        let (role_prompt, owned_path, final_marker) = match id {
+            "A0" => (
+                "docs/agents/wave-cont-qa-role.md",
+                ".wave/reviews/test-cont-qa.md",
+                "[wave-gate]",
+            ),
+            "A8" => (
+                "docs/agents/wave-integration-role.md",
+                ".wave/integration/test-wave.md",
+                "[wave-integration]",
+            ),
+            "A9" => (
+                "docs/agents/wave-documentation-role.md",
+                ".wave/docs/test-wave.md",
+                "[wave-doc-closure]",
+            ),
+            other => panic!("unexpected closure agent {other}"),
+        };
         WaveAgent {
             id: id.to_string(),
-            title: id.to_string(),
-            role_prompts: Vec::new(),
-            executor: BTreeMap::from([("model".to_string(), "gpt-5.4".to_string())]),
+            title: format!("Closure {id}"),
+            role_prompts: vec![role_prompt.to_string()],
+            executor: BTreeMap::from([("profile".to_string(), "review-codex".to_string())]),
             context7: Some(Context7Defaults {
-                bundle: "none".to_string(),
-                query: Some("noop".to_string()),
+                bundle: "rust-control-plane".to_string(),
+                query: Some(
+                    "closure fixture for integration documentation and qa review".to_string(),
+                ),
             }),
-            skills: Vec::new(),
+            skills: vec!["wave-core".to_string()],
             components: Vec::new(),
             capabilities: Vec::new(),
             exit_contract: None,
             deliverables: Vec::new(),
-            file_ownership: Vec::new(),
-            final_markers: Vec::new(),
-            prompt: "Primary goal:\n- noop\n\nRequired context before coding:\n- Read README.md.\n\nFile ownership (only touch these paths):\n- README.md".to_string(),
+            file_ownership: vec![owned_path.to_string()],
+            final_markers: vec![final_marker.to_string()],
+            prompt: format!(
+                "Primary goal:\n- close the fixture wave\n\nRequired context before coding:\n- Read README.md.\n\nSpecific expectations:\n- Emit the final {final_marker} marker as a plain last line.\n\nFile ownership (only touch these paths):\n- {owned_path}"
+            ),
         }
     }
 
@@ -2891,14 +3478,16 @@ mod tests {
             id: "A1".to_string(),
             title: "Implementation".to_string(),
             role_prompts: Vec::new(),
-            executor: BTreeMap::from([("model".to_string(), "gpt-5.4".to_string())]),
+            executor: BTreeMap::from([("profile".to_string(), "codex".to_string())]),
             context7: Some(Context7Defaults {
-                bundle: "none".to_string(),
-                query: Some("noop".to_string()),
+                bundle: "rust-control-plane".to_string(),
+                query: Some(
+                    "runtime fixture for scheduler claims leases and queue behavior".to_string(),
+                ),
             }),
-            skills: Vec::new(),
-            components: Vec::new(),
-            capabilities: Vec::new(),
+            skills: vec!["wave-core".to_string()],
+            components: vec!["runtime".to_string()],
+            capabilities: vec!["testing".to_string()],
             exit_contract: Some(ExitContract {
                 completion: CompletionLevel::Contract,
                 durability: DurabilityLevel::Durable,
@@ -2907,8 +3496,12 @@ mod tests {
             }),
             deliverables: vec!["README.md".to_string()],
             file_ownership: vec!["README.md".to_string()],
-            final_markers: vec!["[wave-proof]".to_string()],
-            prompt: "Primary goal:\n- noop\n\nRequired context before coding:\n- Read README.md.\n\nFile ownership (only touch these paths):\n- README.md".to_string(),
+            final_markers: vec![
+                "[wave-proof]".to_string(),
+                "[wave-doc-delta]".to_string(),
+                "[wave-component]".to_string(),
+            ],
+            prompt: "Primary goal:\n- land the runtime fixture\n\nRequired context before coding:\n- Read README.md.\n\nSpecific expectations:\n- Emit the final [wave-proof], [wave-doc-delta], and [wave-component] markers as plain lines by themselves at the end of the output.\n\nFile ownership (only touch these paths):\n- README.md".to_string(),
         };
 
         WaveDocument {
@@ -2926,18 +3519,57 @@ mod tests {
             },
             heading_title: Some(format!("Wave {id}")),
             commit_message: Some(format!("Feat: wave {id}")),
-            component_promotions: Vec::new(),
+            component_promotions: vec![ComponentPromotion {
+                component: "runtime-fixture".to_string(),
+                target: "baseline-proved".to_string(),
+            }],
             deploy_environments: vec![DeployEnvironment {
                 name: "repo-local".to_string(),
                 detail: "Local validation".to_string(),
             }],
-            context7_defaults: None,
+            context7_defaults: Some(Context7Defaults {
+                bundle: "rust-control-plane".to_string(),
+                query: Some(
+                    "runtime fixture for scheduler claims leases and queue behavior".to_string(),
+                ),
+            }),
             agents: vec![
                 implementation_agent,
-                test_agent("A8"),
-                test_agent("A9"),
-                test_agent("A0"),
+                closure_test_agent("A8"),
+                closure_test_agent("A9"),
+                closure_test_agent("A0"),
             ],
+        }
+    }
+
+    fn seed_lint_context(root: &Path) {
+        fs::write(root.join("README.md"), "# fixture\n").expect("write readme");
+
+        let skills_dir = root.join("skills/wave-core");
+        fs::create_dir_all(&skills_dir).expect("create skills dir");
+        fs::write(
+            skills_dir.join("skill.json"),
+            r#"{"id":"wave-core","title":"Wave Core","description":"Fixture skill","activation":{"when":"Always"}}"#,
+        )
+        .expect("write skill manifest");
+        fs::write(skills_dir.join("SKILL.md"), "# Wave Core\n").expect("write skill body");
+
+        let context7_dir = root.join("docs/context7");
+        fs::create_dir_all(&context7_dir).expect("create context7 dir");
+        fs::write(
+            context7_dir.join("bundles.json"),
+            r#"{"version":1,"defaultBundle":"rust-control-plane","laneDefaults":{},"bundles":{"rust-control-plane":{"description":"Fixture bundle","libraries":[{"libraryName":"fixture-lib","queryHint":"scheduler claims leases queue projection fixture"}]}}}"#,
+        )
+        .expect("write context7 bundle catalog");
+
+        let agent_dir = root.join("docs/agents");
+        fs::create_dir_all(&agent_dir).expect("create role prompt dir");
+        for path in [
+            "wave-cont-qa-role.md",
+            "wave-integration-role.md",
+            "wave-documentation-role.md",
+        ] {
+            fs::write(agent_dir.join(path), "# role prompt\n").expect("write role prompt");
         }
     }
 

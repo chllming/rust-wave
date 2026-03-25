@@ -1,0 +1,18 @@
+{
+  "phase": "phase-1-scheduler-authority",
+  "wave_id": 33,
+  "concurrent_claim_attempt": {
+    "admitted": {
+      "run_id": "wave-33-run-a",
+      "claim_id": "claim-wave-33-wave-33-run-a",
+      "scheduler_path": "wave-runtime/codex",
+      "session_id": "wave-33-run-a"
+    },
+    "refused": {
+      "run_id": "wave-33-run-b",
+      "error": "wave 33 is not claimable: ownership:claimed-by:wave-runtime/codex"
+    },
+    "state_runs_written_for_refused_path": 0,
+    "claimable_after_first_admission": false
+  }
+}

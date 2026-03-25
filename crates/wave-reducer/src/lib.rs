@@ -79,6 +79,8 @@ pub struct SchedulerOwnerState {
     pub runtime: Option<String>,
     pub executor: Option<String>,
     pub session_id: Option<String>,
+    pub process_id: Option<u32>,
+    pub process_started_at_ms: Option<u128>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -323,20 +325,20 @@ pub struct PlanningReducerState {
 }
 
 #[derive(Debug, Clone, Default)]
-struct SchedulerReducerState {
-    waves: HashMap<u32, SchedulerWaveState>,
-    budget: Option<SchedulerBudgetRecord>,
-    reference_time_ms: u128,
-    active_wave_claims: usize,
-    active_task_leases: usize,
+pub struct SchedulerAuthorityState {
+    pub waves: HashMap<u32, SchedulerWaveState>,
+    pub budget: Option<SchedulerBudgetRecord>,
+    pub reference_time_ms: u128,
+    pub active_wave_claims: usize,
+    pub active_task_leases: usize,
 }
 
 #[derive(Debug, Clone, Default)]
-struct SchedulerWaveState {
-    claim: Option<WaveClaimRecord>,
-    active_leases: Vec<TaskLeaseRecord>,
-    stale_leases: Vec<TaskLeaseRecord>,
-    contention_reasons: Vec<String>,
+pub struct SchedulerWaveState {
+    pub claim: Option<WaveClaimRecord>,
+    pub active_leases: Vec<TaskLeaseRecord>,
+    pub stale_leases: Vec<TaskLeaseRecord>,
+    pub contention_reasons: Vec<String>,
 }
 
 pub fn reduce_planning_state(
@@ -371,7 +373,7 @@ pub fn reduce_planning_state_with_scheduler(
         }
     }
 
-    let scheduler_state = reduce_scheduler_events(scheduler_events);
+    let scheduler_state = reduce_scheduler_authority(scheduler_events);
     let mut waves_state = Vec::new();
     for wave in waves {
         let latest_run = latest_runs.get(&wave.metadata.id);
@@ -850,7 +852,7 @@ fn accumulate_blocker_waves(
     }
 }
 
-fn reduce_scheduler_events(events: &[SchedulerEvent]) -> SchedulerReducerState {
+pub fn reduce_scheduler_authority(events: &[SchedulerEvent]) -> SchedulerAuthorityState {
     let mut claims_by_id = HashMap::new();
     let mut leases_by_id = HashMap::new();
     let mut budget = None;
@@ -931,7 +933,7 @@ fn reduce_scheduler_events(events: &[SchedulerEvent]) -> SchedulerReducerState {
         .map(|state| state.active_leases.len())
         .sum::<usize>();
 
-    SchedulerReducerState {
+    SchedulerAuthorityState {
         waves,
         budget,
         reference_time_ms,
@@ -941,7 +943,7 @@ fn reduce_scheduler_events(events: &[SchedulerEvent]) -> SchedulerReducerState {
 }
 
 fn build_wave_ownership_state(
-    scheduler_state: &SchedulerReducerState,
+    scheduler_state: &SchedulerAuthorityState,
     wave_id: u32,
     planning_ready: bool,
 ) -> WaveOwnershipState {
@@ -982,7 +984,7 @@ fn build_wave_ownership_state(
 }
 
 fn build_budget_state(
-    scheduler_state: &SchedulerReducerState,
+    scheduler_state: &SchedulerAuthorityState,
     planning_ready: bool,
     already_claimed: bool,
 ) -> SchedulerBudgetState {
@@ -1082,6 +1084,8 @@ fn convert_owner_state(owner: &SchedulerOwner) -> SchedulerOwnerState {
         runtime: owner.runtime.clone(),
         executor: owner.executor.clone(),
         session_id: owner.session_id.clone(),
+        process_id: owner.process_id,
+        process_started_at_ms: owner.process_started_at_ms,
     }
 }
 
@@ -1856,6 +1860,8 @@ mod tests {
             runtime: Some("codex".to_string()),
             executor: Some("codex".to_string()),
             session_id: Some(session_id.to_string()),
+            process_id: None,
+            process_started_at_ms: None,
         }
     }
 
