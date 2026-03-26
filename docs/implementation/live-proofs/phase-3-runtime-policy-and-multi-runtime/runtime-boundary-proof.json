@@ -1,7 +1,7 @@
 {
-  "generated_at_ms": 1774514637017,
+  "generated_at_ms": 1774530131992,
   "current_environment": {
-    "executor_boundary": "runtime-neutral adapter registry in wave-runtime",
+    "executor_boundary": "runtime-neutral launch spec plus adapter registry in wave-runtime",
     "selection_policy": "explicit executor runtime selection with default codex and authored fallback order",
     "fallback_policy": "fallback only when the selected runtime is unavailable before meaningful work starts",
     "runtimes": [
@@ -22,44 +22,44 @@
   "codex_fixture": {
     "proof_classification": "fixture-backed",
     "run": {
-      "run_id": "wave-15-1774514633749",
+      "run_id": "wave-15-1774530128700",
       "wave_id": 15,
       "slug": "wave-15",
       "title": "Wave 15",
       "status": "succeeded",
       "dry_run": false,
-      "bundle_dir": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749",
-      "trace_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/traces/runs/wave-15-1774514633749.json",
+      "bundle_dir": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700",
+      "trace_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/traces/runs/wave-15-1774530128700.json",
       "codex_home": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/codex",
-      "created_at_ms": 1774514633955,
-      "started_at_ms": 1774514634056,
-      "launcher_pid": 2871930,
-      "launcher_started_at_ms": 1774514633698,
+      "created_at_ms": 1774530128907,
+      "started_at_ms": 1774530129000,
+      "launcher_pid": 3154312,
+      "launcher_started_at_ms": 1774530128646,
       "worktree": {
-        "worktree_id": "worktree-wave-15-wave-15-1774514633749",
+        "worktree_id": "worktree-wave-15-wave-15-1774530128700",
         "wave_id": 15,
         "state": "released",
-        "path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/worktrees/wave-15-wave-15-1774514633749",
+        "path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/worktrees/wave-15-wave-15-1774530128700",
         "base_ref": "main",
-        "snapshot_ref": "208fab9be47ae70ddd85f3f9a417aeff7a3a4d0b",
+        "snapshot_ref": "0edcf9ed092e38353b5cf34a136208d3011b4add",
         "branch_ref": null,
         "shared_scope": "wave",
-        "allocated_at_ms": 1774514633955,
-        "released_at_ms": 1774514635891,
+        "allocated_at_ms": 1774530128907,
+        "released_at_ms": 1774530130823,
         "detail": "wave completed; worktree released"
       },
       "promotion": {
-        "promotion_id": "promotion-wave-15-208fab9be47ae70ddd85f3f9a417aeff7a3a4d0b",
+        "promotion_id": "promotion-wave-15-0edcf9ed092e38353b5cf34a136208d3011b4add",
         "wave_id": 15,
-        "worktree_id": "worktree-wave-15-wave-15-1774514633749",
+        "worktree_id": "worktree-wave-15-wave-15-1774530128700",
         "state": "ready",
         "target_ref": "main",
-        "snapshot_ref": "208fab9be47ae70ddd85f3f9a417aeff7a3a4d0b",
-        "candidate_ref": "7af7e22365b0dbdaed8ba30d1a20555510582e52",
-        "candidate_tree": "9e63c4bd3a8291afd79f5e2214528366adaba7ff",
+        "snapshot_ref": "0edcf9ed092e38353b5cf34a136208d3011b4add",
+        "candidate_ref": "b660ad3eb9d7e0efb61484ccea6fb58ea42a3b0c",
+        "candidate_tree": "ad86d1641ac8f73ab5a3a33cdfd7a3273f62103f",
         "conflict_paths": [],
-        "checked_at_ms": 1774514634821,
-        "completed_at_ms": 1774514634909,
+        "checked_at_ms": 1774530129764,
+        "completed_at_ms": 1774530129864,
         "detail": "promotion candidate passed scratch merge validation"
       },
       "scheduling": {
@@ -72,20 +72,20 @@
         "protected_closure_capacity": true,
         "preemptible": false,
         "last_decision": "wave completed and released",
-        "updated_at_ms": 1774514635892
+        "updated_at_ms": 1774530130824
       },
-      "completed_at_ms": 1774514635893,
+      "completed_at_ms": 1774530130825,
       "agents": [
         {
           "id": "A1",
           "title": "Implementation",
           "status": "succeeded",
-          "prompt_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A1/prompt.md",
-          "last_message_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A1/last-message.txt",
-          "events_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A1/events.jsonl",
-          "stderr_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A1/stderr.txt",
-          "result_envelope_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/results/wave-15/wave-15-1774514633749-a1/agent_result_envelope.json",
-          "runtime_detail_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A1/runtime-detail.json",
+          "prompt_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A1/prompt.md",
+          "last_message_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A1/last-message.txt",
+          "events_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A1/events.jsonl",
+          "stderr_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A1/stderr.txt",
+          "result_envelope_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/results/wave-15/wave-15-1774530128700-a1/agent_result_envelope.json",
+          "runtime_detail_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A1/runtime-detail.json",
           "expected_markers": [
             "[wave-proof]",
             "[wave-doc-delta]",
@@ -116,9 +116,9 @@
               "binary": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/test-bin/codex",
               "provider": "openai-codex-cli",
               "artifact_paths": {
-                "prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A1/runtime-prompt.md",
-                "runtime_detail": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A1/runtime-detail.json",
-                "skill_overlay": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A1/runtime-skill-overlay.md"
+                "prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A1/runtime-prompt.md",
+                "runtime_detail": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A1/runtime-detail.json",
+                "skill_overlay": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A1/runtime-skill-overlay.md"
               }
             },
             "skill_projection": {
@@ -140,12 +140,12 @@
           "id": "A8",
           "title": "Closure A8",
           "status": "succeeded",
-          "prompt_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A8/prompt.md",
-          "last_message_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A8/last-message.txt",
-          "events_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A8/events.jsonl",
-          "stderr_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A8/stderr.txt",
-          "result_envelope_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/results/wave-15/wave-15-1774514633749-a8/agent_result_envelope.json",
-          "runtime_detail_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A8/runtime-detail.json",
+          "prompt_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A8/prompt.md",
+          "last_message_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A8/last-message.txt",
+          "events_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A8/events.jsonl",
+          "stderr_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A8/stderr.txt",
+          "result_envelope_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/results/wave-15/wave-15-1774530128700-a8/agent_result_envelope.json",
+          "runtime_detail_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A8/runtime-detail.json",
           "expected_markers": [
             "[wave-integration]"
           ],
@@ -172,9 +172,9 @@
               "binary": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/test-bin/codex",
               "provider": "openai-codex-cli",
               "artifact_paths": {
-                "prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A8/runtime-prompt.md",
-                "runtime_detail": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A8/runtime-detail.json",
-                "skill_overlay": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A8/runtime-skill-overlay.md"
+                "prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A8/runtime-prompt.md",
+                "runtime_detail": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A8/runtime-detail.json",
+                "skill_overlay": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A8/runtime-skill-overlay.md"
               }
             },
             "skill_projection": {
@@ -196,12 +196,12 @@
           "id": "A9",
           "title": "Closure A9",
           "status": "succeeded",
-          "prompt_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A9/prompt.md",
-          "last_message_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A9/last-message.txt",
-          "events_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A9/events.jsonl",
-          "stderr_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A9/stderr.txt",
-          "result_envelope_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/results/wave-15/wave-15-1774514633749-a9/agent_result_envelope.json",
-          "runtime_detail_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A9/runtime-detail.json",
+          "prompt_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A9/prompt.md",
+          "last_message_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A9/last-message.txt",
+          "events_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A9/events.jsonl",
+          "stderr_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A9/stderr.txt",
+          "result_envelope_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/results/wave-15/wave-15-1774530128700-a9/agent_result_envelope.json",
+          "runtime_detail_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A9/runtime-detail.json",
           "expected_markers": [
             "[wave-doc-closure]"
           ],
@@ -228,9 +228,9 @@
               "binary": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/test-bin/codex",
               "provider": "openai-codex-cli",
               "artifact_paths": {
-                "prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A9/runtime-prompt.md",
-                "runtime_detail": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A9/runtime-detail.json",
-                "skill_overlay": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A9/runtime-skill-overlay.md"
+                "prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A9/runtime-prompt.md",
+                "runtime_detail": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A9/runtime-detail.json",
+                "skill_overlay": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A9/runtime-skill-overlay.md"
               }
             },
             "skill_projection": {
@@ -252,12 +252,12 @@
           "id": "A0",
           "title": "Closure A0",
           "status": "succeeded",
-          "prompt_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A0/prompt.md",
-          "last_message_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A0/last-message.txt",
-          "events_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A0/events.jsonl",
-          "stderr_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A0/stderr.txt",
-          "result_envelope_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/results/wave-15/wave-15-1774514633749-a0/agent_result_envelope.json",
-          "runtime_detail_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A0/runtime-detail.json",
+          "prompt_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A0/prompt.md",
+          "last_message_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A0/last-message.txt",
+          "events_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A0/events.jsonl",
+          "stderr_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A0/stderr.txt",
+          "result_envelope_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/results/wave-15/wave-15-1774530128700-a0/agent_result_envelope.json",
+          "runtime_detail_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A0/runtime-detail.json",
           "expected_markers": [
             "[wave-gate]"
           ],
@@ -284,9 +284,9 @@
               "binary": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/test-bin/codex",
               "provider": "openai-codex-cli",
               "artifact_paths": {
-                "prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A0/runtime-prompt.md",
-                "runtime_detail": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A0/runtime-detail.json",
-                "skill_overlay": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A0/runtime-skill-overlay.md"
+                "prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A0/runtime-prompt.md",
+                "runtime_detail": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A0/runtime-detail.json",
+                "skill_overlay": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A0/runtime-skill-overlay.md"
               }
             },
             "skill_projection": {
@@ -309,7 +309,7 @@
     },
     "runtime_detail": {
       "wave_id": 15,
-      "run_id": "wave-15-1774514633749",
+      "run_id": "wave-15-1774530128700",
       "agent_id": "A1",
       "agent_title": "Implementation",
       "runtime": {
@@ -330,9 +330,9 @@
           "binary": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/test-bin/codex",
           "provider": "openai-codex-cli",
           "artifact_paths": {
-            "prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A1/runtime-prompt.md",
-            "runtime_detail": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A1/runtime-detail.json",
-            "skill_overlay": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774514633749/agents/A1/runtime-skill-overlay.md"
+            "prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A1/runtime-prompt.md",
+            "runtime_detail": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A1/runtime-detail.json",
+            "skill_overlay": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-15-1774530128700/agents/A1/runtime-skill-overlay.md"
           }
         },
         "skill_projection": {
@@ -350,51 +350,51 @@
         }
       }
     },
-    "used_worktree_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/worktrees/wave-15-wave-15-1774514633749",
+    "used_worktree_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/worktrees/wave-15-wave-15-1774530128700",
     "used_system_prompt": null,
     "used_settings_path": null
   },
   "claude_fixture": {
     "proof_classification": "fixture-backed",
     "run": {
-      "run_id": "wave-16-1774514635900",
+      "run_id": "wave-16-1774530130833",
       "wave_id": 16,
       "slug": "wave-16",
       "title": "Wave 16",
       "status": "failed",
       "dry_run": false,
-      "bundle_dir": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900",
-      "trace_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/traces/runs/wave-16-1774514635900.json",
+      "bundle_dir": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833",
+      "trace_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/traces/runs/wave-16-1774530130833.json",
       "codex_home": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/codex",
-      "created_at_ms": 1774514636108,
-      "started_at_ms": 1774514636199,
-      "launcher_pid": 2871930,
-      "launcher_started_at_ms": 1774514633701,
+      "created_at_ms": 1774530131041,
+      "started_at_ms": 1774530131158,
+      "launcher_pid": 3154312,
+      "launcher_started_at_ms": 1774530128647,
       "worktree": {
-        "worktree_id": "worktree-wave-16-wave-16-1774514635900",
+        "worktree_id": "worktree-wave-16-wave-16-1774530130833",
         "wave_id": 16,
         "state": "released",
-        "path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/worktrees/wave-16-wave-16-1774514635900",
+        "path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/worktrees/wave-16-wave-16-1774530130833",
         "base_ref": "main",
-        "snapshot_ref": "0ddcc235641a0a481dd9802d6d5458ce293928a1",
+        "snapshot_ref": "310b32e7ef70da9e82b42f6ba9fc1028f93a8839",
         "branch_ref": null,
         "shared_scope": "wave",
-        "allocated_at_ms": 1774514636108,
-        "released_at_ms": 1774514636855,
+        "allocated_at_ms": 1774530131041,
+        "released_at_ms": 1774530131833,
         "detail": "wave failed; worktree released"
       },
       "promotion": {
-        "promotion_id": "promotion-wave-16-0ddcc235641a0a481dd9802d6d5458ce293928a1",
+        "promotion_id": "promotion-wave-16-310b32e7ef70da9e82b42f6ba9fc1028f93a8839",
         "wave_id": 16,
-        "worktree_id": "worktree-wave-16-wave-16-1774514635900",
+        "worktree_id": "worktree-wave-16-wave-16-1774530130833",
         "state": "ready",
         "target_ref": "main",
-        "snapshot_ref": "0ddcc235641a0a481dd9802d6d5458ce293928a1",
-        "candidate_ref": "c901c63175712d56a55ab0de233870f6595b7527",
-        "candidate_tree": "0eef5d0b29aa62c1a143b1f4e467c2988c29aeb6",
+        "snapshot_ref": "310b32e7ef70da9e82b42f6ba9fc1028f93a8839",
+        "candidate_ref": "6b9a6a89a0aca07ae94bec5e01c07dea397378be",
+        "candidate_tree": "67b1dd7cae954efdeb90472ff977eecce87623c2",
         "conflict_paths": [],
-        "checked_at_ms": 1774514636458,
-        "completed_at_ms": 1774514636524,
+        "checked_at_ms": 1774530131418,
+        "completed_at_ms": 1774530131503,
         "detail": "promotion candidate passed scratch merge validation"
       },
       "scheduling": {
@@ -407,20 +407,20 @@
         "protected_closure_capacity": true,
         "preemptible": false,
         "last_decision": "A8 failed; run released",
-        "updated_at_ms": 1774514636856
+        "updated_at_ms": 1774530131833
       },
-      "completed_at_ms": 1774514636842,
+      "completed_at_ms": 1774530131821,
       "agents": [
         {
           "id": "A1",
           "title": "Implementation",
           "status": "succeeded",
-          "prompt_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A1/prompt.md",
-          "last_message_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A1/last-message.txt",
-          "events_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A1/events.jsonl",
-          "stderr_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A1/stderr.txt",
-          "result_envelope_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/results/wave-16/wave-16-1774514635900-a1/agent_result_envelope.json",
-          "runtime_detail_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A1/runtime-detail.json",
+          "prompt_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A1/prompt.md",
+          "last_message_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A1/last-message.txt",
+          "events_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A1/events.jsonl",
+          "stderr_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A1/stderr.txt",
+          "result_envelope_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/results/wave-16/wave-16-1774530130833-a1/agent_result_envelope.json",
+          "runtime_detail_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A1/runtime-detail.json",
           "expected_markers": [
             "[wave-proof]",
             "[wave-doc-delta]",
@@ -451,11 +451,11 @@
               "binary": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/test-bin/claude",
               "provider": "anthropic-claude-code",
               "artifact_paths": {
-                "prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A1/runtime-prompt.md",
-                "runtime_detail": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A1/runtime-detail.json",
-                "settings": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A1/claude-settings.json",
-                "skill_overlay": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A1/runtime-skill-overlay.md",
-                "system_prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A1/claude-system-prompt.txt"
+                "prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A1/runtime-prompt.md",
+                "runtime_detail": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A1/runtime-detail.json",
+                "settings": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A1/claude-settings.json",
+                "skill_overlay": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A1/runtime-skill-overlay.md",
+                "system_prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A1/claude-system-prompt.txt"
               }
             },
             "skill_projection": {
@@ -477,12 +477,12 @@
           "id": "A8",
           "title": "Closure A8",
           "status": "failed",
-          "prompt_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A8/prompt.md",
-          "last_message_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A8/last-message.txt",
-          "events_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A8/events.jsonl",
-          "stderr_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A8/stderr.txt",
-          "result_envelope_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/results/wave-16/wave-16-1774514635900-a8/agent_result_envelope.json",
-          "runtime_detail_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A8/runtime-detail.json",
+          "prompt_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A8/prompt.md",
+          "last_message_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A8/last-message.txt",
+          "events_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A8/events.jsonl",
+          "stderr_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A8/stderr.txt",
+          "result_envelope_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/results/wave-16/wave-16-1774530130833-a8/agent_result_envelope.json",
+          "runtime_detail_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A8/runtime-detail.json",
           "expected_markers": [
             "[wave-integration]"
           ],
@@ -507,10 +507,10 @@
               "binary": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/test-bin/claude",
               "provider": "anthropic-claude-code",
               "artifact_paths": {
-                "prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A8/runtime-prompt.md",
-                "runtime_detail": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A8/runtime-detail.json",
-                "skill_overlay": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A8/runtime-skill-overlay.md",
-                "system_prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A8/claude-system-prompt.txt"
+                "prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A8/runtime-prompt.md",
+                "runtime_detail": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A8/runtime-detail.json",
+                "skill_overlay": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A8/runtime-skill-overlay.md",
+                "system_prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A8/claude-system-prompt.txt"
               }
             },
             "skill_projection": {
@@ -532,10 +532,10 @@
           "id": "A9",
           "title": "Closure A9",
           "status": "planned",
-          "prompt_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A9/prompt.md",
-          "last_message_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A9/last-message.txt",
-          "events_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A9/events.jsonl",
-          "stderr_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A9/stderr.txt",
+          "prompt_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A9/prompt.md",
+          "last_message_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A9/last-message.txt",
+          "events_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A9/events.jsonl",
+          "stderr_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A9/stderr.txt",
           "result_envelope_path": null,
           "runtime_detail_path": null,
           "expected_markers": [
@@ -550,10 +550,10 @@
           "id": "A0",
           "title": "Closure A0",
           "status": "planned",
-          "prompt_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A0/prompt.md",
-          "last_message_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A0/last-message.txt",
-          "events_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A0/events.jsonl",
-          "stderr_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A0/stderr.txt",
+          "prompt_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A0/prompt.md",
+          "last_message_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A0/last-message.txt",
+          "events_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A0/events.jsonl",
+          "stderr_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A0/stderr.txt",
           "result_envelope_path": null,
           "runtime_detail_path": null,
           "expected_markers": [
@@ -569,7 +569,7 @@
     },
     "runtime_detail": {
       "wave_id": 16,
-      "run_id": "wave-16-1774514635900",
+      "run_id": "wave-16-1774530130833",
       "agent_id": "A1",
       "agent_title": "Implementation",
       "runtime": {
@@ -590,11 +590,11 @@
           "binary": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/test-bin/claude",
           "provider": "anthropic-claude-code",
           "artifact_paths": {
-            "prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A1/runtime-prompt.md",
-            "runtime_detail": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A1/runtime-detail.json",
-            "settings": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A1/claude-settings.json",
-            "skill_overlay": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A1/runtime-skill-overlay.md",
-            "system_prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A1/claude-system-prompt.txt"
+            "prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A1/runtime-prompt.md",
+            "runtime_detail": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A1/runtime-detail.json",
+            "settings": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A1/claude-settings.json",
+            "skill_overlay": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A1/runtime-skill-overlay.md",
+            "system_prompt": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A1/claude-system-prompt.txt"
           }
         },
         "skill_projection": {
@@ -612,9 +612,9 @@
         }
       }
     },
-    "used_worktree_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/worktrees/wave-16-wave-16-1774514635900",
-    "used_system_prompt": "Wave runtime harness for Claude.\nKeep the authored assignment authoritative and preserve the required final markers exactly.\nSelected runtime: claude.\nExecution root: /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/worktrees/wave-16-wave-16-1774514635900.\nProjected skills: wave-core, runtime-claude.\nSkill file: /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/worktrees/wave-16-wave-16-1774514635900/skills/wave-core/SKILL.md\nSkill file: /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/worktrees/wave-16-wave-16-1774514635900/skills/runtime-claude/SKILL.md",
-    "used_settings_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774514635900/agents/A1/claude-settings.json"
+    "used_worktree_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/worktrees/wave-16-wave-16-1774530130833",
+    "used_system_prompt": "Wave runtime harness for Claude.\nKeep the authored assignment authoritative and preserve the required final markers exactly.\nSelected runtime: claude.\nExecution root: /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/worktrees/wave-16-wave-16-1774530130833.\nProjected skills: wave-core, runtime-claude.\nSkill file: /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/worktrees/wave-16-wave-16-1774530130833/skills/wave-core/SKILL.md\nSkill file: /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/worktrees/wave-16-wave-16-1774530130833/skills/runtime-claude/SKILL.md",
+    "used_settings_path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-3-runtime-policy-and-multi-runtime-fixture/.wave/state/build/specs/wave-16-1774530130833/agents/A1/claude-settings.json"
   },
   "fallback_fixture": {
     "policy": {

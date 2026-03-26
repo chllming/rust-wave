@@ -10,6 +10,8 @@ The Rust system should own orchestration, state, readiness, contradiction manage
 Right now the live runtime is still basically serial: select a wave, compile prompts, then execute ordered agents one by one through `codex exec`. 
 So the proposal below is a **real step beyond the current runtime**, not just a refactor of what exists.
 
+Update on March 26, 2026: the runtime portion of this proposal has partly landed since this document was first written. Wave 14 now provides repo-local parallel-wave execution with one worktree per active wave, and Wave 15 now provides the runtime-neutral Codex/Claude adapter boundary, worktree-rooted skill projection, explicit manual-close overrides, scoped rerun recovery, closure artifact scaffolding, and active-run stall visibility. The remaining sections below should be read as later workflow and delivery architecture, not as a claim that runtime plurality or wave-local isolation are still missing in the current repo.
+
 ## 1. Core design goal
 
 The system should support three different kinds of work, all on the same substrate:

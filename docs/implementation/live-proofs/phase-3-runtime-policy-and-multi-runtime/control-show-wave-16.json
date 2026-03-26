@@ -1,0 +1,71 @@
+{
+  "wave": {
+    "id": 16,
+    "slug": "decision-lineage-invalidation-and-human-input",
+    "title": "Land decision lineage, invalidation, and human input",
+    "depends_on": [
+      15
+    ],
+    "blocked_by": [],
+    "blocker_state": [],
+    "lint_errors": 0,
+    "ready": true,
+    "ownership": {
+      "claim": null,
+      "active_leases": [],
+      "stale_leases": [],
+      "contention_reasons": [],
+      "blocked_by_owner": null,
+      "budget": {
+        "max_active_wave_claims": 2,
+        "max_active_task_leases": 2,
+        "reserved_closure_task_leases": 1,
+        "active_wave_claims": 0,
+        "active_task_leases": 0,
+        "active_implementation_task_leases": 0,
+        "active_closure_task_leases": 0,
+        "closure_capacity_reserved": false,
+        "preemption_enabled": true,
+        "budget_blocked": false
+      }
+    },
+    "execution": {
+      "worktree": null,
+      "promotion": null,
+      "scheduling": null,
+      "merge_blocked": false,
+      "closure_blocked_by_promotion": false
+    },
+    "agent_count": 6,
+    "implementation_agent_count": 2,
+    "closure_agent_count": 4,
+    "closure_complete": true,
+    "required_closure_agents": [
+      "A0",
+      "A8",
+      "A9",
+      "A6"
+    ],
+    "present_closure_agents": [
+      "A0",
+      "A8",
+      "A9",
+      "A6"
+    ],
+    "missing_closure_agents": [],
+    "readiness": {
+      "state": "ready",
+      "planning_ready": true,
+      "claimable": true,
+      "reasons": [],
+      "primary_reason": null
+    },
+    "rerun_requested": false,
+    "closure_override_applied": false,
+    "completed": false,
+    "last_run_status": null
+  },
+  "latest_run": null,
+  "rerun_intent": null,
+  "closure_override": null
+}

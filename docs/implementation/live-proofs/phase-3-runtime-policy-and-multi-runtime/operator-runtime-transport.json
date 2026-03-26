@@ -1,5 +1,5 @@
 {
-  "generated_at_ms": 1774514645366,
+  "generated_at_ms": 1774530128689,
   "latest_run_details": [
     {
       "wave_id": 15,
@@ -9,10 +9,14 @@
       "status": "running",
       "created_at_ms": 1,
       "started_at_ms": 2,
-      "elapsed_ms": 1774514645364,
+      "elapsed_ms": 1774530128687,
       "current_agent_id": "A1",
       "current_agent_title": "Implementation",
-      "activity_excerpt": "[wave-proof]",
+      "activity_excerpt": "",
+      "last_activity_at_ms": 1774530128685,
+      "activity_source": "stderr",
+      "stalled": false,
+      "stall_reason": null,
       "execution": {
         "worktree": null,
         "promotion": null,
@@ -22,6 +26,15 @@
       },
       "runtime_summary": {
         "selected_runtimes": [
+          "claude"
+        ],
+        "requested_runtimes": [
+          "codex"
+        ],
+        "selection_sources": [
+          "executor.id"
+        ],
+        "fallback_targets": [
           "claude"
         ],
         "fallback_count": 1,
@@ -64,6 +77,18 @@
           "runtime": {
             "selected_runtime": "claude",
             "selection_reason": "selected claude after fallback because codex login status reported unavailable",
+            "policy": {
+              "requested_runtime": "codex",
+              "allowed_runtimes": [
+                "codex",
+                "claude"
+              ],
+              "fallback_runtimes": [
+                "claude"
+              ],
+              "selection_source": "executor.id",
+              "uses_fallback": true
+            },
             "fallback": {
               "requested_runtime": "codex",
               "selected_runtime": "claude",
@@ -74,8 +99,8 @@
               "binary": "/tmp/fake-claude",
               "provider": "anthropic-claude-code",
               "artifact_paths": {
-                "runtime_detail": "/tmp/wave-app-server-runtime-proof-2902907-1774514645362/.wave/state/build/specs/wave-15-proof/agents/A1/runtime-detail.json",
-                "system_prompt": "/tmp/wave-app-server-runtime-proof-2902907-1774514645362/.wave/state/build/specs/wave-15-proof/agents/A1/claude-system-prompt.txt"
+                "runtime_detail": "/tmp/wave-app-server-runtime-proof-3154326-1774530128685/.wave/state/build/specs/wave-15-proof/agents/A1/runtime-detail.json",
+                "system_prompt": "/tmp/wave-app-server-runtime-proof-3154326-1774530128685/.wave/state/build/specs/wave-15-proof/agents/A1/claude-system-prompt.txt"
               }
             },
             "skill_projection": {
@@ -105,10 +130,14 @@
       "status": "running",
       "created_at_ms": 1,
       "started_at_ms": 2,
-      "elapsed_ms": 1774514645364,
+      "elapsed_ms": 1774530128687,
       "current_agent_id": "A1",
       "current_agent_title": "Implementation",
-      "activity_excerpt": "[wave-proof]",
+      "activity_excerpt": "",
+      "last_activity_at_ms": 1774530128685,
+      "activity_source": "stderr",
+      "stalled": false,
+      "stall_reason": null,
       "execution": {
         "worktree": null,
         "promotion": null,
@@ -118,6 +147,15 @@
       },
       "runtime_summary": {
         "selected_runtimes": [
+          "claude"
+        ],
+        "requested_runtimes": [
+          "codex"
+        ],
+        "selection_sources": [
+          "executor.id"
+        ],
+        "fallback_targets": [
           "claude"
         ],
         "fallback_count": 1,
@@ -160,6 +198,18 @@
           "runtime": {
             "selected_runtime": "claude",
             "selection_reason": "selected claude after fallback because codex login status reported unavailable",
+            "policy": {
+              "requested_runtime": "codex",
+              "allowed_runtimes": [
+                "codex",
+                "claude"
+              ],
+              "fallback_runtimes": [
+                "claude"
+              ],
+              "selection_source": "executor.id",
+              "uses_fallback": true
+            },
             "fallback": {
               "requested_runtime": "codex",
               "selected_runtime": "claude",
@@ -170,8 +220,8 @@
               "binary": "/tmp/fake-claude",
               "provider": "anthropic-claude-code",
               "artifact_paths": {
-                "runtime_detail": "/tmp/wave-app-server-runtime-proof-2902907-1774514645362/.wave/state/build/specs/wave-15-proof/agents/A1/runtime-detail.json",
-                "system_prompt": "/tmp/wave-app-server-runtime-proof-2902907-1774514645362/.wave/state/build/specs/wave-15-proof/agents/A1/claude-system-prompt.txt"
+                "runtime_detail": "/tmp/wave-app-server-runtime-proof-3154326-1774530128685/.wave/state/build/specs/wave-15-proof/agents/A1/runtime-detail.json",
+                "system_prompt": "/tmp/wave-app-server-runtime-proof-3154326-1774530128685/.wave/state/build/specs/wave-15-proof/agents/A1/claude-system-prompt.txt"
               }
             },
             "skill_projection": {
@@ -189,6 +239,100 @@
             }
           }
         }
+      ]
+    }
+  ],
+  "runtime_boundary_policy": {
+    "executor_boundary": "runtime-neutral launch spec plus adapter registry in wave-runtime",
+    "selection_policy": "explicit executor runtime selection with default codex and authored fallback order",
+    "fallback_policy": "fallback only when the selected runtime is unavailable before meaningful work starts",
+    "default_runtime": "codex",
+    "supported_runtimes": [
+      "claude",
+      "codex"
+    ]
+  },
+  "proof_surfaces": [
+    {
+      "surface": "operator.latest_run_details.runtime",
+      "backing": "live-transport",
+      "artifact_path": null,
+      "detail": "latest and active run detail transport exposes selected runtime, policy, fallback, execution identity, and skill projection per agent"
+    },
+    {
+      "surface": "docs.phase-3.operator-runtime-transport",
+      "backing": "fixture-backed",
+      "artifact_path": "docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/operator-runtime-transport.json",
+      "detail": "the Wave 15 proof bundle shows one shared runtime contract resolved through codex-direct and claude-fallback paths"
+    }
+  ],
+  "policy_contract_resolutions": [
+    {
+      "label": "codex-direct",
+      "proof_backing": "fixture-backed",
+      "contract": {
+        "requested_runtime": "codex",
+        "allowed_runtimes": [
+          "codex",
+          "claude"
+        ],
+        "fallback_runtimes": [
+          "claude"
+        ],
+        "selection_source": "executor.id"
+      },
+      "selected_runtime": "codex",
+      "selection_reason": "selected codex from executor.id",
+      "uses_fallback": false,
+      "fallback": null,
+      "execution_identity": {
+        "adapter": "wave-runtime/codex",
+        "binary": "/tmp/fake-codex",
+        "provider": "openai-codex-cli",
+        "artifact_paths": {
+          "runtime_detail": ".wave/state/build/specs/wave-15-proof-codex/agents/A1/runtime-detail.json",
+          "runtime_prompt": ".wave/state/build/specs/wave-15-proof-codex/agents/A1/runtime-prompt.md"
+        }
+      },
+      "projected_skills": [
+        "wave-core",
+        "runtime-codex"
+      ]
+    },
+    {
+      "label": "claude-fallback",
+      "proof_backing": "fixture-backed",
+      "contract": {
+        "requested_runtime": "codex",
+        "allowed_runtimes": [
+          "codex",
+          "claude"
+        ],
+        "fallback_runtimes": [
+          "claude"
+        ],
+        "selection_source": "executor.id"
+      },
+      "selected_runtime": "claude",
+      "selection_reason": "selected claude after fallback because codex login status reported unavailable",
+      "uses_fallback": true,
+      "fallback": {
+        "requested_runtime": "codex",
+        "selected_runtime": "claude",
+        "reason": "codex login status reported unavailable"
+      },
+      "execution_identity": {
+        "adapter": "wave-runtime/claude",
+        "binary": "/tmp/fake-claude",
+        "provider": "anthropic-claude-code",
+        "artifact_paths": {
+          "runtime_detail": ".wave/state/build/specs/wave-15-proof-claude/agents/A1/runtime-detail.json",
+          "system_prompt": ".wave/state/build/specs/wave-15-proof-claude/agents/A1/claude-system-prompt.txt"
+        }
+      },
+      "projected_skills": [
+        "wave-core",
+        "runtime-claude"
       ]
     }
   ]

@@ -6,9 +6,9 @@
     "summary": {
       "total_waves": 18,
       "ready_waves": 2,
-      "blocked_waves": 3,
+      "blocked_waves": 2,
       "active_waves": 0,
-      "completed_waves": 13,
+      "completed_waves": 14,
       "total_agents": 107,
       "implementation_agents": 49,
       "closure_agents": 58,
@@ -26,25 +26,25 @@
     "queue": {
       "next_ready_wave_ids": [
         13,
-        15
+        16
       ],
       "next_ready_wave_id": 13,
       "claimable_wave_ids": [
         13,
-        15
+        16
       ],
       "claimed_wave_ids": [],
       "ready_wave_count": 2,
       "claimed_wave_count": 0,
-      "blocked_wave_count": 3,
+      "blocked_wave_count": 2,
       "active_wave_count": 0,
-      "completed_wave_count": 13,
+      "completed_wave_count": 14,
       "queue_ready": true,
       "queue_ready_reason": "ready waves are available to claim"
     },
     "next_ready_wave_ids": [
       13,
-      15
+      16
     ],
     "waves": [
       {
@@ -71,15 +71,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -123,6 +123,7 @@
           }
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded"
       },
@@ -152,15 +153,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -204,6 +205,7 @@
           }
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded"
       },
@@ -233,15 +235,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -285,6 +287,7 @@
           }
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded"
       },
@@ -314,15 +317,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -366,6 +369,7 @@
           }
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded"
       },
@@ -395,15 +399,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -447,6 +451,7 @@
           }
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded"
       },
@@ -477,15 +482,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -529,6 +534,7 @@
           }
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded"
       },
@@ -560,15 +566,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -612,6 +618,7 @@
           }
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded"
       },
@@ -643,15 +650,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -695,6 +702,7 @@
           }
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded"
       },
@@ -726,15 +734,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -778,6 +786,7 @@
           }
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded"
       },
@@ -809,15 +818,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -861,6 +870,7 @@
           }
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded"
       },
@@ -890,15 +900,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -942,6 +952,7 @@
           }
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded"
       },
@@ -971,15 +982,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -1023,6 +1034,7 @@
           }
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded"
       },
@@ -1052,15 +1064,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -1104,6 +1116,7 @@
           }
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded"
       },
@@ -1125,15 +1138,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -1167,6 +1180,7 @@
           "primary_reason": null
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": false,
         "last_run_status": null
       },
@@ -1196,15 +1210,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -1250,6 +1264,7 @@
           }
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": false,
         "last_run_status": "dry_run"
       },
@@ -1260,35 +1275,155 @@
         "depends_on": [
           14
         ],
-        "blocked_by": [],
-        "blocker_state": [],
+        "blocked_by": [
+          "already-completed",
+          "closure:promotion-blocked:conflicted"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          },
+          {
+            "kind": "closure",
+            "raw": "closure:promotion-blocked:conflicted",
+            "detail": "promotion-blocked:conflicted"
+          }
+        ],
         "lint_errors": 0,
-        "ready": true,
+        "ready": false,
         "ownership": {
           "claim": null,
           "active_leases": [],
-          "stale_leases": [],
+          "stale_leases": [
+            {
+              "lease_id": "lease-wave-15-a1",
+              "task_id": "wave-15:agent-a1",
+              "claim_id": "claim-wave-15-wave-15-1774525178250",
+              "owner": {
+                "scheduler_id": "wave-runtime",
+                "scheduler_path": "wave-runtime/launcher",
+                "runtime": null,
+                "executor": null,
+                "session_id": "wave-15-1774525178250",
+                "process_id": 739789,
+                "process_started_at_ms": 1774525170771
+              },
+              "state": "released",
+              "granted_at_ms": 1774525186801,
+              "heartbeat_at_ms": 1774525445270,
+              "expires_at_ms": 1774525462519,
+              "finished_at_ms": 1774525445270,
+              "stale": true,
+              "detail": "agent A1 completed"
+            },
+            {
+              "lease_id": "lease-wave-15-a2",
+              "task_id": "wave-15:agent-a2",
+              "claim_id": "claim-wave-15-wave-15-1774525178250",
+              "owner": {
+                "scheduler_id": "wave-runtime",
+                "scheduler_path": "wave-runtime/launcher",
+                "runtime": null,
+                "executor": null,
+                "session_id": "wave-15-1774525178250",
+                "process_id": 739789,
+                "process_started_at_ms": 1774525170771
+              },
+              "state": "released",
+              "granted_at_ms": 1774525445591,
+              "heartbeat_at_ms": 1774525882405,
+              "expires_at_ms": 1774525898729,
+              "finished_at_ms": 1774525882405,
+              "stale": true,
+              "detail": "agent A2 completed"
+            },
+            {
+              "lease_id": "lease-wave-15-a3",
+              "task_id": "wave-15:agent-a3",
+              "claim_id": "claim-wave-15-wave-15-1774525178250",
+              "owner": {
+                "scheduler_id": "wave-runtime",
+                "scheduler_path": "wave-runtime/launcher",
+                "runtime": null,
+                "executor": null,
+                "session_id": "wave-15-1774525178250",
+                "process_id": 739789,
+                "process_started_at_ms": 1774525170768
+              },
+              "state": "released",
+              "granted_at_ms": 1774525882778,
+              "heartbeat_at_ms": 1774526590437,
+              "expires_at_ms": 1774526606985,
+              "finished_at_ms": 1774526590437,
+              "stale": true,
+              "detail": "agent A3 completed"
+            }
+          ],
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
         "execution": {
-          "worktree": null,
-          "promotion": null,
-          "scheduling": null,
-          "merge_blocked": false,
-          "closure_blocked_by_promotion": false
+          "worktree": {
+            "worktree_id": "worktree-wave-15-wave-15-1774525178250",
+            "wave_id": 15,
+            "state": "released",
+            "path": "./.wave/state/worktrees/wave-15-wave-15-1774525178250",
+            "base_ref": "main",
+            "snapshot_ref": "85556237ad06e0c079607fbdf9994d001521e04e",
+            "branch_ref": null,
+            "shared_scope": "wave",
+            "allocated_at_ms": 1774525179766,
+            "released_at_ms": 1774526804012,
+            "detail": "promotion blocked before closure"
+          },
+          "promotion": {
+            "promotion_id": "promotion-wave-15-85556237ad06e0c079607fbdf9994d001521e04e",
+            "wave_id": 15,
+            "worktree_id": "worktree-wave-15-wave-15-1774525178250",
+            "state": "conflicted",
+            "target_ref": "main",
+            "snapshot_ref": "85556237ad06e0c079607fbdf9994d001521e04e",
+            "candidate_ref": "44014255d464b59c2c7eb531feda0f7c65ab149c",
+            "candidate_tree": "1d0123bf93a9aea42e25cd2c8ef44a5bbf4814d9",
+            "conflict_paths": [
+              "crates/wave-app-server/src/lib.rs",
+              "crates/wave-cli/src/main.rs",
+              "crates/wave-domain/src/lib.rs",
+              "crates/wave-results/src/lib.rs",
+              "crates/wave-runtime/src/lib.rs"
+            ],
+            "checked_at_ms": 1774526800880,
+            "completed_at_ms": 1774526803129,
+            "detail": "promotion blocked by merge conflicts: crates/wave-app-server/src/lib.rs, crates/wave-cli/src/main.rs, crates/wave-domain/src/lib.rs, crates/wave-results/src/lib.rs, crates/wave-runtime/src/lib.rs"
+          },
+          "scheduling": {
+            "wave_id": 15,
+            "phase": "promotion",
+            "priority": "closure",
+            "state": "released",
+            "fairness_rank": 2,
+            "waiting_since_ms": null,
+            "protected_closure_capacity": true,
+            "preemptible": false,
+            "last_decision": "closure blocked because promotion is not ready",
+            "updated_at_ms": 1774526804013
+          },
+          "merge_blocked": true,
+          "closure_blocked_by_promotion": true
         },
         "agent_count": 7,
         "implementation_agent_count": 3,
@@ -1308,15 +1443,31 @@
         ],
         "missing_closure_agents": [],
         "readiness": {
-          "state": "ready",
-          "planning_ready": true,
-          "claimable": true,
-          "reasons": [],
-          "primary_reason": null
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            },
+            {
+              "kind": "closure",
+              "raw": "closure:promotion-blocked:conflicted",
+              "detail": "promotion-blocked:conflicted"
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
         },
         "rerun_requested": false,
-        "completed": false,
-        "last_run_status": null
+        "closure_override_applied": true,
+        "completed": true,
+        "last_run_status": "failed"
       },
       {
         "id": 16,
@@ -1325,18 +1476,10 @@
         "depends_on": [
           15
         ],
-        "blocked_by": [
-          "wave:15:pending"
-        ],
-        "blocker_state": [
-          {
-            "kind": "dependency",
-            "raw": "wave:15:pending",
-            "detail": "15:pending"
-          }
-        ],
+        "blocked_by": [],
+        "blocker_state": [],
         "lint_errors": 0,
-        "ready": false,
+        "ready": true,
         "ownership": {
           "claim": null,
           "active_leases": [],
@@ -1344,15 +1487,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -1381,23 +1524,14 @@
         ],
         "missing_closure_agents": [],
         "readiness": {
-          "state": "blocked",
-          "planning_ready": false,
-          "claimable": false,
-          "reasons": [
-            {
-              "kind": "dependency",
-              "raw": "wave:15:pending",
-              "detail": "15:pending"
-            }
-          ],
-          "primary_reason": {
-            "kind": "dependency",
-            "raw": "wave:15:pending",
-            "detail": "15:pending"
-          }
+          "state": "ready",
+          "planning_ready": true,
+          "claimable": true,
+          "reasons": [],
+          "primary_reason": null
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": false,
         "last_run_status": null
       },
@@ -1427,15 +1561,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -1481,6 +1615,7 @@
           }
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": false,
         "last_run_status": null
       }
@@ -1528,9 +1663,9 @@
           "title": "Land scheduler authority and the wave worktree contract"
         },
         {
-          "id": 15,
-          "slug": "runtime-policy-and-multi-runtime-adapters",
-          "title": "Land runtime policy and multi-runtime adapters"
+          "id": 16,
+          "slug": "decision-lineage-invalidation-and-human-input",
+          "title": "Land decision lineage, invalidation, and human input"
         }
       ],
       "claimed": [],
@@ -1600,6 +1735,11 @@
           "id": 12,
           "slug": "result-envelope-proof-lifecycle",
           "title": "Land result envelopes and proof lifecycle"
+        },
+        {
+          "id": 15,
+          "slug": "runtime-policy-and-multi-runtime-adapters",
+          "title": "Land runtime policy and multi-runtime adapters"
         }
       ],
       "blocked": [
@@ -1626,28 +1766,6 @@
           "last_run_status": "dry_run"
         },
         {
-          "id": 16,
-          "slug": "decision-lineage-invalidation-and-human-input",
-          "title": "Land decision lineage, invalidation, and human input",
-          "depends_on": [
-            15
-          ],
-          "blocked_by": [
-            "wave:15:pending"
-          ],
-          "blocker_state": [
-            {
-              "kind": "dependency",
-              "raw": "wave:15:pending",
-              "detail": "15:pending"
-            }
-          ],
-          "lint_errors": 0,
-          "missing_closure_agents": [],
-          "rerun_requested": false,
-          "last_run_status": null
-        },
-        {
           "id": 17,
           "slug": "portfolio-release-and-acceptance-packages",
           "title": "Land portfolio, release, and acceptance packages",
@@ -1671,14 +1789,14 @@
         }
       ],
       "blocker_summary": {
-        "dependency": 3,
+        "dependency": 2,
         "lint": 0,
-        "closure": 0,
+        "closure": 1,
         "ownership": 0,
         "lease_expired": 0,
         "budget": 0,
         "active_run": 0,
-        "already_completed": 13,
+        "already_completed": 14,
         "other": 0
       },
       "blocker_waves": {
@@ -1689,18 +1807,19 @@
             "title": "Land true parallel-wave execution and merge discipline"
           },
           {
-            "id": 16,
-            "slug": "decision-lineage-invalidation-and-human-input",
-            "title": "Land decision lineage, invalidation, and human input"
-          },
-          {
             "id": 17,
             "slug": "portfolio-release-and-acceptance-packages",
             "title": "Land portfolio, release, and acceptance packages"
           }
         ],
         "lint": [],
-        "closure": [],
+        "closure": [
+          {
+            "id": 15,
+            "slug": "runtime-policy-and-multi-runtime-adapters",
+            "title": "Land runtime policy and multi-runtime adapters"
+          }
+        ],
         "ownership": [],
         "lease_expired": [],
         "budget": [],
@@ -1770,6 +1889,11 @@
             "id": 12,
             "slug": "result-envelope-proof-lifecycle",
             "title": "Land result envelopes and proof lifecycle"
+          },
+          {
+            "id": 15,
+            "slug": "runtime-policy-and-multi-runtime-adapters",
+            "title": "Land runtime policy and multi-runtime adapters"
           }
         ],
         "other": []
@@ -1777,19 +1901,19 @@
       "readiness": {
         "next_ready_wave_ids": [
           13,
-          15
+          16
         ],
         "next_ready_wave_id": 13,
         "claimable_wave_ids": [
           13,
-          15
+          16
         ],
         "claimed_wave_ids": [],
         "ready_wave_count": 2,
         "claimed_wave_count": 0,
-        "blocked_wave_count": 3,
+        "blocked_wave_count": 2,
         "active_wave_count": 0,
-        "completed_wave_count": 13,
+        "completed_wave_count": 14,
         "queue_ready": true,
         "queue_ready_reason": "ready waves are available to claim"
       }
@@ -1804,7 +1928,7 @@
       "active_wave_ids": [],
       "active_run_ids": [],
       "active_run_count": 0,
-      "completed_run_count": 13
+      "completed_run_count": 14
     },
     "agents": {
       "total_agents": 107,
@@ -1929,15 +2053,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -1949,6 +2073,7 @@
           "closure_blocked_by_promotion": false
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded",
         "agents": {
@@ -2025,15 +2150,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -2045,6 +2170,7 @@
           "closure_blocked_by_promotion": false
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded",
         "agents": {
@@ -2121,15 +2247,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -2141,6 +2267,7 @@
           "closure_blocked_by_promotion": false
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded",
         "agents": {
@@ -2217,15 +2344,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -2237,6 +2364,7 @@
           "closure_blocked_by_promotion": false
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded",
         "agents": {
@@ -2313,15 +2441,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -2333,6 +2461,7 @@
           "closure_blocked_by_promotion": false
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded",
         "agents": {
@@ -2410,15 +2539,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -2430,6 +2559,7 @@
           "closure_blocked_by_promotion": false
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded",
         "agents": {
@@ -2508,15 +2638,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -2528,6 +2658,7 @@
           "closure_blocked_by_promotion": false
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded",
         "agents": {
@@ -2606,15 +2737,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -2626,6 +2757,7 @@
           "closure_blocked_by_promotion": false
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded",
         "agents": {
@@ -2704,15 +2836,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -2724,6 +2856,7 @@
           "closure_blocked_by_promotion": false
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded",
         "agents": {
@@ -2802,15 +2935,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -2822,6 +2955,7 @@
           "closure_blocked_by_promotion": false
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded",
         "agents": {
@@ -2898,15 +3032,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -2918,6 +3052,7 @@
           "closure_blocked_by_promotion": false
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded",
         "agents": {
@@ -2994,15 +3129,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -3014,6 +3149,7 @@
           "closure_blocked_by_promotion": false
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded",
         "agents": {
@@ -3090,15 +3226,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -3110,6 +3246,7 @@
           "closure_blocked_by_promotion": false
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": true,
         "last_run_status": "succeeded",
         "agents": {
@@ -3168,15 +3305,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -3188,6 +3325,7 @@
           "closure_blocked_by_promotion": false
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": false,
         "last_run_status": null,
         "agents": {
@@ -3264,15 +3402,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -3284,6 +3422,7 @@
           "closure_blocked_by_promotion": false
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": false,
         "last_run_status": "dry_run",
         "agents": {
@@ -3326,46 +3465,182 @@
         "depends_on": [
           14
         ],
-        "blocked_by": [],
-        "blocker_state": [],
+        "blocked_by": [
+          "already-completed",
+          "closure:promotion-blocked:conflicted"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          },
+          {
+            "kind": "closure",
+            "raw": "closure:promotion-blocked:conflicted",
+            "detail": "promotion-blocked:conflicted"
+          }
+        ],
         "readiness": {
-          "state": "ready",
-          "planning_ready": true,
-          "claimable": true,
-          "reasons": [],
-          "primary_reason": null
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            },
+            {
+              "kind": "closure",
+              "raw": "closure:promotion-blocked:conflicted",
+              "detail": "promotion-blocked:conflicted"
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
         },
         "lint_errors": 0,
-        "ready": true,
+        "ready": false,
         "ownership": {
           "claim": null,
           "active_leases": [],
-          "stale_leases": [],
+          "stale_leases": [
+            {
+              "lease_id": "lease-wave-15-a1",
+              "task_id": "wave-15:agent-a1",
+              "claim_id": "claim-wave-15-wave-15-1774525178250",
+              "owner": {
+                "scheduler_id": "wave-runtime",
+                "scheduler_path": "wave-runtime/launcher",
+                "runtime": null,
+                "executor": null,
+                "session_id": "wave-15-1774525178250",
+                "process_id": 739789,
+                "process_started_at_ms": 1774525170771
+              },
+              "state": "released",
+              "granted_at_ms": 1774525186801,
+              "heartbeat_at_ms": 1774525445270,
+              "expires_at_ms": 1774525462519,
+              "finished_at_ms": 1774525445270,
+              "stale": true,
+              "detail": "agent A1 completed"
+            },
+            {
+              "lease_id": "lease-wave-15-a2",
+              "task_id": "wave-15:agent-a2",
+              "claim_id": "claim-wave-15-wave-15-1774525178250",
+              "owner": {
+                "scheduler_id": "wave-runtime",
+                "scheduler_path": "wave-runtime/launcher",
+                "runtime": null,
+                "executor": null,
+                "session_id": "wave-15-1774525178250",
+                "process_id": 739789,
+                "process_started_at_ms": 1774525170771
+              },
+              "state": "released",
+              "granted_at_ms": 1774525445591,
+              "heartbeat_at_ms": 1774525882405,
+              "expires_at_ms": 1774525898729,
+              "finished_at_ms": 1774525882405,
+              "stale": true,
+              "detail": "agent A2 completed"
+            },
+            {
+              "lease_id": "lease-wave-15-a3",
+              "task_id": "wave-15:agent-a3",
+              "claim_id": "claim-wave-15-wave-15-1774525178250",
+              "owner": {
+                "scheduler_id": "wave-runtime",
+                "scheduler_path": "wave-runtime/launcher",
+                "runtime": null,
+                "executor": null,
+                "session_id": "wave-15-1774525178250",
+                "process_id": 739789,
+                "process_started_at_ms": 1774525170768
+              },
+              "state": "released",
+              "granted_at_ms": 1774525882778,
+              "heartbeat_at_ms": 1774526590437,
+              "expires_at_ms": 1774526606985,
+              "finished_at_ms": 1774526590437,
+              "stale": true,
+              "detail": "agent A3 completed"
+            }
+          ],
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
         "execution": {
-          "worktree": null,
-          "promotion": null,
-          "scheduling": null,
-          "merge_blocked": false,
-          "closure_blocked_by_promotion": false
+          "worktree": {
+            "worktree_id": "worktree-wave-15-wave-15-1774525178250",
+            "wave_id": 15,
+            "state": "released",
+            "path": "./.wave/state/worktrees/wave-15-wave-15-1774525178250",
+            "base_ref": "main",
+            "snapshot_ref": "85556237ad06e0c079607fbdf9994d001521e04e",
+            "branch_ref": null,
+            "shared_scope": "wave",
+            "allocated_at_ms": 1774525179766,
+            "released_at_ms": 1774526804012,
+            "detail": "promotion blocked before closure"
+          },
+          "promotion": {
+            "promotion_id": "promotion-wave-15-85556237ad06e0c079607fbdf9994d001521e04e",
+            "wave_id": 15,
+            "worktree_id": "worktree-wave-15-wave-15-1774525178250",
+            "state": "conflicted",
+            "target_ref": "main",
+            "snapshot_ref": "85556237ad06e0c079607fbdf9994d001521e04e",
+            "candidate_ref": "44014255d464b59c2c7eb531feda0f7c65ab149c",
+            "candidate_tree": "1d0123bf93a9aea42e25cd2c8ef44a5bbf4814d9",
+            "conflict_paths": [
+              "crates/wave-app-server/src/lib.rs",
+              "crates/wave-cli/src/main.rs",
+              "crates/wave-domain/src/lib.rs",
+              "crates/wave-results/src/lib.rs",
+              "crates/wave-runtime/src/lib.rs"
+            ],
+            "checked_at_ms": 1774526800880,
+            "completed_at_ms": 1774526803129,
+            "detail": "promotion blocked by merge conflicts: crates/wave-app-server/src/lib.rs, crates/wave-cli/src/main.rs, crates/wave-domain/src/lib.rs, crates/wave-results/src/lib.rs, crates/wave-runtime/src/lib.rs"
+          },
+          "scheduling": {
+            "wave_id": 15,
+            "phase": "promotion",
+            "priority": "closure",
+            "state": "released",
+            "fairness_rank": 2,
+            "waiting_since_ms": null,
+            "protected_closure_capacity": true,
+            "preemptible": false,
+            "last_decision": "closure blocked because promotion is not ready",
+            "updated_at_ms": 1774526804013
+          },
+          "merge_blocked": true,
+          "closure_blocked_by_promotion": true
         },
         "rerun_requested": false,
-        "completed": false,
-        "last_run_status": null,
+        "closure_override_applied": true,
+        "completed": true,
+        "last_run_status": "failed",
         "agents": {
           "total": 7,
           "implementation": 3,
@@ -3390,12 +3665,12 @@
         "blockers": {
           "dependency": false,
           "lint": false,
-          "closure": false,
+          "closure": true,
           "ownership": false,
           "lease_expired": false,
           "budget": false,
           "active_run": false,
-          "already_completed": false,
+          "already_completed": true,
           "other": false
         }
       },
@@ -3406,35 +3681,17 @@
         "depends_on": [
           15
         ],
-        "blocked_by": [
-          "wave:15:pending"
-        ],
-        "blocker_state": [
-          {
-            "kind": "dependency",
-            "raw": "wave:15:pending",
-            "detail": "15:pending"
-          }
-        ],
+        "blocked_by": [],
+        "blocker_state": [],
         "readiness": {
-          "state": "blocked",
-          "planning_ready": false,
-          "claimable": false,
-          "reasons": [
-            {
-              "kind": "dependency",
-              "raw": "wave:15:pending",
-              "detail": "15:pending"
-            }
-          ],
-          "primary_reason": {
-            "kind": "dependency",
-            "raw": "wave:15:pending",
-            "detail": "15:pending"
-          }
+          "state": "ready",
+          "planning_ready": true,
+          "claimable": true,
+          "reasons": [],
+          "primary_reason": null
         },
         "lint_errors": 0,
-        "ready": false,
+        "ready": true,
         "ownership": {
           "claim": null,
           "active_leases": [],
@@ -3442,15 +3699,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -3462,6 +3719,7 @@
           "closure_blocked_by_promotion": false
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": false,
         "last_run_status": null,
         "agents": {
@@ -3486,7 +3744,7 @@
           "missing_agents": []
         },
         "blockers": {
-          "dependency": true,
+          "dependency": false,
           "lint": false,
           "closure": false,
           "ownership": false,
@@ -3540,15 +3798,15 @@
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
-            "max_active_wave_claims": null,
-            "max_active_task_leases": null,
-            "reserved_closure_task_leases": null,
+            "max_active_wave_claims": 2,
+            "max_active_task_leases": 2,
+            "reserved_closure_task_leases": 1,
             "active_wave_claims": 0,
             "active_task_leases": 0,
             "active_implementation_task_leases": 0,
             "active_closure_task_leases": 0,
             "closure_capacity_reserved": false,
-            "preemption_enabled": false,
+            "preemption_enabled": true,
             "budget_blocked": false
           }
         },
@@ -3560,6 +3818,7 @@
           "closure_blocked_by_promotion": false
         },
         "rerun_requested": false,
+        "closure_override_applied": false,
         "completed": false,
         "last_run_status": null,
         "agents": {
@@ -3602,17 +3861,17 @@
       "project_name": "Codex Wave Mode",
       "next_ready_wave_ids": [
         13,
-        15
+        16
       ],
       "active_runs": [],
       "total_waves": 18,
-      "completed_waves": 13
+      "completed_waves": 14
     },
     "run": {
       "active_wave_ids": [],
       "active_run_ids": [],
       "active_run_count": 0,
-      "completed_run_count": 13
+      "completed_run_count": 14
     },
     "agents": {
       "total_agents": 107,
@@ -3688,38 +3947,37 @@
     "queue": {
       "ready_wave_count": 2,
       "claimed_wave_count": 0,
-      "blocked_wave_count": 3,
+      "blocked_wave_count": 2,
       "active_wave_count": 0,
-      "completed_wave_count": 13,
+      "completed_wave_count": 14,
       "ready_wave_ids": [
         13,
-        15
+        16
       ],
       "claimed_wave_ids": [],
       "blocked_wave_ids": [
         14,
-        16,
         17
       ],
       "active_wave_ids": [],
       "blocker_summary": {
-        "dependency": 3,
+        "dependency": 2,
         "lint": 0,
-        "closure": 0,
+        "closure": 1,
         "ownership": 0,
         "lease_expired": 0,
         "budget": 0,
         "active_run": 0,
-        "already_completed": 13,
+        "already_completed": 14,
         "other": 0
       },
       "next_ready_wave_ids": [
         13,
-        15
+        16
       ],
       "claimable_wave_ids": [
         13,
-        15
+        16
       ],
       "queue_ready": true,
       "queue_ready_reason": "ready waves are available to claim",
@@ -3833,15 +4091,15 @@
           "id": 15,
           "slug": "runtime-policy-and-multi-runtime-adapters",
           "title": "Land runtime policy and multi-runtime adapters",
-          "queue_state": "ready",
+          "queue_state": "completed",
           "blocked": false
         },
         {
           "id": 16,
           "slug": "decision-lineage-invalidation-and-human-input",
           "title": "Land decision lineage, invalidation, and human input",
-          "queue_state": "blocked: wave:15:pending",
-          "blocked": true
+          "queue_state": "ready",
+          "blocked": false
         },
         {
           "id": 17,
@@ -3956,29 +4214,35 @@
       "next_claimable_wave_id": 13,
       "claimable_wave_ids": [
         13,
-        15
+        16
       ],
       "claimed_wave_ids": [],
       "queue_ready_reason": "ready waves are available to claim",
       "blocker_summary": {
-        "dependency": 3,
+        "dependency": 2,
         "lint": 0,
-        "closure": 0,
+        "closure": 1,
         "ownership": 0,
         "lease_expired": 0,
         "budget": 0,
         "active_run": 0,
-        "already_completed": 13,
+        "already_completed": 14,
         "other": 0
       },
-      "closure_blocked": [],
+      "closure_blocked": [
+        {
+          "id": 15,
+          "slug": "runtime-policy-and-multi-runtime-adapters",
+          "title": "Land runtime policy and multi-runtime adapters"
+        }
+      ],
       "lines": [
         "queue decision: next claimable wave=13",
-        "queue decision: claimable waves=13, 15",
+        "queue decision: claimable waves=13, 16",
         "queue decision: claimed waves=none",
         "queue decision: queue ready reason=ready waves are available to claim",
-        "queue decision: blocker story dependency=3 lint=0 closure=0 ownership=0 lease_expired=0 budget=0 active_run=0",
-        "queue decision: closure-blocked=none"
+        "queue decision: blocker story dependency=2 lint=0 closure=1 ownership=0 lease_expired=0 budget=0 active_run=0",
+        "queue decision: closure-blocked=15:runtime-policy-and-multi-runtime-adapters"
       ]
     },
     "closure_attention_lines": [],
@@ -4049,12 +4313,12 @@
     {
       "name": "run-state",
       "ok": true,
-      "detail": "loaded 14 recorded runs, 0 active waves"
+      "detail": "loaded 15 recorded runs, 0 active waves"
     },
     {
       "name": "planning-queue",
       "ok": true,
-      "detail": "ready=2, blocked=3, active=0, completed=13 | blockers dependency=3 (3) lint=0 (0) closure=0 (0) active_run=0 (0)"
+      "detail": "ready=2, blocked=2, active=0, completed=14 | blockers dependency=2 (2) lint=0 (0) closure=1 (1) active_run=0 (0)"
     }
   ],
   "role_prompts": {
@@ -4127,7 +4391,7 @@
     "projection_source": "planning status, queue/control JSON, and operator-facing status surfaces are reducer-backed projections over canonical scheduler authority plus compatibility run records; proof and closure surfaces are envelope-first, and replay remains compatibility-backed"
   },
   "runtime_boundary": {
-    "executor_boundary": "runtime-neutral adapter registry in wave-runtime",
+    "executor_boundary": "runtime-neutral launch spec plus adapter registry in wave-runtime",
     "selection_policy": "explicit executor runtime selection with default codex and authored fallback order",
     "fallback_policy": "fallback only when the selected runtime is unavailable before meaningful work starts",
     "runtimes": [
@@ -4144,5 +4408,23 @@
         "detail": "available"
       }
     ]
-  }
+  },
+  "closure_overrides": [
+    {
+      "override_id": "closure-override-wave-15-1774530026774",
+      "wave_id": 15,
+      "status": "applied",
+      "reason": "promotion conflict accepted after Wave 15 runtime-policy work was reconciled in the root workspace",
+      "requested_by": "operator",
+      "source_run_id": "wave-15-1774525178250",
+      "evidence_paths": [
+        "docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/runtime-boundary-proof.json",
+        "docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/operator-runtime-transport.json",
+        ".wave/state/runs/wave-15-1774525178250.json"
+      ],
+      "detail": "The live rerun proved the runtime boundary locally, then failed only at promotion because the same Wave 15 files were already edited in the root workspace. This override waives the failed promotion without rewriting the failed run record so dependent waves can proceed.",
+      "applied_at_ms": 1774530026774,
+      "cleared_at_ms": null
+    }
+  ]
 }

@@ -76,7 +76,7 @@
     "projection_source": "planning status, queue/control JSON, and operator-facing status surfaces are reducer-backed projections over canonical scheduler authority plus compatibility run records; proof and closure surfaces are envelope-first, and replay remains compatibility-backed"
   },
   "runtime_boundary": {
-    "executor_boundary": "runtime-neutral adapter registry in wave-runtime",
+    "executor_boundary": "runtime-neutral launch spec plus adapter registry in wave-runtime",
     "selection_policy": "explicit executor runtime selection with default codex and authored fallback order",
     "fallback_policy": "fallback only when the selected runtime is unavailable before meaningful work starts",
     "runtimes": [
@@ -93,5 +93,23 @@
         "detail": "available"
       }
     ]
-  }
+  },
+  "closure_overrides": [
+    {
+      "override_id": "closure-override-wave-15-1774530026774",
+      "wave_id": 15,
+      "status": "applied",
+      "reason": "promotion conflict accepted after Wave 15 runtime-policy work was reconciled in the root workspace",
+      "requested_by": "operator",
+      "source_run_id": "wave-15-1774525178250",
+      "evidence_paths": [
+        "docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/runtime-boundary-proof.json",
+        "docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/operator-runtime-transport.json",
+        ".wave/state/runs/wave-15-1774525178250.json"
+      ],
+      "detail": "The live rerun proved the runtime boundary locally, then failed only at promotion because the same Wave 15 files were already edited in the root workspace. This override waives the failed promotion without rewriting the failed run record so dependent waves can proceed.",
+      "applied_at_ms": 1774530026774,
+      "cleared_at_ms": null
+    }
+  ]
 }

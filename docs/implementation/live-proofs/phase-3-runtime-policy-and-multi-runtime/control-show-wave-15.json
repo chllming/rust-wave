@@ -6,35 +6,155 @@
     "depends_on": [
       14
     ],
-    "blocked_by": [],
-    "blocker_state": [],
+    "blocked_by": [
+      "already-completed",
+      "closure:promotion-blocked:conflicted"
+    ],
+    "blocker_state": [
+      {
+        "kind": "already_completed",
+        "raw": "already-completed",
+        "detail": null
+      },
+      {
+        "kind": "closure",
+        "raw": "closure:promotion-blocked:conflicted",
+        "detail": "promotion-blocked:conflicted"
+      }
+    ],
     "lint_errors": 0,
-    "ready": true,
+    "ready": false,
     "ownership": {
       "claim": null,
       "active_leases": [],
-      "stale_leases": [],
+      "stale_leases": [
+        {
+          "lease_id": "lease-wave-15-a1",
+          "task_id": "wave-15:agent-a1",
+          "claim_id": "claim-wave-15-wave-15-1774525178250",
+          "owner": {
+            "scheduler_id": "wave-runtime",
+            "scheduler_path": "wave-runtime/launcher",
+            "runtime": null,
+            "executor": null,
+            "session_id": "wave-15-1774525178250",
+            "process_id": 739789,
+            "process_started_at_ms": 1774525170771
+          },
+          "state": "released",
+          "granted_at_ms": 1774525186801,
+          "heartbeat_at_ms": 1774525445270,
+          "expires_at_ms": 1774525462519,
+          "finished_at_ms": 1774525445270,
+          "stale": true,
+          "detail": "agent A1 completed"
+        },
+        {
+          "lease_id": "lease-wave-15-a2",
+          "task_id": "wave-15:agent-a2",
+          "claim_id": "claim-wave-15-wave-15-1774525178250",
+          "owner": {
+            "scheduler_id": "wave-runtime",
+            "scheduler_path": "wave-runtime/launcher",
+            "runtime": null,
+            "executor": null,
+            "session_id": "wave-15-1774525178250",
+            "process_id": 739789,
+            "process_started_at_ms": 1774525170771
+          },
+          "state": "released",
+          "granted_at_ms": 1774525445591,
+          "heartbeat_at_ms": 1774525882405,
+          "expires_at_ms": 1774525898729,
+          "finished_at_ms": 1774525882405,
+          "stale": true,
+          "detail": "agent A2 completed"
+        },
+        {
+          "lease_id": "lease-wave-15-a3",
+          "task_id": "wave-15:agent-a3",
+          "claim_id": "claim-wave-15-wave-15-1774525178250",
+          "owner": {
+            "scheduler_id": "wave-runtime",
+            "scheduler_path": "wave-runtime/launcher",
+            "runtime": null,
+            "executor": null,
+            "session_id": "wave-15-1774525178250",
+            "process_id": 739789,
+            "process_started_at_ms": 1774525170768
+          },
+          "state": "released",
+          "granted_at_ms": 1774525882778,
+          "heartbeat_at_ms": 1774526590437,
+          "expires_at_ms": 1774526606985,
+          "finished_at_ms": 1774526590437,
+          "stale": true,
+          "detail": "agent A3 completed"
+        }
+      ],
       "contention_reasons": [],
       "blocked_by_owner": null,
       "budget": {
-        "max_active_wave_claims": null,
-        "max_active_task_leases": null,
-        "reserved_closure_task_leases": null,
+        "max_active_wave_claims": 2,
+        "max_active_task_leases": 2,
+        "reserved_closure_task_leases": 1,
         "active_wave_claims": 0,
         "active_task_leases": 0,
         "active_implementation_task_leases": 0,
         "active_closure_task_leases": 0,
         "closure_capacity_reserved": false,
-        "preemption_enabled": false,
+        "preemption_enabled": true,
         "budget_blocked": false
       }
     },
     "execution": {
-      "worktree": null,
-      "promotion": null,
-      "scheduling": null,
-      "merge_blocked": false,
-      "closure_blocked_by_promotion": false
+      "worktree": {
+        "worktree_id": "worktree-wave-15-wave-15-1774525178250",
+        "wave_id": 15,
+        "state": "released",
+        "path": "./.wave/state/worktrees/wave-15-wave-15-1774525178250",
+        "base_ref": "main",
+        "snapshot_ref": "85556237ad06e0c079607fbdf9994d001521e04e",
+        "branch_ref": null,
+        "shared_scope": "wave",
+        "allocated_at_ms": 1774525179766,
+        "released_at_ms": 1774526804012,
+        "detail": "promotion blocked before closure"
+      },
+      "promotion": {
+        "promotion_id": "promotion-wave-15-85556237ad06e0c079607fbdf9994d001521e04e",
+        "wave_id": 15,
+        "worktree_id": "worktree-wave-15-wave-15-1774525178250",
+        "state": "conflicted",
+        "target_ref": "main",
+        "snapshot_ref": "85556237ad06e0c079607fbdf9994d001521e04e",
+        "candidate_ref": "44014255d464b59c2c7eb531feda0f7c65ab149c",
+        "candidate_tree": "1d0123bf93a9aea42e25cd2c8ef44a5bbf4814d9",
+        "conflict_paths": [
+          "crates/wave-app-server/src/lib.rs",
+          "crates/wave-cli/src/main.rs",
+          "crates/wave-domain/src/lib.rs",
+          "crates/wave-results/src/lib.rs",
+          "crates/wave-runtime/src/lib.rs"
+        ],
+        "checked_at_ms": 1774526800880,
+        "completed_at_ms": 1774526803129,
+        "detail": "promotion blocked by merge conflicts: crates/wave-app-server/src/lib.rs, crates/wave-cli/src/main.rs, crates/wave-domain/src/lib.rs, crates/wave-results/src/lib.rs, crates/wave-runtime/src/lib.rs"
+      },
+      "scheduling": {
+        "wave_id": 15,
+        "phase": "promotion",
+        "priority": "closure",
+        "state": "released",
+        "fairness_rank": 2,
+        "waiting_since_ms": null,
+        "protected_closure_capacity": true,
+        "preemptible": false,
+        "last_decision": "closure blocked because promotion is not ready",
+        "updated_at_ms": 1774526804013
+      },
+      "merge_blocked": true,
+      "closure_blocked_by_promotion": true
     },
     "agent_count": 7,
     "implementation_agent_count": 3,
@@ -54,16 +174,528 @@
     ],
     "missing_closure_agents": [],
     "readiness": {
-      "state": "ready",
-      "planning_ready": true,
-      "claimable": true,
-      "reasons": [],
-      "primary_reason": null
+      "state": "completed",
+      "planning_ready": false,
+      "claimable": false,
+      "reasons": [
+        {
+          "kind": "already_completed",
+          "raw": "already-completed",
+          "detail": null
+        },
+        {
+          "kind": "closure",
+          "raw": "closure:promotion-blocked:conflicted",
+          "detail": "promotion-blocked:conflicted"
+        }
+      ],
+      "primary_reason": {
+        "kind": "already_completed",
+        "raw": "already-completed",
+        "detail": null
+      }
     },
     "rerun_requested": false,
-    "completed": false,
-    "last_run_status": null
+    "closure_override_applied": true,
+    "completed": true,
+    "last_run_status": "failed"
   },
-  "latest_run": null,
-  "rerun_intent": null
+  "latest_run": {
+    "wave_id": 15,
+    "wave_slug": "runtime-policy-and-multi-runtime-adapters",
+    "wave_title": "Land runtime policy and multi-runtime adapters",
+    "run_id": "wave-15-1774525178250",
+    "status": "failed",
+    "created_at_ms": 1774525179766,
+    "started_at_ms": 1774525186801,
+    "elapsed_ms": 4965106,
+    "current_agent_id": "A6",
+    "current_agent_title": "Design Review Steward",
+    "activity_excerpt": "Review report is in [.wave/design/wave-15.md](/home/coder/codex-wave-mode/.wave/state/worktrees/wave-15-wave-15-1774525178250/.wave/design/wave-15.md). The disposition is `aligned`: the landed Wave 15 surfaces make runtime identity, selection, fallback cause, and adapter visibility clear enough in `Agents` and `Control` without leaking runtime-native semantics into queue truth.\n\n[wave-design] state=aligned findings=0 detail=runtime identity, selection, fallback, and adapter cues are operator-honest without leaking runtime semantics",
+    "last_activity_at_ms": 1774526800533,
+    "activity_source": "last-message",
+    "stalled": false,
+    "stall_reason": null,
+    "execution": {
+      "worktree": {
+        "worktree_id": "worktree-wave-15-wave-15-1774525178250",
+        "wave_id": 15,
+        "state": "released",
+        "path": "/home/coder/codex-wave-mode/./.wave/state/worktrees/wave-15-wave-15-1774525178250",
+        "base_ref": "main",
+        "snapshot_ref": "85556237ad06e0c079607fbdf9994d001521e04e",
+        "branch_ref": null,
+        "shared_scope": "wave",
+        "allocated_at_ms": 1774525179766,
+        "released_at_ms": 1774526804012,
+        "detail": "promotion blocked before closure"
+      },
+      "promotion": {
+        "promotion_id": "promotion-wave-15-85556237ad06e0c079607fbdf9994d001521e04e",
+        "wave_id": 15,
+        "worktree_id": "worktree-wave-15-wave-15-1774525178250",
+        "state": "conflicted",
+        "target_ref": "main",
+        "snapshot_ref": "85556237ad06e0c079607fbdf9994d001521e04e",
+        "candidate_ref": "44014255d464b59c2c7eb531feda0f7c65ab149c",
+        "candidate_tree": "1d0123bf93a9aea42e25cd2c8ef44a5bbf4814d9",
+        "conflict_paths": [
+          "crates/wave-app-server/src/lib.rs",
+          "crates/wave-cli/src/main.rs",
+          "crates/wave-domain/src/lib.rs",
+          "crates/wave-results/src/lib.rs",
+          "crates/wave-runtime/src/lib.rs"
+        ],
+        "checked_at_ms": 1774526800880,
+        "completed_at_ms": 1774526803129,
+        "detail": "promotion blocked by merge conflicts: crates/wave-app-server/src/lib.rs, crates/wave-cli/src/main.rs, crates/wave-domain/src/lib.rs, crates/wave-results/src/lib.rs, crates/wave-runtime/src/lib.rs"
+      },
+      "scheduling": {
+        "wave_id": 15,
+        "phase": "promotion",
+        "priority": "closure",
+        "state": "released",
+        "fairness_rank": 2,
+        "waiting_since_ms": null,
+        "protected_closure_capacity": true,
+        "preemptible": false,
+        "last_decision": "closure blocked because promotion is not ready",
+        "updated_at_ms": 1774526804013
+      },
+      "merge_blocked": true,
+      "closure_blocked_by_promotion": true
+    },
+    "runtime_summary": {
+      "selected_runtimes": [
+        "codex"
+      ],
+      "requested_runtimes": [
+        "codex"
+      ],
+      "selection_sources": [
+        "executor.codex-fields"
+      ],
+      "fallback_targets": [],
+      "fallback_count": 0,
+      "agents_with_runtime": 4
+    },
+    "proof": {
+      "declared_artifacts": [
+        {
+          "path": "Cargo.toml",
+          "exists": true
+        },
+        {
+          "path": "crates/wave-domain/src/lib.rs",
+          "exists": true
+        },
+        {
+          "path": "crates/wave-results/src/lib.rs",
+          "exists": true
+        },
+        {
+          "path": "crates/wave-runtime/src/lib.rs",
+          "exists": true
+        },
+        {
+          "path": "crates/wave-cli/src/main.rs",
+          "exists": true
+        },
+        {
+          "path": "crates/wave-app-server/src/lib.rs",
+          "exists": true
+        },
+        {
+          "path": "docs/reference/runtime-config/README.md",
+          "exists": true
+        },
+        {
+          "path": "docs/reference/runtime-config/codex.md",
+          "exists": true
+        },
+        {
+          "path": "docs/reference/runtime-config/claude.md",
+          "exists": true
+        },
+        {
+          "path": "docs/reference/skills.md",
+          "exists": true
+        },
+        {
+          "path": "docs/implementation/parallel-wave-multi-runtime-architecture.md",
+          "exists": true
+        },
+        {
+          "path": "docs/implementation/design.md",
+          "exists": true
+        },
+        {
+          "path": "docs/plans/master-plan.md",
+          "exists": true
+        },
+        {
+          "path": "docs/plans/current-state.md",
+          "exists": true
+        }
+      ],
+      "complete": false,
+      "proof_source": "mixed-envelope-and-compatibility",
+      "completed_agents": 4,
+      "envelope_backed_agents": 4,
+      "compatibility_backed_agents": 3,
+      "total_agents": 7
+    },
+    "replay": {
+      "run_id": "wave-15-1774525178250",
+      "wave_id": 15,
+      "ok": true,
+      "issues": []
+    },
+    "agents": [
+      {
+        "id": "A1",
+        "title": "Executor API And Codex Adapter",
+        "status": "succeeded",
+        "current_task": "Executor API And Codex Adapter",
+        "proof_complete": true,
+        "proof_source": "structured-envelope",
+        "expected_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "observed_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "missing_markers": [],
+        "deliverables": [
+          "Cargo.toml",
+          "crates/wave-runtime/src/lib.rs",
+          "crates/wave-cli/src/main.rs"
+        ],
+        "error": null,
+        "runtime": {
+          "selected_runtime": "codex",
+          "selection_reason": "selected codex because the executor declares runtime-specific fields",
+          "policy": {
+            "requested_runtime": "codex",
+            "allowed_runtimes": [
+              "codex"
+            ],
+            "fallback_runtimes": [],
+            "selection_source": "executor.codex-fields",
+            "uses_fallback": false
+          },
+          "fallback": null,
+          "execution_identity": {
+            "adapter": "wave-runtime/codex",
+            "binary": "codex",
+            "provider": "openai-codex-cli",
+            "artifact_paths": {
+              "prompt": "/home/coder/codex-wave-mode/./.wave/state/build/specs/wave-15-1774525178250/agents/A1/runtime-prompt.md",
+              "runtime_detail": "/home/coder/codex-wave-mode/./.wave/state/build/specs/wave-15-1774525178250/agents/A1/runtime-detail.json",
+              "skill_overlay": "/home/coder/codex-wave-mode/./.wave/state/build/specs/wave-15-1774525178250/agents/A1/runtime-skill-overlay.md"
+            }
+          },
+          "skill_projection": {
+            "declared_skills": [
+              "wave-core",
+              "role-implementation",
+              "runtime-codex",
+              "repo-codex-orchestrator",
+              "repo-rust-workspace",
+              "repo-wave-closure-markers"
+            ],
+            "projected_skills": [
+              "wave-core",
+              "role-implementation",
+              "runtime-codex",
+              "repo-codex-orchestrator",
+              "repo-rust-workspace",
+              "repo-wave-closure-markers"
+            ],
+            "dropped_skills": [],
+            "auto_attached_skills": []
+          }
+        }
+      },
+      {
+        "id": "A2",
+        "title": "Claude Adapter And Skill Projection",
+        "status": "succeeded",
+        "current_task": "Claude Adapter And Skill Projection",
+        "proof_complete": true,
+        "proof_source": "structured-envelope",
+        "expected_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "observed_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "missing_markers": [],
+        "deliverables": [
+          "crates/wave-domain/src/lib.rs",
+          "crates/wave-results/src/lib.rs"
+        ],
+        "error": null,
+        "runtime": {
+          "selected_runtime": "codex",
+          "selection_reason": "selected codex because the executor declares runtime-specific fields",
+          "policy": {
+            "requested_runtime": "codex",
+            "allowed_runtimes": [
+              "codex"
+            ],
+            "fallback_runtimes": [],
+            "selection_source": "executor.codex-fields",
+            "uses_fallback": false
+          },
+          "fallback": null,
+          "execution_identity": {
+            "adapter": "wave-runtime/codex",
+            "binary": "codex",
+            "provider": "openai-codex-cli",
+            "artifact_paths": {
+              "prompt": "/home/coder/codex-wave-mode/./.wave/state/build/specs/wave-15-1774525178250/agents/A2/runtime-prompt.md",
+              "runtime_detail": "/home/coder/codex-wave-mode/./.wave/state/build/specs/wave-15-1774525178250/agents/A2/runtime-detail.json",
+              "skill_overlay": "/home/coder/codex-wave-mode/./.wave/state/build/specs/wave-15-1774525178250/agents/A2/runtime-skill-overlay.md"
+            }
+          },
+          "skill_projection": {
+            "declared_skills": [
+              "wave-core",
+              "role-implementation",
+              "runtime-codex",
+              "repo-codex-orchestrator",
+              "repo-rust-control-plane",
+              "repo-wave-closure-markers"
+            ],
+            "projected_skills": [
+              "wave-core",
+              "role-implementation",
+              "runtime-codex",
+              "repo-codex-orchestrator",
+              "repo-rust-control-plane",
+              "repo-wave-closure-markers"
+            ],
+            "dropped_skills": [],
+            "auto_attached_skills": []
+          }
+        }
+      },
+      {
+        "id": "A3",
+        "title": "Runtime Policy And Live Proof",
+        "status": "succeeded",
+        "current_task": "Runtime Policy And Live Proof",
+        "proof_complete": true,
+        "proof_source": "structured-envelope",
+        "expected_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "observed_markers": [
+          "[wave-proof]",
+          "[wave-doc-delta]",
+          "[wave-component]"
+        ],
+        "missing_markers": [],
+        "deliverables": [
+          "crates/wave-app-server/src/lib.rs"
+        ],
+        "error": null,
+        "runtime": {
+          "selected_runtime": "codex",
+          "selection_reason": "selected codex because the executor declares runtime-specific fields",
+          "policy": {
+            "requested_runtime": "codex",
+            "allowed_runtimes": [
+              "codex"
+            ],
+            "fallback_runtimes": [],
+            "selection_source": "executor.codex-fields",
+            "uses_fallback": false
+          },
+          "fallback": null,
+          "execution_identity": {
+            "adapter": "wave-runtime/codex",
+            "binary": "codex",
+            "provider": "openai-codex-cli",
+            "artifact_paths": {
+              "prompt": "/home/coder/codex-wave-mode/./.wave/state/build/specs/wave-15-1774525178250/agents/A3/runtime-prompt.md",
+              "runtime_detail": "/home/coder/codex-wave-mode/./.wave/state/build/specs/wave-15-1774525178250/agents/A3/runtime-detail.json",
+              "skill_overlay": "/home/coder/codex-wave-mode/./.wave/state/build/specs/wave-15-1774525178250/agents/A3/runtime-skill-overlay.md"
+            }
+          },
+          "skill_projection": {
+            "declared_skills": [
+              "wave-core",
+              "role-implementation",
+              "runtime-codex",
+              "repo-codex-orchestrator",
+              "repo-rust-control-plane",
+              "repo-wave-closure-markers"
+            ],
+            "projected_skills": [
+              "wave-core",
+              "role-implementation",
+              "runtime-codex",
+              "repo-codex-orchestrator",
+              "repo-rust-control-plane",
+              "repo-wave-closure-markers"
+            ],
+            "dropped_skills": [],
+            "auto_attached_skills": []
+          }
+        }
+      },
+      {
+        "id": "A6",
+        "title": "Design Review Steward",
+        "status": "succeeded",
+        "current_task": "Design Review Steward",
+        "proof_complete": true,
+        "proof_source": "structured-envelope",
+        "expected_markers": [
+          "[wave-design]"
+        ],
+        "observed_markers": [
+          "[wave-design]"
+        ],
+        "missing_markers": [],
+        "deliverables": [],
+        "error": null,
+        "runtime": {
+          "selected_runtime": "codex",
+          "selection_reason": "selected codex because the executor declares runtime-specific fields",
+          "policy": {
+            "requested_runtime": "codex",
+            "allowed_runtimes": [
+              "codex"
+            ],
+            "fallback_runtimes": [],
+            "selection_source": "executor.codex-fields",
+            "uses_fallback": false
+          },
+          "fallback": null,
+          "execution_identity": {
+            "adapter": "wave-runtime/codex",
+            "binary": "codex",
+            "provider": "openai-codex-cli",
+            "artifact_paths": {
+              "prompt": "/home/coder/codex-wave-mode/./.wave/state/build/specs/wave-15-1774525178250/agents/A6/runtime-prompt.md",
+              "runtime_detail": "/home/coder/codex-wave-mode/./.wave/state/build/specs/wave-15-1774525178250/agents/A6/runtime-detail.json",
+              "skill_overlay": "/home/coder/codex-wave-mode/./.wave/state/build/specs/wave-15-1774525178250/agents/A6/runtime-skill-overlay.md"
+            }
+          },
+          "skill_projection": {
+            "declared_skills": [
+              "wave-core",
+              "role-design",
+              "tui-design",
+              "repo-wave-closure-markers"
+            ],
+            "projected_skills": [
+              "wave-core",
+              "role-design",
+              "tui-design",
+              "repo-wave-closure-markers",
+              "runtime-codex"
+            ],
+            "dropped_skills": [],
+            "auto_attached_skills": [
+              "runtime-codex"
+            ]
+          }
+        }
+      },
+      {
+        "id": "A8",
+        "title": "Integration Steward",
+        "status": "planned",
+        "current_task": "Integration Steward",
+        "proof_complete": false,
+        "proof_source": "compatibility-run-record",
+        "expected_markers": [
+          "[wave-integration]"
+        ],
+        "observed_markers": [],
+        "missing_markers": [
+          "[wave-integration]"
+        ],
+        "deliverables": [],
+        "error": null,
+        "runtime": null
+      },
+      {
+        "id": "A9",
+        "title": "Wave Documentation Steward",
+        "status": "planned",
+        "current_task": "Wave Documentation Steward",
+        "proof_complete": false,
+        "proof_source": "compatibility-run-record",
+        "expected_markers": [
+          "[wave-doc-closure]"
+        ],
+        "observed_markers": [],
+        "missing_markers": [
+          "[wave-doc-closure]"
+        ],
+        "deliverables": [],
+        "error": null,
+        "runtime": null
+      },
+      {
+        "id": "A0",
+        "title": "Running cont-QA",
+        "status": "planned",
+        "current_task": "Running cont-QA",
+        "proof_complete": false,
+        "proof_source": "compatibility-run-record",
+        "expected_markers": [
+          "[wave-gate]"
+        ],
+        "observed_markers": [],
+        "missing_markers": [
+          "[wave-gate]"
+        ],
+        "deliverables": [],
+        "error": null,
+        "runtime": null
+      }
+    ]
+  },
+  "rerun_intent": {
+    "request_id": "rerun-wave-15-1774525010456",
+    "wave_id": 15,
+    "reason": "relaunch after root/worktree Wave 15 reconciliation",
+    "requested_by": "operator",
+    "scope": "full",
+    "status": "cleared",
+    "requested_at_ms": 1774525010456,
+    "cleared_at_ms": 1774530026774
+  },
+  "closure_override": {
+    "override_id": "closure-override-wave-15-1774530026774",
+    "wave_id": 15,
+    "status": "applied",
+    "reason": "promotion conflict accepted after Wave 15 runtime-policy work was reconciled in the root workspace",
+    "requested_by": "operator",
+    "source_run_id": "wave-15-1774525178250",
+    "evidence_paths": [
+      "docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/runtime-boundary-proof.json",
+      "docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/operator-runtime-transport.json",
+      ".wave/state/runs/wave-15-1774525178250.json"
+    ],
+    "detail": "The live rerun proved the runtime boundary locally, then failed only at promotion because the same Wave 15 files were already edited in the root workspace. This override waives the failed promotion without rewriting the failed run record so dependent waves can proceed.",
+    "applied_at_ms": 1774530026774,
+    "cleared_at_ms": null
+  }
 }

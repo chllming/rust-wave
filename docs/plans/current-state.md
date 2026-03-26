@@ -4,6 +4,7 @@
 
 - This repository is on the Rust rewrite baseline, not the older npm/package launcher baseline.
 - Wave 15 has now landed the runtime-policy and multi-runtime adapter slice: the live runtime boundary in the Rust workspace is runtime-neutral, Codex and Claude are sibling adapters behind that boundary, runtime selection and fallback are explicit records, and runtime-aware skill projection resolves from the wave-local execution root or worktree rather than the repo root.
+- The control plane now has an explicit manual-close override and scoped rerun recovery path: closure overrides live under `.wave/state/control/closure-overrides/`, later dependency gates can accept an operator waiver without rewriting a failed latest run into synthetic success, and rerun intents now support `full`, `from-first-incomplete`, `closure-only`, and `promotion-only` scopes.
 - `wave.toml` is the project config for the current implementation and is loaded into a typed project-config model.
 - `waves/*.md` is the canonical authored-wave source directory and is parsed directly by the Rust crates into typed wave and agent models.
 - `wave-domain`, `wave-events`, and `wave-coordination` now define the typed authority-core baseline for task seeds, control events, and coordination records.
@@ -23,7 +24,7 @@
 - `wave doctor [--json]`
 - `wave lint [--json]`
 - `wave control status [--json]`
-- `wave control show|task|rerun|proof`
+- `wave control show|task|rerun|close|proof`
 - `wave draft`
 - `wave launch`
 - `wave autonomous`
@@ -34,9 +35,10 @@
 - `wave` opens the interactive Ratatui operator shell on an interactive terminal and falls back to a text summary otherwise.
 - The right-side panel exposes live `Run`, `Agents`, `Queue`, and `Control` tabs from the current repo-local Wave state, with `Queue` and `Control` serving as the operator's direct planning and rerun surfaces through reducer-backed projections over compatibility run records.
 - The shell is an operator panel with actionable queue/control affordances, not merely a terminal summary of state.
-- The launcher writes compiled prompts under `.wave/state/build/specs/`, wave-scoped worktrees under `.wave/state/worktrees/`, compatibility run state under `.wave/state/runs/`, rerun intents under `.wave/state/control/reruns/`, compatibility trace bundles under `.wave/traces/runs/`, and runtime artifacts such as `runtime-prompt.md`, `runtime-skill-overlay.md`, and `runtime-detail.json` under each agent bundle; project-scoped Codex state remains under `.wave/codex/`.
+- The launcher writes compiled prompts under `.wave/state/build/specs/`, wave-scoped worktrees under `.wave/state/worktrees/`, compatibility run state under `.wave/state/runs/`, rerun intents under `.wave/state/control/reruns/`, closure overrides under `.wave/state/control/closure-overrides/`, compatibility trace bundles under `.wave/traces/runs/`, and runtime artifacts such as `runtime-prompt.md`, `runtime-skill-overlay.md`, and `runtime-detail.json` under each agent bundle; project-scoped Codex state remains under `.wave/codex/`.
 - Canonical authority roots now exist under `.wave/state/events/control/`, `.wave/state/events/coordination/`, `.wave/state/events/scheduler/`, `.wave/state/results/`, `.wave/state/derived/`, `.wave/state/projections/`, and `.wave/state/traces/`.
 - Planning status, queue visibility, blocker reporting, closure-coverage summaries, and operator queue/control truth are now reducer-backed read models over scheduler claims, leases, budgets, worktree records, promotion records, and scheduling records plus compatibility run records. Operators can now see ready vs claimed vs active vs stale-lease states, wave worktree identity, promotion state, merge blocking, scheduler phase, explicit waiting or preemption reasons, fairness rank, protected closure capacity, preemption evidence, selected runtime, fallback count, and per-agent runtime detail through projections and app-server transport, while proof and closure surfaces read `.wave/state/results/` first through `wave-results` for the active run and the latest completed or failed run, explicit legacy adaptation remains visible only through `wave-results` for legacy attempts, `wave-trace` now fail-closes without a stored envelope, and replay ratification still depends on `.wave/state/runs/` plus `.wave/traces/runs/` until the later cutover waves land.
+- `wave control show`, app-server transport, and the TUI now surface manual-close override truth, rerun scope, last activity timestamps, and stalled-run hints directly instead of leaving recovery state or live-run health implicit.
 - The launcher contract is project-scoped: it keeps Codex auth, sqlite state, and session logs under `.wave/codex/` and records each agent's final assistant message in the per-run bundle.
 - Autonomous queueing, dependency-aware scheduling, and replay validation are live repo-local features on top of the same reducer-backed planning state plus compatibility-backed replay artifacts, so later waves can prove recorded outcomes without needing live-host mutation proof.
 
@@ -74,6 +76,7 @@
 - `wave doctor` verifies config loading, wave loading, configured role-prompt paths, canonical authority roots under `.wave/state/`, skill-catalog health under `skills/`, upstream metadata pins, and the typed planning-status projection used by status reporting.
 - `wave control status` exposes queue readiness, per-wave agent counts, closure totals, blocker categories, and skill-catalog health from the same reducer-backed planning projection that feeds `wave doctor`; compatibility run records remain adapter inputs at this stage.
 - `wave control proof show` and app-server proof snapshots now resolve stored result envelopes first for the active run or the latest completed or failed run; explicit `compatibility-adapter` fallback remains only through `wave-results` for legacy attempts, and replay ratification stays on compatibility artifacts.
+- Manual close is now explicit operator metadata, not wording-only closure: a waived wave still keeps its failed latest run, but reducer-backed dependency gates and operator surfaces accept the active override record as authoritative completion for downstream readiness.
 - The committed authored-wave backlog currently lints cleanly and has complete closure coverage across the wave set.
 - Wave 12 shared-plan docs now record the result-envelope and proof-lifecycle landing, keep the remaining replay compatibility boundary explicit, record Wave 13 as the landed scheduler-authority and serial lease-enforcement cutover, and move the next migration to Wave 14 true parallel execution plus worktree isolation; Wave 12 cont-QA closure is not claimed here because that final gate still belongs to `A0`.
 - Wave 9's repo-local self-host dogfood loop and durable evidence remain baseline proof surfaces; Wave 11 does not reopen that proof slice.
@@ -112,5 +115,6 @@
 - Later waves may rely on autonomous queue claimability being computed from typed dependencies, run state, and rerun intents rather than manual operator arbitration.
 - Later waves may rely on trace bundles, replay validation, and the wave 9 dogfood evidence as durable local evidence for recorded outcomes.
 - Later queue and dogfood waves should assume the shell already exposes direct queue selection and rerun-intent control, so they do not need a separate operator surface to reason about those actions.
+- Later waves may rely on explicit closure-override metadata and scoped rerun recovery instead of manual state surgery when an already-inspected failed predecessor must be waived or resumed locally.
 - Later queue and dogfood waves should also assume dark-factory launch refusal is fail-closed: if the authored contract is incomplete, the wave is malformed and should not be framed as launch-time fixup work.
 - Later waves must not assume `wave adhoc`, `wave dep`, or live-host deployment proof until those slices are explicitly landed.
