@@ -45,6 +45,7 @@ use wave_domain::RuntimeFallbackRecord;
 use wave_domain::RuntimeId;
 use wave_domain::RuntimeSelectionPolicy;
 use wave_domain::RuntimeSkillProjection;
+use wave_domain::RerunScope;
 use wave_domain::SchedulerBudget;
 use wave_domain::SchedulerBudgetId;
 use wave_domain::SchedulerBudgetRecord;
@@ -56,6 +57,8 @@ use wave_domain::TaskLeaseState;
 use wave_domain::WaveClaimId;
 use wave_domain::WaveClaimRecord;
 use wave_domain::WaveClaimState;
+use wave_domain::WaveClosureOverrideRecord;
+use wave_domain::WaveClosureOverrideStatus;
 use wave_domain::WaveExecutionPhase;
 use wave_domain::WavePromotionId;
 use wave_domain::WavePromotionRecord;
@@ -67,8 +70,8 @@ use wave_domain::WaveWorktreeId;
 use wave_domain::WaveWorktreeRecord;
 use wave_domain::WaveWorktreeScope;
 use wave_domain::WaveWorktreeState;
-use wave_domain::task_id_for_agent;
 use wave_domain::runtime_selection_policy_for_agent;
+use wave_domain::task_id_for_agent;
 use wave_events::ControlEvent;
 use wave_events::ControlEventKind;
 use wave_events::ControlEventLog;
@@ -203,7 +206,8 @@ pub struct RuntimeBoundaryStatus {
 #[derive(Debug, Clone)]
 struct ResolvedRuntimePlan {
     runtime: RuntimeExecutionRecord,
-    prompt: String,
+    launch: RuntimeLaunchSpec,
+    adapter_config: RuntimeAdapterConfig,
 }
 
 #[derive(Debug)]
@@ -212,18 +216,86 @@ struct SpawnedRuntimeChild {
     failure_label: &'static str,
 }
 
-struct RuntimeExecutionRequest<'a> {
-    execution_root: &'a Path,
-    agent: &'a WaveAgent,
-    base_record: &'a AgentRunRecord,
-    prompt: &'a str,
-    codex_home: &'a Path,
-    runtime: &'a RuntimeExecutionRecord,
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeLaunchSpec {
+    agent_id: String,
+    execution_root: PathBuf,
+    prompt: String,
+    last_message_path: PathBuf,
+    events_path: PathBuf,
+    stderr_path: PathBuf,
+    projected_skill_dirs: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RuntimeAdapterConfig {
+    Codex(CodexAdapterConfig),
+    Claude(ClaudeAdapterConfig),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodexAdapterConfig {
+    model: Option<String>,
+    config_entries: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClaudeAdapterConfig {
+    model: Option<String>,
+    agent: Option<String>,
+    permission_mode: Option<String>,
+    permission_prompt_tool: Option<String>,
+    effort: Option<String>,
+    max_turns: Option<String>,
+    mcp_config_paths: Vec<PathBuf>,
+    strict_mcp_config: bool,
+    output_format: Option<String>,
+    allowed_tools: Vec<String>,
+    disallowed_tools: Vec<String>,
+    system_prompt_path: PathBuf,
+    settings_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RuntimeAdapterInvocation {
+    Codex(CodexInvocation),
+    Claude(ClaudeInvocation),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodexInvocation {
+    model: Option<String>,
+    config_entries: Vec<String>,
+    codex_home: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClaudeInvocation {
+    model: Option<String>,
+    agent: Option<String>,
+    permission_mode: Option<String>,
+    permission_prompt_tool: Option<String>,
+    effort: Option<String>,
+    max_turns: Option<String>,
+    mcp_config_paths: Vec<PathBuf>,
+    strict_mcp_config: bool,
+    output_format: Option<String>,
+    allowed_tools: Vec<String>,
+    disallowed_tools: Vec<String>,
+    system_prompt_path: PathBuf,
+    settings_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeExecutionRequest {
+    identity: RuntimeExecutionIdentity,
+    launch: RuntimeLaunchSpec,
+    invocation: RuntimeAdapterInvocation,
 }
 
 trait RuntimeAdapter {
     fn availability(&self) -> RuntimeAvailability;
-    fn execute(&self, request: RuntimeExecutionRequest<'_>) -> Result<SpawnedRuntimeChild>;
+    fn execute(&self, request: RuntimeExecutionRequest) -> Result<SpawnedRuntimeChild>;
 }
 
 #[derive(Debug, Clone)]
@@ -282,6 +354,8 @@ pub struct RerunIntentRecord {
     pub wave_id: u32,
     pub reason: String,
     pub requested_by: String,
+    #[serde(default)]
+    pub scope: RerunScope,
     pub status: RerunIntentStatus,
     pub requested_at_ms: u128,
     pub cleared_at_ms: Option<u128>,
@@ -442,11 +516,9 @@ fn resolved_claude_binary() -> String {
 pub fn runtime_boundary_status() -> RuntimeBoundaryStatus {
     let registry = RuntimeAdapterRegistry::new();
     RuntimeBoundaryStatus {
-        executor_boundary: "runtime-neutral adapter registry in wave-runtime",
-        selection_policy:
-            "explicit executor runtime selection with default codex and authored fallback order",
-        fallback_policy:
-            "fallback only when the selected runtime is unavailable before meaningful work starts",
+        executor_boundary: "runtime-neutral launch spec plus adapter registry in wave-runtime",
+        selection_policy: "explicit executor runtime selection with default codex and authored fallback order",
+        fallback_policy: "fallback only when the selected runtime is unavailable before meaningful work starts",
         runtimes: registry.availability_report(),
     }
 }
@@ -485,18 +557,27 @@ impl RuntimeAdapter for CodexRuntimeAdapter {
             self.binary.clone(),
             vec![
                 runtime_check(self.binary.as_str(), &["--version"], |status, _, _| status),
-                runtime_check(self.binary.as_str(), &["login", "status"], |status, stdout, stderr| {
-                    status && (stdout.contains("Logged in") || stderr.contains("Logged in"))
-                }),
+                runtime_check(
+                    self.binary.as_str(),
+                    &["login", "status"],
+                    |status, stdout, stderr| {
+                        status && (stdout.contains("Logged in") || stderr.contains("Logged in"))
+                    },
+                ),
             ],
         )
     }
 
-    fn execute(&self, request: RuntimeExecutionRequest<'_>) -> Result<SpawnedRuntimeChild> {
-        let stdout = File::create(&request.base_record.events_path)
-            .with_context(|| format!("failed to create {}", request.base_record.events_path.display()))?;
-        let stderr = File::create(&request.base_record.stderr_path)
-            .with_context(|| format!("failed to create {}", request.base_record.stderr_path.display()))?;
+    fn execute(&self, request: RuntimeExecutionRequest) -> Result<SpawnedRuntimeChild> {
+        let RuntimeAdapterInvocation::Codex(invocation) = request.invocation else {
+            bail!("codex adapter received a non-codex invocation");
+        };
+        let stdout = File::create(&request.launch.events_path).with_context(|| {
+            format!("failed to create {}", request.launch.events_path.display())
+        })?;
+        let stderr = File::create(&request.launch.stderr_path).with_context(|| {
+            format!("failed to create {}", request.launch.stderr_path.display())
+        })?;
 
         let mut command = Command::new(&self.binary);
         command
@@ -507,23 +588,23 @@ impl RuntimeAdapter for CodexRuntimeAdapter {
             .arg("--color")
             .arg("never")
             .arg("-C")
-            .arg(request.execution_root)
+            .arg(&request.launch.execution_root)
             .arg("-o")
-            .arg(&request.base_record.last_message_path);
+            .arg(&request.launch.last_message_path);
 
-        if let Some(model) = resolved_codex_model(request.agent) {
+        if let Some(model) = invocation.model {
             command.arg("--model").arg(model);
         }
-        for entry in resolved_codex_config_entries(request.agent) {
+        for entry in invocation.config_entries {
             command.arg("-c").arg(entry);
         }
-        for add_dir in projected_skill_dirs(request.execution_root, request.runtime) {
+        for add_dir in &request.launch.projected_skill_dirs {
             command.arg("--add-dir").arg(add_dir);
         }
 
         command
-            .env("CODEX_HOME", request.codex_home)
-            .env("CODEX_SQLITE_HOME", request.codex_home)
+            .env("CODEX_HOME", &invocation.codex_home)
+            .env("CODEX_SQLITE_HOME", &invocation.codex_home)
             .stdin(Stdio::piped())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
@@ -531,7 +612,7 @@ impl RuntimeAdapter for CodexRuntimeAdapter {
         let mut child = command.spawn().context("failed to start codex exec")?;
         if let Some(mut stdin) = child.stdin.take() {
             stdin
-                .write_all(request.prompt.as_bytes())
+                .write_all(request.launch.prompt.as_bytes())
                 .context("failed to write prompt to codex exec stdin")?;
         }
 
@@ -549,93 +630,93 @@ impl RuntimeAdapter for ClaudeRuntimeAdapter {
             self.binary.clone(),
             vec![
                 runtime_check(self.binary.as_str(), &["--version"], |status, _, _| status),
-                runtime_check(self.binary.as_str(), &["auth", "status", "--json"], |status, stdout, _| {
-                    status
-                        && serde_json::from_str::<JsonValue>(stdout)
-                            .ok()
-                            .and_then(|value| value.get("loggedIn").and_then(JsonValue::as_bool))
-                            .unwrap_or(false)
-                }),
+                runtime_check(
+                    self.binary.as_str(),
+                    &["auth", "status", "--json"],
+                    |status, stdout, _| {
+                        status
+                            && serde_json::from_str::<JsonValue>(stdout)
+                                .ok()
+                                .and_then(|value| {
+                                    value.get("loggedIn").and_then(JsonValue::as_bool)
+                                })
+                                .unwrap_or(false)
+                    },
+                ),
             ],
         )
     }
 
-    fn execute(&self, request: RuntimeExecutionRequest<'_>) -> Result<SpawnedRuntimeChild> {
-        let stdout = File::create(&request.base_record.last_message_path).with_context(|| {
+    fn execute(&self, request: RuntimeExecutionRequest) -> Result<SpawnedRuntimeChild> {
+        let RuntimeAdapterInvocation::Claude(invocation) = request.invocation else {
+            bail!("claude adapter received a non-claude invocation");
+        };
+        let stdout = File::create(&request.launch.last_message_path).with_context(|| {
             format!(
                 "failed to create {}",
-                request.base_record.last_message_path.display()
+                request.launch.last_message_path.display()
             )
         })?;
-        let stderr = File::create(&request.base_record.stderr_path)
-            .with_context(|| format!("failed to create {}", request.base_record.stderr_path.display()))?;
+        let stderr = File::create(&request.launch.stderr_path).with_context(|| {
+            format!("failed to create {}", request.launch.stderr_path.display())
+        })?;
         write_claude_event(
-            &request.base_record.events_path,
+            &request.launch.events_path,
             serde_json::json!({
                 "event": "spawn",
-                "runtime": "claude",
-                "agent": request.agent.id,
+                "runtime": request.identity.runtime.as_str(),
+                "agent": request.launch.agent_id,
             }),
         )?;
-        let system_prompt_path = artifact_path_from_runtime(request.runtime, "system_prompt")
-            .context("missing Claude system prompt artifact")?;
 
         let mut command = Command::new(&self.binary);
         command
-            .current_dir(request.execution_root)
+            .current_dir(&request.launch.execution_root)
             .arg("-p")
             .arg("--no-session-persistence")
             .arg("--append-system-prompt-file")
-            .arg(&system_prompt_path)
-            .arg(request.prompt)
+            .arg(&invocation.system_prompt_path)
+            .arg(&request.launch.prompt)
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
 
-        if let Some(model) = request.agent.executor.get("model").cloned() {
+        if let Some(model) = invocation.model {
             command.arg("--model").arg(model);
         }
-        if let Some(value) = request.agent.executor.get("claude.agent") {
+        if let Some(value) = invocation.agent {
             command.arg("--agent").arg(value);
         }
-        if let Some(value) = request.agent.executor.get("claude.permission_mode") {
+        if let Some(value) = invocation.permission_mode {
             command.arg("--permission-mode").arg(value);
         }
-        if let Some(value) = request.agent.executor.get("claude.permission_prompt_tool") {
+        if let Some(value) = invocation.permission_prompt_tool {
             command.arg("--permission-prompt-tool").arg(value);
         }
-        if let Some(value) = request.agent.executor.get("claude.effort") {
+        if let Some(value) = invocation.effort {
             command.arg("--effort").arg(value);
         }
-        if let Some(value) = request.agent.executor.get("claude.max_turns") {
+        if let Some(value) = invocation.max_turns {
             command.arg("--max-turns").arg(value);
         }
-        if let Some(value) = request.agent.executor.get("claude.mcp_config") {
-            for path in parse_list_value(value) {
-                command
-                    .arg("--mcp-config")
-                    .arg(resolve_runtime_file_path(request.execution_root, &path));
-            }
+        for path in invocation.mcp_config_paths {
+            command.arg("--mcp-config").arg(path);
         }
-        if parse_truthy_flag(request.agent.executor.get("claude.strict_mcp_config")) {
+        if invocation.strict_mcp_config {
             command.arg("--strict-mcp-config");
         }
-        if let Some(value) = request.agent.executor.get("claude.output_format") {
+        if let Some(value) = invocation.output_format {
             command.arg("--output-format").arg(value);
         }
-        if let Some(value) = request.agent.executor.get("claude.allowed_tools") {
-            for tool in parse_list_value(value) {
-                command.arg("--allowedTools").arg(tool);
-            }
+        for tool in invocation.allowed_tools {
+            command.arg("--allowedTools").arg(tool);
         }
-        if let Some(value) = request.agent.executor.get("claude.disallowed_tools") {
-            for tool in parse_list_value(value) {
-                command.arg("--disallowedTools").arg(tool);
-            }
+        for tool in invocation.disallowed_tools {
+            command.arg("--disallowedTools").arg(tool);
         }
-        if let Some(settings_path) = artifact_path_from_runtime(request.runtime, "settings") {
+        if let Some(settings_path) = invocation.settings_path {
             command.arg("--settings").arg(settings_path);
         }
-        for add_dir in projected_skill_dirs(request.execution_root, request.runtime) {
+        for add_dir in &request.launch.projected_skill_dirs {
             command.arg("--add-dir").arg(add_dir);
         }
 
@@ -754,7 +835,11 @@ fn runtime_check_with_timeout(
         }
         Err(error) => (
             false,
-            format!("{} {} failed while waiting: {error}", binary, args.join(" ")),
+            format!(
+                "{} {} failed while waiting: {error}",
+                binary,
+                args.join(" ")
+            ),
         ),
     }
 }
@@ -798,11 +883,7 @@ fn append_json_event(path: &Path, value: JsonValue) -> Result<()> {
 }
 
 fn artifact_path_from_runtime(runtime: &RuntimeExecutionRecord, key: &str) -> Option<String> {
-    runtime
-        .execution_identity
-        .artifact_paths
-        .get(key)
-        .cloned()
+    runtime.execution_identity.artifact_paths.get(key).cloned()
 }
 
 fn projected_skill_dirs(execution_root: &Path, runtime: &RuntimeExecutionRecord) -> Vec<PathBuf> {
@@ -910,6 +991,55 @@ pub fn pending_rerun_wave_ids(root: &Path, config: &ProjectConfig) -> Result<Has
         .collect())
 }
 
+pub fn list_closure_overrides(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<HashMap<u32, WaveClosureOverrideRecord>> {
+    let overrides_dir = control_closure_overrides_dir(root, config);
+    let mut overrides = HashMap::new();
+    if !overrides_dir.exists() {
+        return Ok(overrides);
+    }
+
+    for entry in fs::read_dir(&overrides_dir)
+        .with_context(|| format!("failed to read {}", overrides_dir.display()))?
+    {
+        let entry = entry
+            .with_context(|| format!("failed to read entry in {}", overrides_dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read closure override {}", path.display()))?;
+        let record = serde_json::from_str::<WaveClosureOverrideRecord>(&raw)
+            .with_context(|| format!("failed to parse closure override {}", path.display()))?;
+        overrides.insert(record.wave_id, record);
+    }
+
+    Ok(overrides)
+}
+
+pub fn load_closure_override(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+) -> Result<Option<WaveClosureOverrideRecord>> {
+    let mut overrides = list_closure_overrides(root, config)?;
+    Ok(overrides.remove(&wave_id))
+}
+
+pub fn active_closure_override_wave_ids(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<HashSet<u32>> {
+    Ok(list_closure_overrides(root, config)?
+        .into_values()
+        .filter(WaveClosureOverrideRecord::is_active)
+        .map(|record| record.wave_id)
+        .collect())
+}
+
 pub fn latest_trace_reports(
     root: &Path,
     config: &ProjectConfig,
@@ -977,6 +1107,7 @@ pub fn request_rerun(
     config: &ProjectConfig,
     wave_id: u32,
     reason: impl Into<String>,
+    scope: RerunScope,
 ) -> Result<RerunIntentRecord> {
     let requested_at_ms = now_epoch_ms()?;
     let record = RerunIntentRecord {
@@ -984,6 +1115,7 @@ pub fn request_rerun(
         wave_id,
         reason: reason.into(),
         requested_by: "operator".to_string(),
+        scope,
         status: RerunIntentStatus::Requested,
         requested_at_ms,
         cleared_at_ms: None,
@@ -1012,6 +1144,116 @@ pub fn clear_rerun(
     wave_id: u32,
 ) -> Result<Option<RerunIntentRecord>> {
     clear_rerun_with_state(root, config, wave_id, RerunState::Cancelled)
+}
+
+pub fn apply_closure_override(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    reason: impl Into<String>,
+    source_run_id: Option<&str>,
+    evidence_paths: Vec<String>,
+    detail: Option<String>,
+) -> Result<WaveClosureOverrideRecord> {
+    let reason = reason.into();
+    if reason.trim().is_empty() {
+        bail!("closure override reason must not be empty");
+    }
+
+    let latest_runs = load_latest_runs(root, config)?;
+    if latest_runs
+        .get(&wave_id)
+        .map(|run| run.status)
+        .is_some_and(|status| matches!(status, WaveRunStatus::Running | WaveRunStatus::Planned))
+    {
+        bail!("wave {wave_id} has an active run; clear it before applying a closure override");
+    }
+
+    let source_run_id = match source_run_id {
+        Some(source_run_id) => {
+            let run_path = state_runs_dir(root, config).join(format!("{source_run_id}.json"));
+            if !run_path.exists() {
+                bail!("source run {source_run_id} does not exist");
+            }
+            let run = load_run_record(&run_path)?;
+            if run.wave_id != wave_id {
+                bail!("source run {source_run_id} belongs to wave {}", run.wave_id);
+            }
+            if matches!(run.status, WaveRunStatus::Running | WaveRunStatus::Planned) {
+                bail!("source run {source_run_id} is still active");
+            }
+            source_run_id.to_string()
+        }
+        None => latest_runs
+            .get(&wave_id)
+            .filter(|run| !matches!(run.status, WaveRunStatus::Running | WaveRunStatus::Planned))
+            .map(|run| run.run_id.clone())
+            .with_context(|| format!("wave {wave_id} has no terminal run to use as override evidence"))?,
+    };
+
+    let applied_at_ms = now_epoch_ms()?;
+    let record = WaveClosureOverrideRecord {
+        override_id: format!("closure-override-wave-{wave_id:02}-{applied_at_ms}"),
+        wave_id,
+        status: WaveClosureOverrideStatus::Applied,
+        reason,
+        requested_by: "operator".to_string(),
+        source_run_id,
+        evidence_paths,
+        detail,
+        applied_at_ms,
+        cleared_at_ms: None,
+    };
+    write_closure_override(root, config, &record)?;
+    let _ = clear_rerun_with_state(root, config, wave_id, RerunState::Cancelled);
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-closure-override-applied-{wave_id:02}-{applied_at_ms}"),
+            ControlEventKind::ClosureOverrideApplied,
+            wave_id,
+        )
+        .with_created_at_ms(applied_at_ms)
+        .with_correlation_id(record.override_id.clone())
+        .with_payload(ControlEventPayload::ClosureOverrideUpdated {
+            closure_override: record.clone(),
+        }),
+    )?;
+    Ok(record)
+}
+
+pub fn clear_closure_override(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+) -> Result<Option<WaveClosureOverrideRecord>> {
+    let mut overrides = list_closure_overrides(root, config)?;
+    let Some(mut record) = overrides.remove(&wave_id) else {
+        return Ok(None);
+    };
+    if !record.is_active() {
+        return Ok(Some(record));
+    }
+    let cleared_at_ms = now_epoch_ms()?;
+    record.status = WaveClosureOverrideStatus::Cleared;
+    record.cleared_at_ms = Some(cleared_at_ms);
+    write_closure_override(root, config, &record)?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-closure-override-cleared-{wave_id:02}-{cleared_at_ms}"),
+            ControlEventKind::ClosureOverrideCleared,
+            wave_id,
+        )
+        .with_created_at_ms(cleared_at_ms)
+        .with_correlation_id(record.override_id.clone())
+        .with_payload(ControlEventPayload::ClosureOverrideUpdated {
+            closure_override: record.clone(),
+        }),
+    )?;
+    Ok(Some(record))
 }
 
 fn clear_rerun_with_state(
@@ -1139,6 +1381,165 @@ pub fn draft_wave(
     compile_wave_bundle(root, &config, wave, &run_id)
 }
 
+fn requested_rerun_intent(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+) -> Result<Option<RerunIntentRecord>> {
+    Ok(list_rerun_intents(root, config)?
+        .remove(&wave_id)
+        .filter(|record| record.status == RerunIntentStatus::Requested))
+}
+
+fn planned_execution_indices(
+    ordered_agents: &[&WaveAgent],
+    prior_run: Option<&WaveRunRecord>,
+    scope: RerunScope,
+) -> Result<Vec<usize>> {
+    match scope {
+        RerunScope::Full => Ok((0..ordered_agents.len()).collect()),
+        RerunScope::FromFirstIncomplete => {
+            let prior_run = prior_run.context("from-first-incomplete rerun requires a prior run")?;
+            let Some(start_index) = ordered_agents.iter().position(|agent| {
+                prior_run
+                    .agents
+                    .iter()
+                    .find(|record| record.id == agent.id)
+                    .map(|record| record.status != WaveRunStatus::Succeeded)
+                    .unwrap_or(true)
+            }) else {
+                bail!("from-first-incomplete rerun found no incomplete agents to resume");
+            };
+            Ok((start_index..ordered_agents.len()).collect())
+        }
+        RerunScope::ClosureOnly => {
+            let indices = ordered_agents
+                .iter()
+                .enumerate()
+                .filter(|(_, agent)| is_closure_followup_agent(agent.id.as_str()))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            if indices.is_empty() {
+                bail!("closure-only rerun requires declared closure follow-up agents");
+            }
+            Ok(indices)
+        }
+        RerunScope::PromotionOnly => {
+            let indices = ordered_agents
+                .iter()
+                .enumerate()
+                .filter(|(_, agent)| is_promotion_gated_closure_agent(agent.id.as_str()))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            if indices.is_empty() {
+                bail!("promotion-only rerun requires promotion-gated closure agents");
+            }
+            Ok(indices)
+        }
+    }
+}
+
+fn seed_reused_agent_records(
+    current_agents: &mut [AgentRunRecord],
+    ordered_agents: &[&WaveAgent],
+    prior_run: Option<&WaveRunRecord>,
+    execution_indices: &[usize],
+    scope: RerunScope,
+) -> Result<()> {
+    if matches!(scope, RerunScope::Full) {
+        return Ok(());
+    }
+    let prior_run = prior_run.with_context(|| {
+        format!(
+            "{} rerun requires a prior successful frontier to reuse",
+            rerun_scope_label(scope)
+        )
+    })?;
+    let execution_indices = execution_indices.iter().copied().collect::<HashSet<_>>();
+    for (index, agent) in ordered_agents.iter().enumerate() {
+        if execution_indices.contains(&index) {
+            continue;
+        }
+        let prior_agent = prior_run
+            .agents
+            .iter()
+            .find(|record| record.id == agent.id)
+            .with_context(|| {
+                format!(
+                    "{} rerun cannot skip {} because the prior run has no matching agent record",
+                    rerun_scope_label(scope),
+                    agent.id
+                )
+            })?;
+        if prior_agent.status != WaveRunStatus::Succeeded {
+            bail!(
+                "{} rerun cannot skip {} because the prior run status was {}",
+                rerun_scope_label(scope),
+                agent.id,
+                prior_agent.status
+            );
+        }
+        current_agents[index] = prior_agent.clone();
+    }
+    Ok(())
+}
+
+fn prepare_closure_artifact_placeholders(execution_root: &Path, wave: &WaveDocument) -> Result<()> {
+    for agent in wave
+        .agents
+        .iter()
+        .filter(|agent| is_closure_followup_agent(agent.id.as_str()))
+    {
+        for owned_path in &agent.file_ownership {
+            let Some(relative_path) = normalize_owned_relative_path(owned_path) else {
+                continue;
+            };
+            let artifact_path = execution_root.join(&relative_path);
+            if let Some(parent) = artifact_path.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create {}", parent.display()))?;
+            }
+            if artifact_path.exists() {
+                continue;
+            }
+            let placeholder = if artifact_path.extension().and_then(|ext| ext.to_str())
+                == Some("json")
+            {
+                "{}\n"
+            } else {
+                ""
+            };
+            fs::write(&artifact_path, placeholder)
+                .with_context(|| format!("failed to seed {}", artifact_path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn normalize_owned_relative_path(path: &str) -> Option<PathBuf> {
+    let candidate = Path::new(path);
+    if candidate.is_absolute() {
+        return None;
+    }
+    let normalized = candidate.components().collect::<PathBuf>();
+    if normalized
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn rerun_scope_label(scope: RerunScope) -> &'static str {
+    match scope {
+        RerunScope::Full => "full",
+        RerunScope::FromFirstIncomplete => "from-first-incomplete",
+        RerunScope::ClosureOnly => "closure-only",
+        RerunScope::PromotionOnly => "promotion-only",
+    }
+}
+
 pub fn launch_wave(
     root: &Path,
     config: &ProjectConfig,
@@ -1156,8 +1557,43 @@ pub fn launch_wave(
         refresh_planning_status(root, config, waves)?
     };
     let wave = select_wave(waves, &planning_status, options.wave_id)?;
+    let rerun_intent = requested_rerun_intent(root, config, wave.metadata.id)?;
+    let rerun_scope = rerun_intent
+        .as_ref()
+        .map(|record| record.scope)
+        .unwrap_or(RerunScope::Full);
+    let prior_run = load_latest_runs(root, config)?.remove(&wave.metadata.id);
+    let ordered_agents = ordered_agents(wave);
+    let execution_indices = planned_execution_indices(&ordered_agents, prior_run.as_ref(), rerun_scope)?;
     let run_id = format!("wave-{:02}-{}", wave.metadata.id, now_epoch_ms()?);
     let bundle = compile_wave_bundle(root, config, wave, &run_id)?;
+    let mut agent_records = bundle
+        .agents
+        .iter()
+        .map(|agent| AgentRunRecord {
+            id: agent.id.clone(),
+            title: agent.title.clone(),
+            status: WaveRunStatus::Planned,
+            prompt_path: agent.prompt_path.clone(),
+            last_message_path: agent.prompt_path.parent().unwrap().join("last-message.txt"),
+            events_path: agent.prompt_path.parent().unwrap().join("events.jsonl"),
+            stderr_path: agent.prompt_path.parent().unwrap().join("stderr.txt"),
+            result_envelope_path: None,
+            runtime_detail_path: None,
+            expected_markers: agent.expected_markers.clone(),
+            observed_markers: Vec::new(),
+            exit_code: None,
+            error: None,
+            runtime: None,
+        })
+        .collect::<Vec<_>>();
+    seed_reused_agent_records(
+        &mut agent_records,
+        &ordered_agents,
+        prior_run.as_ref(),
+        &execution_indices,
+        rerun_scope,
+    )?;
     let preflight = build_launch_preflight(wave, options.dry_run, &runtime_registry);
     let preflight_path = bundle.bundle_dir.join("preflight.json");
     fs::write(&preflight_path, serde_json::to_string_pretty(&preflight)?)
@@ -1286,6 +1722,23 @@ pub fn launch_wave(
             return Err(error);
         }
     };
+    let execution_root = PathBuf::from(worktree.path.clone());
+    if let Err(error) = prepare_closure_artifact_placeholders(&execution_root, wave) {
+        let _ = release_wave_worktree(
+            root,
+            config,
+            &worktree,
+            &run_id,
+            "launch aborted while seeding closure artifact placeholders",
+        );
+        release_wave_claim(
+            root,
+            config,
+            &claim,
+            "launch aborted while seeding closure artifact placeholders",
+        )?;
+        return Err(error);
+    }
     let launcher_pid = std::process::id();
     let mut record = WaveRunRecord {
         run_id: run_id.clone(),
@@ -1305,26 +1758,7 @@ pub fn launch_wave(
         promotion: Some(promotion.clone()),
         scheduling: Some(scheduling.clone()),
         completed_at_ms: None,
-        agents: bundle
-            .agents
-            .iter()
-            .map(|agent| AgentRunRecord {
-                id: agent.id.clone(),
-                title: agent.title.clone(),
-                status: WaveRunStatus::Planned,
-                prompt_path: agent.prompt_path.clone(),
-                last_message_path: agent.prompt_path.parent().unwrap().join("last-message.txt"),
-                events_path: agent.prompt_path.parent().unwrap().join("events.jsonl"),
-                stderr_path: agent.prompt_path.parent().unwrap().join("stderr.txt"),
-                result_envelope_path: None,
-                runtime_detail_path: None,
-                expected_markers: agent.expected_markers.clone(),
-                observed_markers: Vec::new(),
-                exit_code: None,
-                error: None,
-                runtime: None,
-            })
-            .collect(),
+        agents: agent_records,
         error: None,
     };
     if let Err(error) = write_run_record(&state_path, &record) {
@@ -1362,17 +1796,10 @@ pub fn launch_wave(
         return Err(error);
     }
 
-    let execution_agents = ordered_agents(wave);
     let lease_timing = LeaseTiming::default();
-    let execution_root = PathBuf::from(
-        record
-            .worktree
-            .as_ref()
-            .map(|worktree| worktree.path.clone())
-            .unwrap_or_else(|| root.to_string_lossy().into_owned()),
-    );
     let mut promotion_checked = false;
-    for (index, agent) in execution_agents.iter().enumerate() {
+    for index in execution_indices {
+        let agent = ordered_agents[index];
         if is_closure_agent(agent.id.as_str()) && !promotion_checked {
             let previous_scheduling = record.scheduling.clone();
             let promotion_scheduling = publish_scheduling_record(
@@ -1610,7 +2037,6 @@ pub fn launch_wave(
             match execute_agent(
                 root,
                 config,
-                &execution_root,
                 &record,
                 agent,
                 &record.agents[index],
@@ -2236,6 +2662,7 @@ fn refresh_planning_status(
     let latest_runs = load_latest_runs(root, config)?;
     let findings = wave_dark_factory::lint_project(root, waves);
     let rerun_wave_ids = pending_rerun_wave_ids(root, config)?;
+    let closure_override_wave_ids = active_closure_override_wave_ids(root, config)?;
     wave_control_plane::build_planning_status_from_authority(
         root,
         config,
@@ -2244,6 +2671,7 @@ fn refresh_planning_status(
         &[],
         &latest_runs,
         &rerun_wave_ids,
+        &closure_override_wave_ids,
     )
 }
 
@@ -2679,7 +3107,7 @@ fn allocate_wave_worktree(
     run_id: &str,
     allocated_at_ms: u128,
 ) -> Result<WaveWorktreeRecord> {
-    let snapshot_ref = create_workspace_snapshot_commit(root, config, run_id, "base")?;
+    let snapshot_ref = create_workspace_snapshot_commit(root, root, config, run_id, "base")?;
     let worktree_path =
         state_worktrees_dir(root, config).join(format!("wave-{:02}-{run_id}", wave.metadata.id));
     if let Some(parent) = worktree_path.parent() {
@@ -2817,13 +3245,18 @@ fn evaluate_wave_promotion(
         },
         correlation_id,
     )?;
-    let worktree_root = Path::new(worktree.path.as_str());
-    let candidate_ref =
-        create_workspace_snapshot_commit(worktree_root, config, correlation_id, "candidate")?;
+    let worktree_root = resolve_workspace_root(root, Path::new(worktree.path.as_str()));
+    let candidate_ref = create_workspace_snapshot_commit(
+        root,
+        &worktree_root,
+        config,
+        correlation_id,
+        "candidate",
+    )?;
     let target_snapshot_ref =
-        create_workspace_snapshot_commit(root, config, correlation_id, "target")?;
+        create_workspace_snapshot_commit(root, root, config, correlation_id, "target")?;
     let candidate_tree = git_output(
-        worktree_root,
+        &worktree_root,
         &["rev-parse", &format!("{candidate_ref}^{{tree}}")],
     )?;
     let (state, conflict_paths, detail) = validate_wave_promotion_merge(
@@ -2952,12 +3385,17 @@ fn cleanup_promotion_validation_worktree(root: &Path, scratch_root: &Path) -> Re
 }
 
 fn create_workspace_snapshot_commit(
+    repo_root: &Path,
     workspace_root: &Path,
     config: &ProjectConfig,
     run_id: &str,
     label: &str,
 ) -> Result<String> {
-    let resolved_paths = config.resolved_paths(workspace_root);
+    let repo_root = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let workspace_root = resolve_workspace_root(&repo_root, workspace_root);
+    let resolved_paths = config.resolved_paths(&repo_root);
     let derived_dir = resolved_paths.authority.state_derived_dir.join("git");
     fs::create_dir_all(&derived_dir)
         .with_context(|| format!("failed to create {}", derived_dir.display()))?;
@@ -2966,26 +3404,27 @@ fn create_workspace_snapshot_commit(
         let _ = fs::remove_file(&index_path);
     }
     let envs = [("GIT_INDEX_FILE", index_path.as_path())];
-    run_git_with_env(workspace_root, &["read-tree", "HEAD"], &envs)?;
+    run_git_with_env(&workspace_root, &["read-tree", "HEAD"], &envs)?;
     // Stage tracked modifications/deletions first, then add only non-ignored
     // untracked files explicitly. `git add -A -- .` will still trip over the
     // ignored `.wave/*` state roots in a live workspace even when exclude
     // pathspecs are present.
-    run_git_with_env(workspace_root, &["add", "-u", "--", "."], &envs)?;
+    run_git_with_env(&workspace_root, &["add", "-u", "--", "."], &envs)?;
     let untracked_paths = git_output_bytes_with_env(
-        workspace_root,
+        &workspace_root,
         &["ls-files", "--others", "--exclude-standard", "-z"],
         &envs,
     )?;
     let excluded_prefixes = snapshot_excluded_prefixes(config);
-    let filtered_untracked_paths = filter_snapshot_untracked_paths(&untracked_paths, &excluded_prefixes);
+    let filtered_untracked_paths =
+        filter_snapshot_untracked_paths(&untracked_paths, &excluded_prefixes);
     if !filtered_untracked_paths.is_empty() {
-        git_add_pathspecs_with_env(workspace_root, &envs, &filtered_untracked_paths)?;
+        git_add_pathspecs_with_env(&workspace_root, &envs, &filtered_untracked_paths)?;
     }
-    let tree = git_output_with_env(workspace_root, &["write-tree"], &envs)?;
-    let parent = git_output(workspace_root, &["rev-parse", "HEAD"])?;
+    let tree = git_output_with_env(&workspace_root, &["write-tree"], &envs)?;
+    let parent = git_output(&workspace_root, &["rev-parse", "HEAD"])?;
     let commit = git_output_with_env(
-        workspace_root,
+        &workspace_root,
         &[
             "commit-tree",
             tree.as_str(),
@@ -2998,6 +3437,15 @@ fn create_workspace_snapshot_commit(
     )?;
     let _ = fs::remove_file(index_path);
     Ok(commit)
+}
+
+fn resolve_workspace_root(repo_root: &Path, workspace_root: &Path) -> PathBuf {
+    let resolved = if workspace_root.is_absolute() {
+        workspace_root.to_path_buf()
+    } else {
+        repo_root.join(workspace_root)
+    };
+    resolved.canonicalize().unwrap_or(resolved)
 }
 
 fn current_head_label(root: &Path) -> Result<String> {
@@ -3382,6 +3830,14 @@ fn is_closure_agent(agent_id: &str) -> bool {
     matches!(agent_id, "A0" | "A8" | "A9")
 }
 
+fn is_closure_followup_agent(agent_id: &str) -> bool {
+    matches!(agent_id, "A6" | "A7" | "A8" | "A9" | "A0")
+}
+
+fn is_promotion_gated_closure_agent(agent_id: &str) -> bool {
+    matches!(agent_id, "A8" | "A9" | "A0")
+}
+
 fn lease_expiry_ms(heartbeat_at_ms: u128, timing: LeaseTiming) -> u128 {
     heartbeat_at_ms + u128::from(timing.ttl_ms)
 }
@@ -3399,6 +3855,7 @@ fn rerun_request_payload(record: &RerunIntentRecord, state: RerunState) -> Rerun
         requested_attempt_id: None,
         requested_by: record.requested_by.clone(),
         reason: record.reason.clone(),
+        scope: record.scope,
         state,
     }
 }
@@ -3917,7 +4374,6 @@ fn persist_agent_result_envelope(
 fn execute_agent(
     root: &Path,
     config: &ProjectConfig,
-    execution_root: &Path,
     run: &WaveRunRecord,
     agent: &WaveAgent,
     base_record: &AgentRunRecord,
@@ -3934,14 +4390,8 @@ fn execute_agent(
     fs::create_dir_all(agent_dir)
         .with_context(|| format!("failed to create {}", agent_dir.display()))?;
     let adapter = registry.adapter(runtime_plan.runtime.selected_runtime)?;
-    let mut spawned = adapter.execute(RuntimeExecutionRequest {
-        execution_root,
-        agent,
-        base_record,
-        prompt: &runtime_plan.prompt,
-        codex_home,
-        runtime: &runtime_plan.runtime,
-    })?;
+    let request = build_runtime_execution_request(runtime_plan, codex_home);
+    let mut spawned = adapter.execute(request)?;
     let (status, lease) = wait_for_agent_exit_with_lease(
         root,
         config,
@@ -3975,8 +4425,8 @@ fn execute_agent(
                 .unwrap_or_else(|| "signal".to_string())
         ))
     };
-    let runtime_detail_path = artifact_path_from_runtime(&runtime_plan.runtime, "runtime_detail")
-        .map(PathBuf::from);
+    let runtime_detail_path =
+        artifact_path_from_runtime(&runtime_plan.runtime, "runtime_detail").map(PathBuf::from);
     let provisional_record = AgentRunRecord {
         status: if status.success() {
             WaveRunStatus::Succeeded
@@ -4060,6 +4510,42 @@ fn execute_agent(
     })
 }
 
+fn build_runtime_execution_request(
+    runtime_plan: &ResolvedRuntimePlan,
+    codex_home: &Path,
+) -> RuntimeExecutionRequest {
+    let invocation = match &runtime_plan.adapter_config {
+        RuntimeAdapterConfig::Codex(config) => RuntimeAdapterInvocation::Codex(CodexInvocation {
+            model: config.model.clone(),
+            config_entries: config.config_entries.clone(),
+            codex_home: codex_home.to_path_buf(),
+        }),
+        RuntimeAdapterConfig::Claude(config) => {
+            RuntimeAdapterInvocation::Claude(ClaudeInvocation {
+                model: config.model.clone(),
+                agent: config.agent.clone(),
+                permission_mode: config.permission_mode.clone(),
+                permission_prompt_tool: config.permission_prompt_tool.clone(),
+                effort: config.effort.clone(),
+                max_turns: config.max_turns.clone(),
+                mcp_config_paths: config.mcp_config_paths.clone(),
+                strict_mcp_config: config.strict_mcp_config,
+                output_format: config.output_format.clone(),
+                allowed_tools: config.allowed_tools.clone(),
+                disallowed_tools: config.disallowed_tools.clone(),
+                system_prompt_path: config.system_prompt_path.clone(),
+                settings_path: config.settings_path.clone(),
+            })
+        }
+    };
+
+    RuntimeExecutionRequest {
+        identity: runtime_plan.runtime.execution_identity.clone(),
+        launch: runtime_plan.launch.clone(),
+        invocation,
+    }
+}
+
 fn latest_recorded_lease(
     root: &Path,
     config: &ProjectConfig,
@@ -4084,7 +4570,8 @@ fn wait_for_agent_exit_with_lease(
         let latest = latest_recorded_lease(root, config, &lease.lease_id)?;
         if let Some(latest) = latest {
             if latest.state.is_active() && lease_is_expired(&latest, now) {
-                terminate_child(child).context("failed to stop runtime process after lease expiry")?;
+                terminate_child(child)
+                    .context("failed to stop runtime process after lease expiry")?;
                 close_task_lease(
                     root,
                     config,
@@ -4121,7 +4608,8 @@ fn wait_for_agent_exit_with_lease(
 
         if now >= next_heartbeat_at_ms {
             if lease_is_expired(&lease, now) {
-                terminate_child(child).context("failed to stop runtime process after lease expiry")?;
+                terminate_child(child)
+                    .context("failed to stop runtime process after lease expiry")?;
                 close_task_lease(
                     root,
                     config,
@@ -4180,20 +4668,10 @@ fn resolve_runtime_plan(
     base_prompt: &str,
     registry: &RuntimeAdapterRegistry,
 ) -> Result<ResolvedRuntimePlan> {
-    let mut policy = runtime_selection_policy_for_agent(agent);
-    if policy.requested_runtime.is_none() {
-        policy.requested_runtime = Some(RuntimeId::Codex);
-        policy.selection_source = Some("default.codex".to_string());
-    }
-    if let Some(requested) = policy.requested_runtime {
-        if !policy.allowed_runtimes.iter().any(|runtime| runtime == &requested) {
-            policy.allowed_runtimes.insert(0, requested);
-        }
-    }
-
+    let policy = normalized_runtime_policy(agent);
     let requested_runtime = policy
         .requested_runtime
-        .context("runtime policy is missing a requested runtime")?;
+        .expect("normalized runtime policy always sets requested runtime");
     let requested_reason = runtime_selection_reason(&policy, requested_runtime);
 
     let mut selected_runtime = None;
@@ -4261,8 +4739,98 @@ fn resolve_runtime_plan(
         base_prompt,
         &mut runtime,
     )?;
+    let launch = build_runtime_launch_spec(execution_root, base_record, &prompt, &runtime);
+    let adapter_config = resolve_runtime_adapter_config(execution_root, agent, &runtime)?;
 
-    Ok(ResolvedRuntimePlan { runtime, prompt })
+    Ok(ResolvedRuntimePlan {
+        runtime,
+        launch,
+        adapter_config,
+    })
+}
+
+fn normalized_runtime_policy(agent: &WaveAgent) -> RuntimeSelectionPolicy {
+    let mut policy = runtime_selection_policy_for_agent(agent);
+    if policy.requested_runtime.is_none() {
+        policy.requested_runtime = Some(RuntimeId::Codex);
+        policy.selection_source = Some("default.codex".to_string());
+    }
+    if let Some(requested) = policy.requested_runtime {
+        if !policy
+            .allowed_runtimes
+            .iter()
+            .any(|runtime| runtime == &requested)
+        {
+            policy.allowed_runtimes.insert(0, requested);
+        }
+    }
+    policy
+}
+
+fn build_runtime_launch_spec(
+    execution_root: &Path,
+    base_record: &AgentRunRecord,
+    prompt: &str,
+    runtime: &RuntimeExecutionRecord,
+) -> RuntimeLaunchSpec {
+    RuntimeLaunchSpec {
+        agent_id: base_record.id.clone(),
+        execution_root: execution_root.to_path_buf(),
+        prompt: prompt.to_string(),
+        last_message_path: base_record.last_message_path.clone(),
+        events_path: base_record.events_path.clone(),
+        stderr_path: base_record.stderr_path.clone(),
+        projected_skill_dirs: projected_skill_dirs(execution_root, runtime),
+    }
+}
+
+fn resolve_runtime_adapter_config(
+    execution_root: &Path,
+    agent: &WaveAgent,
+    runtime: &RuntimeExecutionRecord,
+) -> Result<RuntimeAdapterConfig> {
+    match runtime.selected_runtime {
+        RuntimeId::Codex => Ok(RuntimeAdapterConfig::Codex(CodexAdapterConfig {
+            model: resolved_codex_model(agent),
+            config_entries: resolved_codex_config_entries(agent),
+        })),
+        RuntimeId::Claude => Ok(RuntimeAdapterConfig::Claude(ClaudeAdapterConfig {
+            model: agent.executor.get("model").cloned(),
+            agent: agent.executor.get("claude.agent").cloned(),
+            permission_mode: agent.executor.get("claude.permission_mode").cloned(),
+            permission_prompt_tool: agent.executor.get("claude.permission_prompt_tool").cloned(),
+            effort: agent.executor.get("claude.effort").cloned(),
+            max_turns: agent.executor.get("claude.max_turns").cloned(),
+            mcp_config_paths: agent
+                .executor
+                .get("claude.mcp_config")
+                .map(|value| {
+                    parse_list_value(value)
+                        .into_iter()
+                        .map(|path| resolve_runtime_file_path(execution_root, &path))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            strict_mcp_config: parse_truthy_flag(agent.executor.get("claude.strict_mcp_config")),
+            output_format: agent.executor.get("claude.output_format").cloned(),
+            allowed_tools: agent
+                .executor
+                .get("claude.allowed_tools")
+                .map(|value| parse_list_value(value))
+                .unwrap_or_default(),
+            disallowed_tools: agent
+                .executor
+                .get("claude.disallowed_tools")
+                .map(|value| parse_list_value(value))
+                .unwrap_or_default(),
+            system_prompt_path: PathBuf::from(
+                artifact_path_from_runtime(runtime, "system_prompt")
+                    .context("missing Claude system prompt artifact")?,
+            ),
+            settings_path: artifact_path_from_runtime(runtime, "settings").map(PathBuf::from),
+        })),
+        other => bail!("runtime {other} is not implemented in Wave 15"),
+    }
 }
 
 fn runtime_availability_for(
@@ -4427,8 +4995,7 @@ fn write_runtime_artifacts(
         );
 
         let base_settings_path = resolved_claude_settings_path(execution_root, agent)?;
-        if let Some(settings) =
-            build_claude_settings_overlay(base_settings_path.as_deref(), agent)?
+        if let Some(settings) = build_claude_settings_overlay(base_settings_path.as_deref(), agent)?
         {
             let settings_path = agent_dir.join("claude-settings.json");
             fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)
@@ -4457,8 +5024,11 @@ fn write_runtime_artifacts(
         agent_title: agent.title.clone(),
         runtime: runtime.clone(),
     };
-    fs::write(&runtime_detail_path, serde_json::to_string_pretty(&snapshot)?)
-        .with_context(|| format!("failed to write {}", runtime_detail_path.display()))?;
+    fs::write(
+        &runtime_detail_path,
+        serde_json::to_string_pretty(&snapshot)?,
+    )
+    .with_context(|| format!("failed to write {}", runtime_detail_path.display()))?;
 
     Ok(runtime_prompt)
 }
@@ -4489,16 +5059,17 @@ fn render_runtime_overlay(execution_root: &Path, runtime: &RuntimeExecutionRecor
     for skill in &runtime.skill_projection.projected_skills {
         lines.push(format!(
             "- skill path: {}",
-            execution_root.join("skills").join(skill).join("SKILL.md").display()
+            execution_root
+                .join("skills")
+                .join(skill)
+                .join("SKILL.md")
+                .display()
         ));
     }
     lines.join("\n")
 }
 
-fn render_claude_system_prompt(
-    execution_root: &Path,
-    runtime: &RuntimeExecutionRecord,
-) -> String {
+fn render_claude_system_prompt(execution_root: &Path, runtime: &RuntimeExecutionRecord) -> String {
     let mut lines = vec![
         "Wave runtime harness for Claude.".to_string(),
         "Keep the authored assignment authoritative and preserve the required final markers exactly.".to_string(),
@@ -4513,14 +5084,21 @@ fn render_claude_system_prompt(
         for skill in &runtime.skill_projection.projected_skills {
             lines.push(format!(
                 "Skill file: {}",
-                execution_root.join("skills").join(skill).join("SKILL.md").display()
+                execution_root
+                    .join("skills")
+                    .join(skill)
+                    .join("SKILL.md")
+                    .display()
             ));
         }
     }
     lines.join("\n")
 }
 
-fn resolved_claude_settings_path(execution_root: &Path, agent: &WaveAgent) -> Result<Option<PathBuf>> {
+fn resolved_claude_settings_path(
+    execution_root: &Path,
+    agent: &WaveAgent,
+) -> Result<Option<PathBuf>> {
     let Some(path) = agent.executor.get("claude.settings") else {
         return Ok(None);
     };
@@ -4863,16 +5441,7 @@ fn runtime_preflight_detail(
         );
     }
 
-    let mut policy = runtime_selection_policy_for_agent(agent);
-    if policy.requested_runtime.is_none() {
-        policy.requested_runtime = Some(RuntimeId::Codex);
-        policy.selection_source = Some("default.codex".to_string());
-    }
-    if let Some(requested) = policy.requested_runtime {
-        if !policy.allowed_runtimes.iter().any(|runtime| runtime == &requested) {
-            policy.allowed_runtimes.insert(0, requested);
-        }
-    }
+    let policy = normalized_runtime_policy(agent);
     let details = policy
         .allowed_runtimes
         .iter()
@@ -5001,7 +5570,11 @@ fn git_output_with_env(root: &Path, args: &[&str], envs: &[(&str, &Path)]) -> Re
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn git_output_bytes_with_env(root: &Path, args: &[&str], envs: &[(&str, &Path)]) -> Result<Vec<u8>> {
+fn git_output_bytes_with_env(
+    root: &Path,
+    args: &[&str],
+    envs: &[(&str, &Path)],
+) -> Result<Vec<u8>> {
     let mut command = Command::new("git");
     command.current_dir(root).args(args);
     for (key, value) in envs {
@@ -5020,11 +5593,7 @@ fn git_output_bytes_with_env(root: &Path, args: &[&str], envs: &[(&str, &Path)])
     Ok(output.stdout)
 }
 
-fn git_add_pathspecs_with_env(
-    root: &Path,
-    envs: &[(&str, &Path)],
-    pathspecs: &[u8],
-) -> Result<()> {
+fn git_add_pathspecs_with_env(root: &Path, envs: &[(&str, &Path)], pathspecs: &[u8]) -> Result<()> {
     let mut command = Command::new("git");
     command
         .current_dir(root)
@@ -5064,12 +5633,17 @@ fn snapshot_excluded_prefixes(config: &ProjectConfig) -> Vec<String> {
 }
 
 fn normalize_snapshot_rel_path(path: &str) -> String {
-    path.trim_start_matches("./").trim_end_matches('/').to_string()
+    path.trim_start_matches("./")
+        .trim_end_matches('/')
+        .to_string()
 }
 
 fn filter_snapshot_untracked_paths(paths: &[u8], excluded_prefixes: &[String]) -> Vec<u8> {
     let mut filtered = Vec::new();
-    for path in paths.split(|byte| *byte == b'\0').filter(|path| !path.is_empty()) {
+    for path in paths
+        .split(|byte| *byte == b'\0')
+        .filter(|path| !path.is_empty())
+    {
         let path = String::from_utf8_lossy(path);
         let normalized = normalize_snapshot_rel_path(path.as_ref());
         let excluded = excluded_prefixes.iter().any(|prefix| {
@@ -5121,6 +5695,14 @@ fn rerun_intent_path(root: &Path, config: &ProjectConfig, wave_id: u32) -> PathB
     control_reruns_dir(root, config).join(format!("wave-{wave_id:02}.json"))
 }
 
+fn control_closure_overrides_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    state_control_dir(root, config).join("closure-overrides")
+}
+
+fn closure_override_path(root: &Path, config: &ProjectConfig, wave_id: u32) -> PathBuf {
+    control_closure_overrides_dir(root, config).join(format!("wave-{wave_id:02}.json"))
+}
+
 fn write_rerun_intent(
     root: &Path,
     config: &ProjectConfig,
@@ -5133,6 +5715,21 @@ fn write_rerun_intent(
     }
     fs::write(&path, serde_json::to_string_pretty(record)?)
         .with_context(|| format!("failed to write rerun intent {}", path.display()))?;
+    Ok(())
+}
+
+fn write_closure_override(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &WaveClosureOverrideRecord,
+) -> Result<()> {
+    let path = closure_override_path(root, config, record.wave_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write closure override {}", path.display()))?;
     Ok(())
 }
 
@@ -5560,9 +6157,17 @@ mod tests {
             &[],
             &HashMap::new(),
             &HashSet::new(),
+            &HashSet::new(),
         );
 
-        request_rerun(&root, &config, 0, "retry after failed preflight").expect("request rerun");
+        request_rerun(
+            &root,
+            &config,
+            0,
+            "retry after failed preflight",
+            RerunScope::Full,
+        )
+        .expect("request rerun");
         let error = launch_wave(
             &root,
             &config,
@@ -5761,9 +6366,17 @@ mod tests {
             &[],
             &HashMap::new(),
             &HashSet::new(),
+            &HashSet::new(),
         );
 
-        request_rerun(&root, &config, 0, "repair projection parity").expect("request rerun");
+        request_rerun(
+            &root,
+            &config,
+            0,
+            "repair projection parity",
+            RerunScope::Full,
+        )
+        .expect("request rerun");
         let report = launch_wave(
             &root,
             &config,
@@ -5802,6 +6415,336 @@ mod tests {
     }
 
     #[test]
+    fn apply_closure_override_rejects_active_runs() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-closure-override-active-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let wave = launchable_test_wave(15);
+        let active_run = scheduler_test_run(&root, &wave, "wave-15-active", 1);
+        write_run_record_fixture(&root, &config, &active_run);
+
+        let error = apply_closure_override(
+            &root,
+            &config,
+            15,
+            "manual close for promotion conflict review",
+            None,
+            Vec::new(),
+            None,
+        )
+        .expect_err("active run should block manual close");
+
+        assert!(error.to_string().contains("has an active run"));
+        assert!(
+            load_closure_override(&root, &config, 15)
+                .expect("load override")
+                .is_none()
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn apply_closure_override_persists_record_and_clears_rerun_request() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-closure-override-rerun-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let wave = launchable_test_wave(15);
+        let mut failed_run = scheduler_test_run(&root, &wave, "wave-15-failed", 1);
+        failed_run.status = WaveRunStatus::Failed;
+        failed_run.completed_at_ms = Some(2);
+        failed_run.error = Some("promotion blocked by conflicts".to_string());
+        write_run_record_fixture(&root, &config, &failed_run);
+
+        request_rerun(
+            &root,
+            &config,
+            15,
+            "retry closure after promotion conflict",
+            RerunScope::ClosureOnly,
+        )
+        .expect("request rerun");
+
+        let record = apply_closure_override(
+            &root,
+            &config,
+            15,
+            "manual close accepted for Wave 15 baseline",
+            None,
+            vec![
+                "docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/README.md"
+                    .to_string(),
+            ],
+            Some("operator accepted failed promotion after inspection".to_string()),
+        )
+        .expect("apply closure override");
+
+        assert!(record.is_active());
+        assert_eq!(record.wave_id, 15);
+        assert_eq!(record.source_run_id, "wave-15-failed");
+        assert_eq!(
+            record.evidence_paths,
+            vec![
+                "docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/README.md"
+                    .to_string()
+            ]
+        );
+
+        let stored = load_closure_override(&root, &config, 15)
+            .expect("load closure override")
+            .expect("stored override");
+        assert_eq!(stored, record);
+
+        let rerun = list_rerun_intents(&root, &config)
+            .expect("load reruns")
+            .remove(&15)
+            .expect("rerun intent");
+        assert_eq!(rerun.scope, RerunScope::ClosureOnly);
+        assert_eq!(rerun.status, RerunIntentStatus::Cleared);
+        assert!(rerun.cleared_at_ms.is_some());
+        assert!(
+            pending_rerun_wave_ids(&root, &config)
+                .expect("pending reruns")
+                .is_empty()
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rerun_scope_selection_distinguishes_closure_and_promotion_agents() {
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/15.md"),
+            metadata: WaveMetadata {
+                id: 15,
+                slug: "wave-15".to_string(),
+                title: "Wave 15".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["A0".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: vec!["README.md".to_string()],
+            },
+            heading_title: Some("Wave 15".to_string()),
+            commit_message: Some("Feat: wave 15".to_string()),
+            component_promotions: Vec::new(),
+            deploy_environments: Vec::new(),
+            context7_defaults: None,
+            agents: vec![
+                test_agent("A1"),
+                closure_test_agent("A6"),
+                closure_test_agent("A7"),
+                closure_test_agent("A8"),
+                closure_test_agent("A9"),
+                closure_test_agent("A0"),
+            ],
+        };
+        let ordered = ordered_agents(&wave);
+        assert_eq!(
+            ordered.iter().map(|agent| agent.id.as_str()).collect::<Vec<_>>(),
+            vec!["A1", "A6", "A7", "A8", "A9", "A0"]
+        );
+
+        assert_eq!(
+            planned_execution_indices(&ordered, None, RerunScope::ClosureOnly)
+                .expect("closure-only indices"),
+            vec![1, 2, 3, 4, 5]
+        );
+        assert_eq!(
+            planned_execution_indices(&ordered, None, RerunScope::PromotionOnly)
+                .expect("promotion-only indices"),
+            vec![3, 4, 5]
+        );
+    }
+
+    #[test]
+    fn from_first_incomplete_rerun_resumes_at_first_non_succeeded_agent() {
+        let wave = launchable_test_wave(15);
+        let ordered = ordered_agents(&wave);
+        let prior_run = WaveRunRecord {
+            run_id: "wave-15-prior".to_string(),
+            wave_id: 15,
+            slug: "wave-15".to_string(),
+            title: "Wave 15".to_string(),
+            status: WaveRunStatus::Failed,
+            dry_run: false,
+            bundle_dir: PathBuf::from(".wave/state/build/specs/wave-15-prior"),
+            trace_path: PathBuf::from(".wave/traces/runs/wave-15-prior.json"),
+            codex_home: PathBuf::from(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(1),
+            launcher_pid: None,
+            launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
+            completed_at_ms: Some(2),
+            agents: vec![
+                AgentRunRecord {
+                    id: "A1".to_string(),
+                    title: "Implementation".to_string(),
+                    status: WaveRunStatus::Succeeded,
+                    prompt_path: PathBuf::from("prompt-a1.md"),
+                    last_message_path: PathBuf::from("last-message-a1.txt"),
+                    events_path: PathBuf::from("events-a1.jsonl"),
+                    stderr_path: PathBuf::from("stderr-a1.txt"),
+                    result_envelope_path: None,
+                    runtime_detail_path: None,
+                    expected_markers: vec!["[wave-proof]".to_string()],
+                    observed_markers: vec!["[wave-proof]".to_string()],
+                    exit_code: Some(0),
+                    error: None,
+                    runtime: None,
+                },
+                AgentRunRecord {
+                    id: "A8".to_string(),
+                    title: "Closure A8".to_string(),
+                    status: WaveRunStatus::Failed,
+                    prompt_path: PathBuf::from("prompt-a8.md"),
+                    last_message_path: PathBuf::from("last-message-a8.txt"),
+                    events_path: PathBuf::from("events-a8.jsonl"),
+                    stderr_path: PathBuf::from("stderr-a8.txt"),
+                    result_envelope_path: None,
+                    runtime_detail_path: None,
+                    expected_markers: vec!["[wave-integration]".to_string()],
+                    observed_markers: Vec::new(),
+                    exit_code: Some(1),
+                    error: Some("failed".to_string()),
+                    runtime: None,
+                },
+                AgentRunRecord {
+                    id: "A9".to_string(),
+                    title: "Closure A9".to_string(),
+                    status: WaveRunStatus::Planned,
+                    prompt_path: PathBuf::from("prompt-a9.md"),
+                    last_message_path: PathBuf::from("last-message-a9.txt"),
+                    events_path: PathBuf::from("events-a9.jsonl"),
+                    stderr_path: PathBuf::from("stderr-a9.txt"),
+                    result_envelope_path: None,
+                    runtime_detail_path: None,
+                    expected_markers: vec!["[wave-doc-closure]".to_string()],
+                    observed_markers: Vec::new(),
+                    exit_code: None,
+                    error: None,
+                    runtime: None,
+                },
+                AgentRunRecord {
+                    id: "A0".to_string(),
+                    title: "Closure A0".to_string(),
+                    status: WaveRunStatus::Planned,
+                    prompt_path: PathBuf::from("prompt-a0.md"),
+                    last_message_path: PathBuf::from("last-message-a0.txt"),
+                    events_path: PathBuf::from("events-a0.jsonl"),
+                    stderr_path: PathBuf::from("stderr-a0.txt"),
+                    result_envelope_path: None,
+                    runtime_detail_path: None,
+                    expected_markers: vec!["[wave-gate]".to_string()],
+                    observed_markers: Vec::new(),
+                    exit_code: None,
+                    error: None,
+                    runtime: None,
+                },
+            ],
+            error: Some("failed".to_string()),
+        };
+
+        assert_eq!(
+            planned_execution_indices(&ordered, Some(&prior_run), RerunScope::FromFirstIncomplete)
+                .expect("resume indices"),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn closure_artifact_placeholders_are_seeded_before_followup_agents_run() {
+        let execution_root = std::env::temp_dir().join(format!(
+            "wave-runtime-closure-placeholders-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&execution_root).expect("create execution root");
+
+        let mut wave = WaveDocument {
+            path: PathBuf::from("waves/15.md"),
+            metadata: WaveMetadata {
+                id: 15,
+                slug: "wave-15".to_string(),
+                title: "Wave 15".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["A0".to_string()],
+                depends_on: Vec::new(),
+                validation: Vec::new(),
+                rollback: Vec::new(),
+                proof: Vec::new(),
+            },
+            heading_title: Some("Wave 15".to_string()),
+            commit_message: Some("Feat: wave 15".to_string()),
+            component_promotions: Vec::new(),
+            deploy_environments: Vec::new(),
+            context7_defaults: None,
+            agents: vec![
+                test_agent("A1"),
+                closure_test_agent("A6"),
+                closure_test_agent("A7"),
+                closure_test_agent("A8"),
+                closure_test_agent("A9"),
+                closure_test_agent("A0"),
+            ],
+        };
+        wave.agents[1].file_ownership = vec![".wave/design/wave-15.md".to_string()];
+        wave.agents[2].file_ownership = vec![".wave/security/wave-15.md".to_string()];
+        wave.agents[3].file_ownership = vec![".wave/integration/wave-15.md".to_string()];
+        wave.agents[4].file_ownership = vec![".wave/docs/wave-15.md".to_string()];
+        wave.agents[5].file_ownership = vec!["reports/wave-15-summary.json".to_string()];
+
+        let preserved_path = execution_root.join(".wave/docs/wave-15.md");
+        fs::create_dir_all(
+            preserved_path
+                .parent()
+                .expect("preserved placeholder parent"),
+        )
+        .expect("create preserved parent");
+        fs::write(&preserved_path, "keep me\n").expect("seed existing closure artifact");
+
+        prepare_closure_artifact_placeholders(&execution_root, &wave)
+            .expect("seed closure placeholders");
+
+        assert!(execution_root.join(".wave/design/wave-15.md").exists());
+        assert!(execution_root.join(".wave/security/wave-15.md").exists());
+        assert!(execution_root.join(".wave/integration/wave-15.md").exists());
+        assert_eq!(
+            fs::read_to_string(&preserved_path).expect("read preserved placeholder"),
+            "keep me\n"
+        );
+        assert_eq!(
+            fs::read_to_string(execution_root.join("reports/wave-15-summary.json"))
+                .expect("read json placeholder"),
+            "{}\n"
+        );
+
+        let _ = fs::remove_dir_all(&execution_root);
+    }
+
+    #[test]
     fn create_workspace_snapshot_commit_excludes_ignored_runtime_state_paths() {
         let root = std::env::temp_dir().join(format!(
             "wave-runtime-snapshot-ignore-state-{}-{}",
@@ -5830,10 +6773,14 @@ mod tests {
         fs::write(root.join("LIVE-WAVE-15-RUN.md"), "real run candidate\n")
             .expect("write untracked file");
 
-        let snapshot_ref = create_workspace_snapshot_commit(&root, &config, "wave-15-live", "base")
-            .expect("create snapshot commit");
-        let tree = git_output(&root, &["ls-tree", "--name-only", "-r", snapshot_ref.as_str()])
-            .expect("list snapshot tree");
+        let snapshot_ref =
+            create_workspace_snapshot_commit(&root, &root, &config, "wave-15-live", "base")
+                .expect("create snapshot commit");
+        let tree = git_output(
+            &root,
+            &["ls-tree", "--name-only", "-r", snapshot_ref.as_str()],
+        )
+        .expect("list snapshot tree");
 
         assert!(tree.lines().any(|line| line == "LIVE-WAVE-15-RUN.md"));
         assert!(!tree.contains(".wave/state/"));
@@ -5978,6 +6925,14 @@ echo '{"loggedIn":true}'
             )?;
 
             assert_eq!(plan.runtime.selected_runtime, RuntimeId::Codex);
+            assert_eq!(plan.launch.execution_root, execution_root);
+            assert_eq!(
+                plan.launch.projected_skill_dirs,
+                vec![
+                    execution_root.join("skills/worktree-only"),
+                    execution_root.join("skills/runtime-codex"),
+                ]
+            );
             assert_eq!(
                 plan.runtime.skill_projection.declared_skills,
                 vec!["repo-only".to_string(), "worktree-only".to_string()]
@@ -6004,19 +6959,114 @@ echo '{"loggedIn":true}'
             );
             let overlay = fs::read_to_string(&overlay_path).expect("read skill overlay");
             assert!(overlay.contains(&format!("- execution root: {}", execution_root.display())));
-            assert!(overlay.contains(
-                &execution_root
-                    .join("skills/worktree-only/SKILL.md")
-                    .display()
-                    .to_string()
-            ));
-            assert!(!overlay.contains(
-                &root.join("skills/repo-only/SKILL.md").display().to_string()
-            ));
+            assert!(
+                overlay.contains(
+                    &execution_root
+                        .join("skills/worktree-only/SKILL.md")
+                        .display()
+                        .to_string()
+                )
+            );
+            assert!(
+                !overlay.contains(&root.join("skills/repo-only/SKILL.md").display().to_string())
+            );
 
             Ok(())
         })
         .expect("resolve runtime plan");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolve_runtime_plan_separates_runtime_launch_spec_from_codex_options() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-codex-launch-boundary-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        let execution_root = root.join(".wave/state/worktrees/wave-15");
+        let bundle_dir = root.join(".wave/state/build/specs/wave-15-runtime-boundary");
+        let agent_dir = bundle_dir.join("agents/A1");
+        fs::create_dir_all(&agent_dir).expect("create agent dir");
+        fs::create_dir_all(execution_root.join("skills")).expect("create execution skills");
+        write_skill_bundle(&execution_root, "runtime-codex", &["codex"]);
+
+        let mut wave = launchable_test_wave(15);
+        wave.agents[0].executor = BTreeMap::from([
+            ("id".to_string(), "codex".to_string()),
+            ("model".to_string(), "gpt-5.4-mini".to_string()),
+            (
+                "codex.config".to_string(),
+                "model_reasoning_effort=low,model_verbosity=low".to_string(),
+            ),
+        ]);
+        let agent = wave.agents[0].clone();
+        let run = scheduler_test_run(&root, &wave, "wave-15-runtime-boundary", 1);
+        let base_record = AgentRunRecord {
+            id: agent.id.clone(),
+            title: agent.title.clone(),
+            status: WaveRunStatus::Planned,
+            prompt_path: agent_dir.join("prompt.md"),
+            last_message_path: agent_dir.join("last-message.txt"),
+            events_path: agent_dir.join("events.jsonl"),
+            stderr_path: agent_dir.join("stderr.txt"),
+            result_envelope_path: None,
+            runtime_detail_path: None,
+            expected_markers: agent
+                .expected_final_markers()
+                .iter()
+                .map(|marker| marker.to_string())
+                .collect(),
+            observed_markers: Vec::new(),
+            exit_code: None,
+            error: None,
+            runtime: None,
+        };
+
+        with_fake_codex(&root, "ok", || {
+            let registry = RuntimeAdapterRegistry::new();
+            let plan = resolve_runtime_plan(
+                &root,
+                &execution_root,
+                &run,
+                &agent,
+                &base_record,
+                "# runtime boundary prompt",
+                &registry,
+            )?;
+
+            assert_eq!(plan.runtime.execution_identity.runtime, RuntimeId::Codex);
+            assert_eq!(
+                plan.runtime.execution_identity.adapter,
+                "wave-runtime/codex"
+            );
+            assert_eq!(plan.launch.agent_id, "A1");
+            assert_eq!(plan.launch.execution_root, execution_root);
+            assert!(plan.launch.prompt.starts_with("# runtime boundary prompt"));
+            assert!(plan.launch.prompt.contains("## Runtime selection"));
+            assert_eq!(
+                plan.launch.projected_skill_dirs,
+                vec![execution_root.join("skills/runtime-codex")]
+            );
+
+            match &plan.adapter_config {
+                RuntimeAdapterConfig::Codex(config) => {
+                    assert_eq!(config.model.as_deref(), Some("gpt-5.4-mini"));
+                    assert_eq!(
+                        config.config_entries,
+                        vec![
+                            "model_reasoning_effort=low".to_string(),
+                            "model_verbosity=low".to_string(),
+                        ]
+                    );
+                }
+                RuntimeAdapterConfig::Claude(_) => panic!("expected codex adapter config"),
+            }
+
+            Ok(())
+        })
+        .expect("resolve codex runtime boundary");
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -6086,7 +7136,10 @@ echo '{"loggedIn":true}'
                 plan.runtime.policy.allowed_runtimes,
                 vec![RuntimeId::Codex, RuntimeId::Claude]
             );
-            assert_eq!(plan.runtime.execution_identity.provider, "anthropic-claude-code");
+            assert_eq!(
+                plan.runtime.execution_identity.provider,
+                "anthropic-claude-code"
+            );
             assert_eq!(
                 plan.runtime.skill_projection.auto_attached_skills,
                 vec!["runtime-claude".to_string()]
@@ -6129,6 +7182,7 @@ echo '{"loggedIn":true}'
             &[],
             &[],
             &HashMap::new(),
+            &HashSet::new(),
             &HashSet::new(),
         );
 
@@ -6255,6 +7309,7 @@ echo '{"loggedIn":true}'
             &[],
             &HashMap::new(),
             &HashSet::new(),
+            &HashSet::new(),
         );
 
         with_fake_claude(&root, "ok", || {
@@ -6323,7 +7378,10 @@ echo '{"loggedIn":true}'
         )
         .expect("read used system prompt");
         assert!(used_system_prompt.contains(&format!("Execution root: {}.", worktree.path)));
-        assert!(used_system_prompt.contains(&format!("{}/skills/runtime-claude/SKILL.md", worktree.path)));
+        assert!(
+            used_system_prompt
+                .contains(&format!("{}/skills/runtime-claude/SKILL.md", worktree.path))
+        );
 
         let used_settings_path = fs::read_to_string(
             implementation
@@ -6625,6 +7683,61 @@ echo '{"loggedIn":true}'
         fs::write(root.join("README.md"), "# root changed\n").expect("change root readme");
         fs::write(
             Path::new(&worktree.path).join("README.md"),
+            "# worktree changed\n",
+        )
+        .expect("change worktree readme");
+
+        let evaluated =
+            evaluate_wave_promotion(&root, &config, &worktree, &initial, "wave-12-proof")
+                .expect("evaluate promotion");
+        assert_eq!(evaluated.state, WavePromotionState::Conflicted);
+        assert_eq!(evaluated.conflict_paths, vec!["README.md".to_string()]);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn promotion_conflict_is_explicit_with_relative_worktree_path() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-promotion-conflict-relative-worktree-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create root");
+        seed_lint_context(&root);
+        init_git_repo(&root);
+
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+        let wave = launchable_test_wave(12);
+        let worktree =
+            allocate_wave_worktree(&root, &config, &wave, "wave-12-proof", 1).expect("worktree");
+        let relative_worktree_path = format!(
+            "./{}",
+            Path::new(worktree.path.as_str())
+                .strip_prefix(&root)
+                .expect("worktree under root")
+                .display()
+        );
+        let worktree = WaveWorktreeRecord {
+            path: relative_worktree_path,
+            ..worktree
+        };
+        let initial = publish_promotion_record(
+            &root,
+            &config,
+            initial_promotion_record(&root, &wave, &worktree).expect("initial promotion"),
+            "wave-12-proof",
+        )
+        .expect("publish initial promotion");
+
+        fs::write(root.join("README.md"), "# root changed\n").expect("change root readme");
+        fs::write(
+            root.join(Path::new(worktree.path.as_str()))
+                .join("README.md"),
             "# worktree changed\n",
         )
         .expect("change worktree readme");
@@ -7087,6 +8200,7 @@ echo '{"loggedIn":true}'
             &[],
             &HashMap::new(),
             &HashSet::new(),
+            &HashSet::new(),
         );
         let lint_messages = wave_dark_factory::lint_project(&root, &waves)
             .into_iter()
@@ -7542,6 +8656,7 @@ echo '{"loggedIn":true}'
             &[],
             &HashMap::new(),
             &HashSet::new(),
+            &HashSet::new(),
         );
         with_fake_codex(&fixture_root, "parallel", || {
             autonomous_launch(
@@ -7633,6 +8748,7 @@ echo '{"loggedIn":true}'
             &findings,
             &skill_catalog_issues,
             &latest_runs,
+            &HashSet::new(),
             &HashSet::new(),
             true,
         )
@@ -8305,6 +9421,7 @@ echo '{"loggedIn":true}'
             &[],
             &HashMap::new(),
             &HashSet::new(),
+            &HashSet::new(),
         );
 
         with_fake_codex_and_claude(&fixture_root, "parallel", "ok", || {
@@ -8377,8 +9494,8 @@ echo '{"loggedIn":true}'
         ]);
         let fallback_agent = fallback_wave.agents[0].clone();
         let fallback_run = scheduler_test_run(&fixture_root, &fallback_wave, "wave-17-fallback", 3);
-        let fallback_agent_dir = fixture_root
-            .join(".wave/state/build/specs/wave-17-fallback/agents/A1");
+        let fallback_agent_dir =
+            fixture_root.join(".wave/state/build/specs/wave-17-fallback/agents/A1");
         fs::create_dir_all(&fallback_agent_dir).expect("create fallback agent dir");
         let fallback_base_record = AgentRunRecord {
             id: fallback_agent.id.clone(),
@@ -8400,20 +9517,21 @@ echo '{"loggedIn":true}'
             error: None,
             runtime: None,
         };
-        let fallback_runtime = with_fake_codex_and_claude(&fixture_root, "unavailable", "ok", || {
-            let registry = RuntimeAdapterRegistry::new();
-            Ok(resolve_runtime_plan(
-                &fixture_root,
-                &fallback_execution_root,
-                &fallback_run,
-                &fallback_agent,
-                &fallback_base_record,
-                "# fallback proof prompt",
-                &registry,
-            )?
-            .runtime)
-        })
-        .expect("resolve fallback proof");
+        let fallback_runtime =
+            with_fake_codex_and_claude(&fixture_root, "unavailable", "ok", || {
+                let registry = RuntimeAdapterRegistry::new();
+                Ok(resolve_runtime_plan(
+                    &fixture_root,
+                    &fallback_execution_root,
+                    &fallback_run,
+                    &fallback_agent,
+                    &fallback_base_record,
+                    "# fallback proof prompt",
+                    &registry,
+                )?
+                .runtime)
+            })
+            .expect("resolve fallback proof");
 
         let worktree_repo_root = fixture_root.join(".wave/state/live-proofs/runtime-policy-root");
         let worktree_execution_root =
@@ -8430,8 +9548,8 @@ echo '{"loggedIn":true}'
         let projection_agent = projection_wave.agents[0].clone();
         let projection_run =
             scheduler_test_run(&fixture_root, &projection_wave, "wave-18-projection", 4);
-        let projection_agent_dir = fixture_root
-            .join(".wave/state/build/specs/wave-18-projection/agents/A1");
+        let projection_agent_dir =
+            fixture_root.join(".wave/state/build/specs/wave-18-projection/agents/A1");
         fs::create_dir_all(&projection_agent_dir).expect("create projection agent dir");
         let projection_base_record = AgentRunRecord {
             id: projection_agent.id.clone(),
@@ -8486,7 +9604,9 @@ echo '{"loggedIn":true}'
                     run: codex_run.clone(),
                     runtime_detail: codex_runtime_detail,
                     used_worktree_path: Some(
-                        read_agent_worktree_marker(codex_run, "A1").trim().to_string(),
+                        read_agent_worktree_marker(codex_run, "A1")
+                            .trim()
+                            .to_string(),
                     ),
                     used_system_prompt: None,
                     used_settings_path: None,
@@ -8971,7 +10091,9 @@ esac
         claude_scenario: Option<&str>,
         f: impl FnOnce() -> Result<T>,
     ) -> Result<T> {
-        let _guard = fake_runtime_env_lock().lock().expect("fake runtime env lock");
+        let _guard = fake_runtime_env_lock()
+            .lock()
+            .expect("fake runtime env lock");
         let previous_binary = env::var("WAVE_CODEX_BIN").ok();
         let previous_scenario = env::var("WAVE_FAKE_CODEX_SCENARIO").ok();
         let previous_claude_binary = env::var("WAVE_CLAUDE_BIN").ok();
@@ -9147,6 +10269,13 @@ esac
             agents: Vec::new(),
             error: None,
         }
+    }
+
+    fn write_run_record_fixture(root: &Path, config: &ProjectConfig, run: &WaveRunRecord) {
+        let path = state_runs_dir(root, config).join(format!("{}.json", run.run_id));
+        fs::create_dir_all(path.parent().expect("run record parent")).expect("create run dir");
+        fs::write(&path, serde_json::to_string_pretty(run).expect("serialize run"))
+            .expect("write run record");
     }
 
     #[test]

@@ -222,6 +222,7 @@ pub struct WaveLifecycleSummary {
     pub actively_running: bool,
     pub completed: bool,
     pub rerun_requested: bool,
+    pub closure_override_applied: bool,
     pub latest_run: Option<WaveRunSummary>,
 }
 
@@ -402,6 +403,7 @@ pub fn reduce_planning_state(
     skill_catalog_issues: &[SkillCatalogIssue],
     latest_runs: &HashMap<u32, CompatibilityRunInput>,
     rerun_wave_ids: &HashSet<u32>,
+    closure_override_wave_ids: &HashSet<u32>,
 ) -> PlanningReducerState {
     reduce_planning_state_with_scheduler(
         waves,
@@ -409,6 +411,7 @@ pub fn reduce_planning_state(
         skill_catalog_issues,
         latest_runs,
         rerun_wave_ids,
+        closure_override_wave_ids,
         &[],
     )
 }
@@ -419,6 +422,7 @@ pub fn reduce_planning_state_with_scheduler(
     skill_catalog_issues: &[SkillCatalogIssue],
     latest_runs: &HashMap<u32, CompatibilityRunInput>,
     rerun_wave_ids: &HashSet<u32>,
+    closure_override_wave_ids: &HashSet<u32>,
     scheduler_events: &[SchedulerEvent],
 ) -> PlanningReducerState {
     let mut findings_by_wave: HashMap<u32, usize> = HashMap::new();
@@ -437,7 +441,13 @@ pub fn reduce_planning_state_with_scheduler(
             .copied()
             .unwrap_or_default();
         let rerun_requested = rerun_wave_ids.contains(&wave.metadata.id);
-        let run_gate = compatibility_run_facts(wave.metadata.id, latest_run, rerun_requested);
+        let closure_override_applied = closure_override_wave_ids.contains(&wave.metadata.id);
+        let run_gate = compatibility_run_facts(
+            wave.metadata.id,
+            latest_run,
+            rerun_requested,
+            closure_override_applied,
+        );
         let closure = wave_closure_facts_with_run(wave, latest_run);
         let dependency_gates = wave
             .metadata
@@ -448,6 +458,7 @@ pub fn reduce_planning_state_with_scheduler(
                     wave.metadata.id,
                     *dependency,
                     latest_runs.get(dependency),
+                    closure_override_wave_ids.contains(dependency),
                 )
             })
             .collect::<Vec<_>>();
@@ -467,6 +478,7 @@ pub fn reduce_planning_state_with_scheduler(
             &ownership,
             &execution,
             planning_ready,
+            rerun_requested,
         );
         let blocker_state = classify_blockers(&blocked_by);
         let blockers = classify_blocker_flags(&blocker_state);
@@ -501,6 +513,7 @@ pub fn reduce_planning_state_with_scheduler(
                 actively_running: run_gate.actively_running,
                 completed: run_gate.completed,
                 rerun_requested,
+                closure_override_applied,
                 latest_run: run_gate.latest_run.as_ref().map(run_summary),
             },
             dependency_gates,
@@ -812,12 +825,16 @@ fn classify_wave_readiness(
 ) -> WaveReadinessState {
     let claimed = ownership.claim.is_some();
     let active_by_lease = !ownership.active_leases.is_empty();
+    let blocking_stale_leases = ownership
+        .stale_leases
+        .iter()
+        .any(|lease| lease.state == TaskLeaseState::Expired);
     let claimable = planning_ready
         && !completed
         && !actively_running
         && !active_by_lease
         && !claimed
-        && ownership.stale_leases.is_empty()
+        && !blocking_stale_leases
         && ownership.contention_reasons.is_empty()
         && !ownership.budget.budget_blocked
         && blocker_state.is_empty();
@@ -1145,6 +1162,7 @@ fn combined_blockers(
     ownership: &WaveOwnershipState,
     execution: &WaveExecutionState,
     planning_ready: bool,
+    rerun_requested: bool,
 ) -> Vec<String> {
     let mut blocked_by = planning_blockers.to_vec();
 
@@ -1155,11 +1173,13 @@ fn combined_blockers(
         blocked_by.push(format!("ownership:contention:{reason}"));
     }
     for lease in &ownership.stale_leases {
-        blocked_by.push(format!(
-            "lease-expired:{}:{}",
-            lease.task_id,
-            lease.state_label()
-        ));
+        if lease.state == TaskLeaseState::Expired {
+            blocked_by.push(format!(
+                "lease-expired:{}:{}",
+                lease.task_id,
+                lease.state_label()
+            ));
+        }
     }
     if planning_ready && ownership.budget.budget_blocked {
         blocked_by.push(format!(
@@ -1172,7 +1192,7 @@ fn combined_blockers(
                 .unwrap_or_else(|| "unbounded".to_string())
         ));
     }
-    if execution.merge_blocked {
+    if execution.merge_blocked && !rerun_requested {
         blocked_by.push(format!(
             "closure:promotion-blocked:{}",
             execution
@@ -1569,6 +1589,52 @@ mod tests {
     }
 
     #[test]
+    fn rerun_requested_reopens_promotion_conflicted_failed_wave() {
+        let waves = vec![test_wave(0, Vec::new())];
+        let latest_runs = HashMap::from([(0, run_record(0, WaveRunStatus::Failed))]);
+        let rerun_wave_ids = HashSet::from([0]);
+        let scheduler_events = vec![
+            promotion_event(
+                0,
+                WavePromotionState::Conflicted,
+                vec!["crates/wave-runtime/src/lib.rs".to_string()],
+                10,
+            ),
+            scheduling_event(
+                0,
+                WaveExecutionPhase::Closure,
+                WaveSchedulerPriority::Closure,
+                WaveSchedulingState::Protected,
+                true,
+                false,
+                11,
+            ),
+        ];
+
+        let state = reduce_with_scheduler(
+            &waves,
+            &[],
+            &[],
+            latest_runs,
+            rerun_wave_ids,
+            scheduler_events,
+        );
+
+        let wave = state.waves.first().expect("wave 0");
+        assert!(wave.ready);
+        assert_eq!(wave.readiness.state, QueueReadinessState::Ready);
+        assert!(wave.lifecycle.rerun_requested);
+        assert!(
+            !wave
+                .blocked_by
+                .iter()
+                .any(|reason| reason == "closure:promotion-blocked:conflicted")
+        );
+        assert!(wave.execution.merge_blocked);
+        assert!(wave.execution.closure_blocked_by_promotion);
+    }
+
+    #[test]
     fn dependency_gates_are_scoped_to_the_wave_being_reduced() {
         let waves = vec![test_wave(10, Vec::new()), test_wave(11, vec![10])];
         let latest_runs = HashMap::from([(10, run_record(10, WaveRunStatus::Running))]);
@@ -1809,6 +1875,86 @@ mod tests {
     }
 
     #[test]
+    fn released_and_revoked_stale_leases_do_not_block_reruns_after_claim_release() {
+        let waves = vec![test_wave(0, Vec::new())];
+        let scheduler_events = vec![
+            claim_acquired_event(0, "claim-wave-0", "wave-0-run", 10),
+            lease_event(
+                0,
+                "claim-wave-0",
+                "wave-0-run",
+                "A1",
+                TaskLeaseState::Released,
+                11,
+                Some(12),
+            ),
+            lease_event(
+                0,
+                "claim-wave-0",
+                "wave-0-run",
+                "A8",
+                TaskLeaseState::Revoked,
+                13,
+                Some(14),
+            ),
+            claim_released_event(0, "claim-wave-0", "wave-0-run", 15),
+        ];
+
+        let state = reduce_with_scheduler(
+            &waves,
+            &[],
+            &[],
+            HashMap::new(),
+            HashSet::new(),
+            scheduler_events,
+        );
+
+        let wave = &state.waves[0];
+        assert_eq!(wave.readiness.state, QueueReadinessState::Ready);
+        assert_eq!(wave.ownership.stale_leases.len(), 2);
+        assert!(!wave.blockers.lease_expired);
+        assert!(
+            wave.blocked_by
+                .iter()
+                .all(|reason| !reason.starts_with("lease-expired:"))
+        );
+    }
+
+    #[test]
+    fn manual_close_override_keeps_failed_latest_run_but_unblocks_dependents() {
+        let waves = vec![test_wave(15, Vec::new()), test_wave(16, vec![15])];
+        let latest_runs = HashMap::from([(15, run_record(15, WaveRunStatus::Failed))]);
+        let latest_runs = compatibility_run_inputs_by_wave(&latest_runs);
+        let state = reduce_planning_state(
+            &waves,
+            &[],
+            &[],
+            &latest_runs,
+            &HashSet::new(),
+            &HashSet::from([15]),
+        );
+
+        let overridden = state
+            .waves
+            .iter()
+            .find(|wave| wave.id == 15)
+            .expect("wave 15");
+        let dependent = state
+            .waves
+            .iter()
+            .find(|wave| wave.id == 16)
+            .expect("wave 16");
+
+        assert!(overridden.lifecycle.closure_override_applied);
+        assert!(overridden.lifecycle.completed);
+        assert_eq!(overridden.lifecycle.last_run_status, Some(WaveRunStatus::Failed));
+        assert_eq!(overridden.readiness.state, QueueReadinessState::Completed);
+        assert!(!dependent.blocked_by.iter().any(|reason| reason.starts_with("wave:15:")));
+        assert_eq!(dependent.readiness.state, QueueReadinessState::Ready);
+        assert!(state.queue.readiness.claimable_wave_ids.contains(&16));
+    }
+
+    #[test]
     fn promotion_conflict_and_reserved_closure_capacity_are_visible_in_reducer_state() {
         let waves = vec![test_wave(0, Vec::new()), test_wave(1, Vec::new())];
         let scheduler_events = vec![
@@ -1935,6 +2081,7 @@ mod tests {
             skill_catalog_issues,
             &latest_runs,
             &rerun_wave_ids,
+            &HashSet::new(),
         )
     }
 
@@ -1953,6 +2100,7 @@ mod tests {
             skill_catalog_issues,
             &latest_runs,
             &rerun_wave_ids,
+            &HashSet::new(),
             &scheduler_events,
         )
     }
@@ -2002,10 +2150,12 @@ mod tests {
             events_path: PathBuf::from(".wave/state/runs/events.jsonl"),
             stderr_path: PathBuf::from(".wave/state/runs/stderr.txt"),
             result_envelope_path: None,
+            runtime_detail_path: None,
             expected_markers: vec![marker.to_string()],
             observed_markers: vec![marker.to_string()],
             exit_code: Some(0),
             error: None,
+            runtime: None,
         }
     }
 
@@ -2159,6 +2309,32 @@ mod tests {
         SchedulerEvent::new(
             format!("sched-claim-{wave_id}-{claim_id}"),
             SchedulerEventKind::WaveClaimAcquired,
+        )
+        .with_wave_id(wave_id)
+        .with_claim_id(claim.claim_id.clone())
+        .with_created_at_ms(created_at_ms)
+        .with_correlation_id(session_id)
+        .with_payload(SchedulerEventPayload::WaveClaimUpdated { claim })
+    }
+
+    fn claim_released_event(
+        wave_id: u32,
+        claim_id: &str,
+        session_id: &str,
+        created_at_ms: u128,
+    ) -> SchedulerEvent {
+        let claim = WaveClaimRecord {
+            claim_id: WaveClaimId::new(claim_id),
+            wave_id,
+            state: WaveClaimState::Released,
+            owner: scheduler_owner(session_id),
+            claimed_at_ms: created_at_ms.saturating_sub(1),
+            released_at_ms: Some(created_at_ms),
+            detail: Some("claim released".to_string()),
+        };
+        SchedulerEvent::new(
+            format!("sched-claim-released-{wave_id}-{claim_id}"),
+            SchedulerEventKind::WaveClaimReleased,
         )
         .with_wave_id(wave_id)
         .with_claim_id(claim.claim_id.clone())

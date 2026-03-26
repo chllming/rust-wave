@@ -2430,6 +2430,7 @@ dependencies = [
  "wave-config",
  "wave-control-plane",
  "wave-dark-factory",
+ "wave-domain",
  "wave-runtime",
  "wave-spec",
  "wave-trace",

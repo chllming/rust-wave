@@ -108,6 +108,7 @@ pub struct WaveQueueEntry {
     pub missing_closure_agents: Vec<String>,
     pub readiness: WaveReadinessState,
     pub rerun_requested: bool,
+    pub closure_override_applied: bool,
     pub completed: bool,
     pub last_run_status: Option<WaveRunStatus>,
 }
@@ -197,6 +198,7 @@ pub struct WavePlanningProjection {
     pub ownership: WaveOwnershipState,
     pub execution: WaveExecutionState,
     pub rerun_requested: bool,
+    pub closure_override_applied: bool,
     pub completed: bool,
     pub last_run_status: Option<WaveRunStatus>,
     pub agents: WaveAgentCounts,
@@ -468,6 +470,7 @@ pub fn build_planning_projection_bundle(
         &[],
         latest_runs,
         &HashSet::new(),
+        &HashSet::new(),
     )
 }
 
@@ -485,6 +488,7 @@ pub fn build_planning_projection_bundle_with_skill_catalog(
         skill_catalog_issues,
         latest_runs,
         &HashSet::new(),
+        &HashSet::new(),
     )
 }
 
@@ -495,6 +499,7 @@ pub fn build_planning_projection_bundle_with_state(
     skill_catalog_issues: &[SkillCatalogIssue],
     latest_runs: &HashMap<u32, WaveRunRecord>,
     rerun_wave_ids: &HashSet<u32>,
+    closure_override_wave_ids: &HashSet<u32>,
 ) -> PlanningProjectionBundle {
     let compatibility_runs = compatibility_run_inputs_by_wave(latest_runs);
     build_planning_projection_bundle_with_compatibility_state(
@@ -504,6 +509,7 @@ pub fn build_planning_projection_bundle_with_state(
         skill_catalog_issues,
         &compatibility_runs,
         rerun_wave_ids,
+        closure_override_wave_ids,
     )
 }
 
@@ -514,6 +520,7 @@ pub fn build_planning_projection_bundle_with_compatibility_state(
     skill_catalog_issues: &[SkillCatalogIssue],
     latest_runs: &HashMap<u32, CompatibilityRunInput>,
     rerun_wave_ids: &HashSet<u32>,
+    closure_override_wave_ids: &HashSet<u32>,
 ) -> PlanningProjectionBundle {
     let reduced = reduce_planning_state_with_scheduler(
         waves,
@@ -521,6 +528,7 @@ pub fn build_planning_projection_bundle_with_compatibility_state(
         skill_catalog_issues,
         latest_runs,
         rerun_wave_ids,
+        closure_override_wave_ids,
         &[],
     );
     let status = build_planning_status_from_reducer(config, &reduced);
@@ -535,6 +543,7 @@ pub fn build_planning_projection_bundle_with_scheduler_state(
     skill_catalog_issues: &[SkillCatalogIssue],
     latest_runs: &HashMap<u32, CompatibilityRunInput>,
     rerun_wave_ids: &HashSet<u32>,
+    closure_override_wave_ids: &HashSet<u32>,
     scheduler_events: &[SchedulerEvent],
 ) -> PlanningProjectionBundle {
     let reduced = reduce_planning_state_with_scheduler(
@@ -543,6 +552,7 @@ pub fn build_planning_projection_bundle_with_scheduler_state(
         skill_catalog_issues,
         latest_runs,
         rerun_wave_ids,
+        closure_override_wave_ids,
         scheduler_events,
     );
     let status = build_planning_status_from_reducer(config, &reduced);
@@ -557,6 +567,7 @@ pub fn build_projection_spine_with_state(
     skill_catalog_issues: &[SkillCatalogIssue],
     latest_runs: &HashMap<u32, WaveRunRecord>,
     rerun_wave_ids: &HashSet<u32>,
+    closure_override_wave_ids: &HashSet<u32>,
     launcher_ready: bool,
 ) -> ProjectionSpine {
     let compatibility_runs = compatibility_run_inputs_by_wave(latest_runs);
@@ -567,6 +578,7 @@ pub fn build_projection_spine_with_state(
         skill_catalog_issues,
         &compatibility_runs,
         rerun_wave_ids,
+        closure_override_wave_ids,
         launcher_ready,
     )
 }
@@ -578,6 +590,7 @@ pub fn build_projection_spine_with_compatibility_state(
     skill_catalog_issues: &[SkillCatalogIssue],
     latest_runs: &HashMap<u32, CompatibilityRunInput>,
     rerun_wave_ids: &HashSet<u32>,
+    closure_override_wave_ids: &HashSet<u32>,
     launcher_ready: bool,
 ) -> ProjectionSpine {
     let planning = build_planning_projection_bundle_with_scheduler_state(
@@ -587,6 +600,7 @@ pub fn build_projection_spine_with_compatibility_state(
         skill_catalog_issues,
         latest_runs,
         rerun_wave_ids,
+        closure_override_wave_ids,
         &[],
     );
     let operator = build_operator_snapshot_inputs_from_compatibility_runs(
@@ -604,6 +618,7 @@ pub fn build_projection_spine_with_scheduler_state(
     skill_catalog_issues: &[SkillCatalogIssue],
     latest_runs: &HashMap<u32, CompatibilityRunInput>,
     rerun_wave_ids: &HashSet<u32>,
+    closure_override_wave_ids: &HashSet<u32>,
     scheduler_events: &[SchedulerEvent],
     launcher_ready: bool,
 ) -> ProjectionSpine {
@@ -614,6 +629,7 @@ pub fn build_projection_spine_with_scheduler_state(
         skill_catalog_issues,
         latest_runs,
         rerun_wave_ids,
+        closure_override_wave_ids,
         scheduler_events,
     );
     let operator = build_operator_snapshot_inputs_from_compatibility_runs(
@@ -632,6 +648,7 @@ pub fn build_projection_spine_from_authority(
     skill_catalog_issues: &[SkillCatalogIssue],
     fallback_runs: &HashMap<u32, WaveRunRecord>,
     rerun_wave_ids: &HashSet<u32>,
+    closure_override_wave_ids: &HashSet<u32>,
     launcher_ready: bool,
 ) -> Result<ProjectionSpine> {
     let mut compatibility_runs = load_canonical_compatibility_runs(root, config, waves)?;
@@ -647,6 +664,7 @@ pub fn build_projection_spine_from_authority(
         skill_catalog_issues,
         &compatibility_runs,
         rerun_wave_ids,
+        closure_override_wave_ids,
         &scheduler_events,
         launcher_ready,
     ))
@@ -685,6 +703,7 @@ pub fn build_planning_status_with_state(
     skill_catalog_issues: &[SkillCatalogIssue],
     latest_runs: &HashMap<u32, WaveRunRecord>,
     rerun_wave_ids: &HashSet<u32>,
+    closure_override_wave_ids: &HashSet<u32>,
 ) -> PlanningStatus {
     build_planning_projection_bundle_with_state(
         config,
@@ -693,6 +712,7 @@ pub fn build_planning_status_with_state(
         skill_catalog_issues,
         latest_runs,
         rerun_wave_ids,
+        closure_override_wave_ids,
     )
     .status
 }
@@ -705,6 +725,7 @@ pub fn build_planning_status_from_authority(
     skill_catalog_issues: &[SkillCatalogIssue],
     fallback_runs: &HashMap<u32, WaveRunRecord>,
     rerun_wave_ids: &HashSet<u32>,
+    closure_override_wave_ids: &HashSet<u32>,
 ) -> Result<PlanningStatus> {
     Ok(build_projection_spine_from_authority(
         root,
@@ -714,6 +735,7 @@ pub fn build_planning_status_from_authority(
         skill_catalog_issues,
         fallback_runs,
         rerun_wave_ids,
+        closure_override_wave_ids,
         true,
     )?
     .planning
@@ -818,6 +840,7 @@ pub fn build_planning_status_projection(status: &PlanningStatus) -> PlanningStat
             ownership: wave.ownership.clone(),
             execution: wave.execution.clone(),
             rerun_requested: wave.rerun_requested,
+            closure_override_applied: wave.closure_override_applied,
             completed: wave.completed,
             last_run_status: wave.last_run_status,
             agents: WaveAgentCounts {
@@ -1181,6 +1204,7 @@ pub fn build_closure_attention_lines(projection: &PlanningStatusProjection) -> V
         .waves
         .iter()
         .filter(|wave| !wave.closure.complete)
+        .filter(|wave| !wave.closure_override_applied)
         .map(|wave| {
             format!(
                 "closure gap: wave {} {} missing {} | agents={} (impl={} closure={}) | blockers={}",
@@ -1352,6 +1376,7 @@ fn build_planning_status_from_reducer(
                 missing_closure_agents: wave.closure.missing_agent_ids.clone(),
                 readiness: convert_wave_readiness(&wave.readiness),
                 rerun_requested: wave.lifecycle.rerun_requested,
+                closure_override_applied: wave.lifecycle.closure_override_applied,
                 completed: wave.lifecycle.completed,
                 last_run_status: wave.lifecycle.last_run_status,
             })
@@ -1798,6 +1823,7 @@ mod tests {
             &[],
             &latest_runs,
             &HashSet::new(),
+            &HashSet::new(),
             false,
         );
 
@@ -1941,6 +1967,7 @@ mod tests {
             }],
             &HashMap::new(),
             &HashSet::new(),
+            &HashSet::new(),
             true,
         );
 
@@ -2068,6 +2095,7 @@ mod tests {
             &[],
             &HashMap::new(),
             &HashSet::new(),
+            &HashSet::new(),
             &scheduler_events,
         );
         let queue = build_queue_panel_read_model(&bundle.projection);
@@ -2134,6 +2162,7 @@ mod tests {
             &[],
             &[],
             &HashMap::new(),
+            &HashSet::new(),
             &HashSet::new(),
             &scheduler_events,
         );

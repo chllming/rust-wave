@@ -178,6 +178,7 @@ pub struct CompatibilityRunFacts {
     pub actively_running: bool,
     pub completed: bool,
     pub rerun_requested: bool,
+    pub closure_override_applied: bool,
     pub gate: GateVerdict,
 }
 
@@ -228,27 +229,26 @@ pub fn compatibility_run_facts(
     wave_id: u32,
     latest_run: Option<&CompatibilityRunInput>,
     rerun_requested: bool,
+    closure_override_applied: bool,
 ) -> CompatibilityRunFacts {
     let latest_run = latest_run.cloned();
     let actively_running = latest_run
         .as_ref()
         .map(CompatibilityRunInput::is_active)
         .unwrap_or(false);
-    let completed = latest_run
+    let authoritative_completion = latest_run
         .as_ref()
         .map(CompatibilityRunInput::is_authoritative_completion)
-        .unwrap_or(false)
-        && !rerun_requested;
+        .unwrap_or(false);
+    let completed =
+        closure_override_applied || (authoritative_completion && !rerun_requested);
 
     let disposition = if actively_running {
         GateDisposition::Blocked
-    } else if rerun_requested
-        && latest_run
-            .as_ref()
-            .map(CompatibilityRunInput::is_authoritative_completion)
-            .unwrap_or(false)
-    {
+    } else if rerun_requested && authoritative_completion && !closure_override_applied {
         GateDisposition::Blocked
+    } else if closure_override_applied {
+        GateDisposition::Pass
     } else if let Some(run) = latest_run.as_ref() {
         if run.supports_closure_completion() {
             GateDisposition::Pass
@@ -269,13 +269,10 @@ pub fn compatibility_run_facts(
                 .map(|run| run.status)
                 .unwrap_or(WaveRunStatus::Running)
         )]
-    } else if rerun_requested
-        && latest_run
-            .as_ref()
-            .map(CompatibilityRunInput::is_authoritative_completion)
-            .unwrap_or(false)
-    {
+    } else if rerun_requested && authoritative_completion && !closure_override_applied {
         vec!["rerun:requested".to_string()]
+    } else if closure_override_applied {
+        Vec::new()
     } else if let Some(run) = latest_run.as_ref() {
         if run.supports_closure_completion() {
             Vec::new()
@@ -291,6 +288,7 @@ pub fn compatibility_run_facts(
         actively_running,
         completed,
         rerun_requested,
+        closure_override_applied,
         gate: GateVerdict {
             gate_id: gate_id(wave_id, "compatibility-run"),
             wave_id,
@@ -360,19 +358,24 @@ pub fn dependency_gate_verdict(
     dependency_wave_id: u32,
     latest_run: Option<&CompatibilityRunInput>,
 ) -> DependencyGateVerdict {
-    dependency_gate_verdict_for_wave(dependency_wave_id, dependency_wave_id, latest_run)
+    dependency_gate_verdict_for_wave(dependency_wave_id, dependency_wave_id, latest_run, false)
 }
 
 pub fn dependency_gate_verdict_for_wave(
     wave_id: u32,
     dependency_wave_id: u32,
     latest_run: Option<&CompatibilityRunInput>,
+    closure_override_applied: bool,
 ) -> DependencyGateVerdict {
     let latest_run = latest_run.cloned();
-    let blocker_token = match latest_run.as_ref() {
+    let blocker_token = if closure_override_applied {
+        None
+    } else {
+        match latest_run.as_ref() {
         Some(run) if run.satisfies_dependency_gate() => None,
         Some(run) => Some(format!("wave:{dependency_wave_id}:{}", run.status)),
         None => Some(format!("wave:{dependency_wave_id}:pending")),
+        }
     };
     let satisfied = blocker_token.is_none();
     let disposition = if satisfied {
@@ -826,7 +829,12 @@ mod tests {
     #[test]
     fn dependency_gate_can_be_scoped_to_the_wave_being_evaluated() {
         let verdict =
-            dependency_gate_verdict_for_wave(11, 10, Some(&run_input(10, WaveRunStatus::Running)));
+            dependency_gate_verdict_for_wave(
+                11,
+                10,
+                Some(&run_input(10, WaveRunStatus::Running)),
+                false,
+            );
 
         assert_eq!(verdict.dependency_wave_id, 10);
         assert_eq!(verdict.gate.wave_id, 11);
@@ -840,7 +848,7 @@ mod tests {
     #[test]
     fn compatibility_run_facts_treat_rerun_as_reopened_state() {
         let succeeded = run_input(11, WaveRunStatus::Succeeded);
-        let reopened = compatibility_run_facts(11, Some(&succeeded), true);
+        let reopened = compatibility_run_facts(11, Some(&succeeded), true, false);
 
         assert!(!reopened.completed);
         assert!(!reopened.actively_running);
@@ -854,8 +862,12 @@ mod tests {
 
     #[test]
     fn compatibility_run_facts_treat_planned_runs_as_active() {
-        let planned =
-            compatibility_run_facts(11, Some(&run_input(11, WaveRunStatus::Planned)), false);
+        let planned = compatibility_run_facts(
+            11,
+            Some(&run_input(11, WaveRunStatus::Planned)),
+            false,
+            false,
+        );
 
         assert!(planned.actively_running);
         assert!(!planned.completed);
@@ -868,8 +880,12 @@ mod tests {
 
     #[test]
     fn compatibility_run_facts_treat_dry_runs_as_non_authoritative_but_non_blocking() {
-        let dry_run =
-            compatibility_run_facts(11, Some(&run_input(11, WaveRunStatus::DryRun)), false);
+        let dry_run = compatibility_run_facts(
+            11,
+            Some(&run_input(11, WaveRunStatus::DryRun)),
+            false,
+            false,
+        );
 
         assert!(!dry_run.completed);
         assert!(!dry_run.actively_running);
@@ -878,17 +894,49 @@ mod tests {
     }
 
     #[test]
+    fn compatibility_run_facts_treat_manual_close_override_as_authoritative_completion() {
+        let failed = run_input(15, WaveRunStatus::Failed);
+        let facts = compatibility_run_facts(15, Some(&failed), false, true);
+
+        assert!(facts.completed);
+        assert!(!facts.actively_running);
+        assert!(facts.closure_override_applied);
+        assert_eq!(facts.latest_run.as_ref().map(|run| run.status), Some(WaveRunStatus::Failed));
+        assert_eq!(facts.gate.disposition, GateDisposition::Pass);
+        assert!(facts.gate.blocking_reasons.is_empty());
+    }
+
+    #[test]
+    fn dependency_gate_accepts_manual_close_override_for_failed_dependency() {
+        let verdict = dependency_gate_verdict_for_wave(
+            16,
+            15,
+            Some(&run_input(15, WaveRunStatus::Failed)),
+            true,
+        );
+
+        assert!(verdict.satisfied);
+        assert_eq!(verdict.gate.disposition, GateDisposition::Pass);
+        assert!(verdict.blocker_token.is_none());
+    }
+
+    #[test]
     fn planning_gate_preserves_queue_blocker_order_and_failure_semantics() {
         let dependency_gates = vec![dependency_gate_verdict_for_wave(
             11,
             10,
             Some(&run_input(10, WaveRunStatus::Failed)),
+            false,
         )];
         let mut wave = test_wave(11);
         wave.agents.retain(|agent| agent.id != "A9");
         let closure = wave_closure_facts(&wave);
-        let run_facts =
-            compatibility_run_facts(11, Some(&run_input(11, WaveRunStatus::Running)), false);
+        let run_facts = compatibility_run_facts(
+            11,
+            Some(&run_input(11, WaveRunStatus::Running)),
+            false,
+            false,
+        );
 
         let gate = planning_gate_verdict(11, 1, &dependency_gates, &closure, &run_facts);
 
@@ -981,6 +1029,7 @@ mod tests {
                     contradiction_ids: Vec::new(),
                     verdict: wave_trace::ClosureVerdictPayload::None,
                 },
+                runtime: None,
                 created_at_ms: 2,
             },
         )
@@ -1000,6 +1049,9 @@ mod tests {
             started_at_ms: Some(1),
             launcher_pid: None,
             launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: Some(2),
             agents: vec![wave_trace::AgentRunRecord {
                 id: "A0".to_string(),
@@ -1010,10 +1062,12 @@ mod tests {
                 events_path: root.join(".wave/state/build/specs/events.jsonl"),
                 stderr_path: root.join(".wave/state/build/specs/stderr.txt"),
                 result_envelope_path: Some(envelope_path.clone()),
+                runtime_detail_path: None,
                 expected_markers: vec!["[wave-gate]".to_string()],
                 observed_markers: Vec::new(),
                 exit_code: Some(0),
                 error: None,
+                runtime: None,
             }],
             error: None,
         });
@@ -1061,6 +1115,9 @@ mod tests {
             started_at_ms: Some(1),
             launcher_pid: None,
             launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: Some(2),
             agents: vec![wave_trace::AgentRunRecord {
                 id: "A8".to_string(),
@@ -1071,10 +1128,12 @@ mod tests {
                 events_path: agent_dir.join("events.jsonl"),
                 stderr_path: agent_dir.join("stderr.txt"),
                 result_envelope_path: None,
+                runtime_detail_path: None,
                 expected_markers: vec!["[wave-integration]".to_string()],
                 observed_markers: Vec::new(),
                 exit_code: Some(0),
                 error: None,
+                runtime: None,
             }],
             error: None,
         };
@@ -1127,6 +1186,9 @@ mod tests {
             started_at_ms: Some(1),
             launcher_pid: None,
             launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: Some(2),
             agents: agents
                 .into_iter()
@@ -1139,10 +1201,12 @@ mod tests {
                     events_path: PathBuf::from(".wave/state/runs/events.jsonl"),
                     stderr_path: PathBuf::from(".wave/state/runs/stderr.txt"),
                     result_envelope_path: None,
+                    runtime_detail_path: None,
                     expected_markers: agent.expected_final_markers,
                     observed_markers: agent.observed_final_markers,
                     exit_code: Some(0),
                     error: agent.error,
+                    runtime: None,
                 })
                 .collect(),
             error: None,

@@ -154,6 +154,28 @@ pub enum RerunState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RerunScope {
+    Full,
+    FromFirstIncomplete,
+    ClosureOnly,
+    PromotionOnly,
+}
+
+impl Default for RerunScope {
+    fn default() -> Self {
+        Self::Full
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WaveClosureOverrideStatus {
+    Applied,
+    Cleared,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WaveClaimState {
     Held,
@@ -627,6 +649,10 @@ impl RuntimeId {
             Self::Local => "local",
         }
     }
+
+    pub fn skill_id(self) -> String {
+        format!("runtime-{}", self.as_str())
+    }
 }
 
 impl fmt::Display for RuntimeId {
@@ -643,6 +669,34 @@ pub struct RuntimeSelectionPolicy {
     #[serde(default)]
     pub fallback_runtimes: Vec<RuntimeId>,
     pub selection_source: Option<String>,
+}
+
+impl RuntimeSelectionPolicy {
+    pub fn normalized(&self) -> Self {
+        let mut allowed_runtimes = dedup_runtime_ids(self.allowed_runtimes.clone());
+        let fallback_runtimes = dedup_runtime_ids(self.fallback_runtimes.clone());
+
+        if let Some(requested_runtime) = self.requested_runtime {
+            if !allowed_runtimes
+                .iter()
+                .any(|runtime| *runtime == requested_runtime)
+            {
+                allowed_runtimes.insert(0, requested_runtime);
+            }
+        }
+        for fallback in &fallback_runtimes {
+            if !allowed_runtimes.iter().any(|runtime| runtime == fallback) {
+                allowed_runtimes.push(*fallback);
+            }
+        }
+
+        Self {
+            requested_runtime: self.requested_runtime,
+            allowed_runtimes,
+            fallback_runtimes,
+            selection_source: self.selection_source.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -662,6 +716,27 @@ pub struct RuntimeSkillProjection {
     pub dropped_skills: Vec<String>,
     #[serde(default)]
     pub auto_attached_skills: Vec<String>,
+}
+
+impl RuntimeSkillProjection {
+    pub fn normalized(&self) -> Self {
+        let declared_skills = dedup_string_values(self.declared_skills.clone());
+        let dropped_skills = dedup_string_values(self.dropped_skills.clone());
+        let auto_attached_skills = dedup_string_values(self.auto_attached_skills.clone());
+        let mut projected_skills = dedup_string_values(self.projected_skills.clone());
+        for skill in &auto_attached_skills {
+            if !projected_skills.iter().any(|projected| projected == skill) {
+                projected_skills.push(skill.clone());
+            }
+        }
+
+        Self {
+            declared_skills,
+            projected_skills,
+            dropped_skills,
+            auto_attached_skills,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -684,6 +759,23 @@ pub struct RuntimeExecutionRecord {
     pub execution_identity: RuntimeExecutionIdentity,
     #[serde(default)]
     pub skill_projection: RuntimeSkillProjection,
+}
+
+impl RuntimeExecutionRecord {
+    pub fn normalized(&self) -> Self {
+        Self {
+            policy: self.policy.normalized(),
+            selected_runtime: self.selected_runtime,
+            selection_reason: self.selection_reason.clone(),
+            fallback: self.fallback.clone(),
+            execution_identity: self.execution_identity.clone(),
+            skill_projection: self.skill_projection.normalized(),
+        }
+    }
+
+    pub fn uses_fallback(&self) -> bool {
+        self.fallback.is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1020,7 +1112,30 @@ pub struct RerunRequest {
     pub requested_attempt_id: Option<AttemptId>,
     pub requested_by: String,
     pub reason: String,
+    #[serde(default)]
+    pub scope: RerunScope,
     pub state: RerunState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaveClosureOverrideRecord {
+    pub override_id: String,
+    pub wave_id: u32,
+    pub status: WaveClosureOverrideStatus,
+    pub reason: String,
+    pub requested_by: String,
+    pub source_run_id: String,
+    #[serde(default)]
+    pub evidence_paths: Vec<String>,
+    pub detail: Option<String>,
+    pub applied_at_ms: u128,
+    pub cleared_at_ms: Option<u128>,
+}
+
+impl WaveClosureOverrideRecord {
+    pub fn is_active(&self) -> bool {
+        matches!(self.status, WaveClosureOverrideStatus::Applied)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1151,6 +1266,9 @@ pub enum ControlEventPayload {
     },
     RerunRequested {
         rerun: RerunRequest,
+    },
+    ClosureOverrideUpdated {
+        closure_override: WaveClosureOverrideRecord,
     },
     HumanInputUpdated {
         request: HumanInputRequest,
@@ -1435,7 +1553,7 @@ fn task_executor(agent: &WaveAgent) -> TaskExecutor {
         params: agent
             .executor
             .iter()
-            .filter(|(key, _)| key.as_str() != "profile" && key.as_str() != "model")
+            .filter(|(key, _)| is_runtime_neutral_executor_key(key))
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect(),
     }
@@ -1470,11 +1588,10 @@ fn authored_runtime_selection(agent: &WaveAgent) -> (Option<RuntimeId>, Option<S
     {
         return (Some(runtime), Some("executor.id".to_string()));
     }
-    if let Some(runtime) = agent
-        .executor
-        .keys()
-        .find_map(|key| key.split_once('.').and_then(|(prefix, _)| RuntimeId::parse(prefix)))
-    {
+    if let Some(runtime) = agent.executor.keys().find_map(|key| {
+        key.split_once('.')
+            .and_then(|(prefix, _)| RuntimeId::parse(prefix))
+    }) {
         return (
             Some(runtime),
             Some(format!("executor.{}-fields", runtime.as_str())),
@@ -1491,16 +1608,26 @@ fn authored_runtime_selection(agent: &WaveAgent) -> (Option<RuntimeId>, Option<S
 }
 
 fn authored_runtime_fallbacks(agent: &WaveAgent) -> Vec<RuntimeId> {
-    agent.executor
+    agent
+        .executor
         .get("fallbacks")
         .map(|value| parse_runtime_id_list(value))
         .unwrap_or_default()
 }
 
+fn is_runtime_neutral_executor_key(key: &str) -> bool {
+    key != "profile"
+        && key != "model"
+        && key != "id"
+        && key != "fallbacks"
+        && key
+            .split_once('.')
+            .and_then(|(prefix, _)| RuntimeId::parse(prefix))
+            .is_none()
+}
+
 fn runtime_in_profile_name(profile: &str) -> Option<RuntimeId> {
-    profile
-        .split(['-', '_'])
-        .find_map(RuntimeId::parse)
+    profile.split(['-', '_']).find_map(RuntimeId::parse)
 }
 
 fn parse_runtime_id_list(raw: &str) -> Vec<RuntimeId> {
@@ -1512,6 +1639,16 @@ fn parse_runtime_id_list(raw: &str) -> Vec<RuntimeId> {
 }
 
 fn dedup_runtime_ids(values: Vec<RuntimeId>) -> Vec<RuntimeId> {
+    let mut deduped = Vec::new();
+    for value in values {
+        if !deduped.iter().any(|existing| existing == &value) {
+            deduped.push(value);
+        }
+    }
+    deduped
+}
+
+fn dedup_string_values(values: Vec<String>) -> Vec<String> {
     let mut deduped = Vec::new();
     for value in values {
         if !deduped.iter().any(|existing| existing == &value) {
@@ -1778,6 +1915,7 @@ mod tests {
                 executor: BTreeMap::from([
                     ("profile".to_string(), "implement-codex".to_string()),
                     ("model".to_string(), "gpt-5.4".to_string()),
+                    ("workspace".to_string(), "repo-local".to_string()),
                     (
                         "codex.config".to_string(),
                         "model_reasoning_effort=xhigh".to_string(),
@@ -1808,12 +1946,14 @@ mod tests {
         };
 
         let seed = declaration_task_seeds(&wave).remove(0);
+        assert_eq!(seed.executor.runtime_id, Some(RuntimeId::Codex));
         assert_eq!(seed.executor.profile.as_deref(), Some("implement-codex"));
         assert_eq!(seed.executor.model.as_deref(), Some("gpt-5.4"));
         assert_eq!(
-            seed.executor.params.get("codex.config").map(String::as_str),
-            Some("model_reasoning_effort=xhigh")
+            seed.executor.params.get("workspace").map(String::as_str),
+            Some("repo-local")
         );
+        assert!(!seed.executor.params.contains_key("codex.config"));
         assert_eq!(
             seed.context7,
             Some(TaskContext7 {
@@ -2147,9 +2287,17 @@ mod tests {
         let agent = WaveAgent {
             executor: BTreeMap::from([
                 ("id".to_string(), "claude".to_string()),
-                ("fallbacks".to_string(), "codex claude local codex".to_string()),
+                (
+                    "fallbacks".to_string(),
+                    "codex claude local codex".to_string(),
+                ),
             ]),
-            ..agent("A1", "Implementation", vec!["wave-core"], vec!["src/lib.rs"])
+            ..agent(
+                "A1",
+                "Implementation",
+                vec!["wave-core"],
+                vec!["src/lib.rs"],
+            )
         };
 
         let policy = runtime_selection_policy_for_agent(&agent);
@@ -2173,7 +2321,12 @@ mod tests {
                 ("profile".to_string(), "implement-codex".to_string()),
                 ("claude.effort".to_string(), "high".to_string()),
             ]),
-            ..agent("A1", "Implementation", vec!["wave-core"], vec!["src/lib.rs"])
+            ..agent(
+                "A1",
+                "Implementation",
+                vec!["wave-core"],
+                vec!["src/lib.rs"],
+            )
         };
 
         let policy = runtime_selection_policy_for_agent(&agent);
@@ -2184,6 +2337,72 @@ mod tests {
             policy.selection_source.as_deref(),
             Some("executor.claude-fields")
         );
+    }
+
+    #[test]
+    fn runtime_execution_record_normalization_preserves_runtime_choice_and_late_bound_skills() {
+        let record = RuntimeExecutionRecord {
+            policy: RuntimeSelectionPolicy {
+                requested_runtime: Some(RuntimeId::Codex),
+                allowed_runtimes: vec![RuntimeId::Codex, RuntimeId::Claude, RuntimeId::Claude],
+                fallback_runtimes: vec![RuntimeId::Claude, RuntimeId::Claude],
+                selection_source: Some("executor.id".to_string()),
+            },
+            selected_runtime: RuntimeId::Claude,
+            selection_reason: "selected claude after fallback".to_string(),
+            fallback: Some(RuntimeFallbackRecord {
+                requested_runtime: RuntimeId::Codex,
+                selected_runtime: RuntimeId::Claude,
+                reason: "codex reported unavailable".to_string(),
+            }),
+            execution_identity: RuntimeExecutionIdentity {
+                runtime: RuntimeId::Claude,
+                adapter: "wave-runtime/claude".to_string(),
+                binary: "/tmp/fake-claude".to_string(),
+                provider: "anthropic-claude-code".to_string(),
+                artifact_paths: BTreeMap::new(),
+            },
+            skill_projection: RuntimeSkillProjection {
+                declared_skills: vec!["wave-core".to_string(), "wave-core".to_string()],
+                projected_skills: vec!["runtime-claude".to_string()],
+                dropped_skills: vec!["wave-core".to_string(), "wave-core".to_string()],
+                auto_attached_skills: vec![
+                    "runtime-claude".to_string(),
+                    "runtime-claude".to_string(),
+                ],
+            },
+        };
+
+        let normalized = record.normalized();
+
+        assert_eq!(
+            normalized.policy.allowed_runtimes,
+            vec![RuntimeId::Codex, RuntimeId::Claude]
+        );
+        assert_eq!(normalized.policy.fallback_runtimes, vec![RuntimeId::Claude]);
+        assert_eq!(
+            normalized.skill_projection.declared_skills,
+            vec!["wave-core".to_string()]
+        );
+        assert_eq!(
+            normalized.skill_projection.projected_skills,
+            vec!["runtime-claude".to_string()]
+        );
+        assert_eq!(
+            normalized.skill_projection.dropped_skills,
+            vec!["wave-core".to_string()]
+        );
+        assert_eq!(
+            normalized.skill_projection.auto_attached_skills,
+            vec!["runtime-claude".to_string()]
+        );
+        assert!(normalized.uses_fallback());
+    }
+
+    #[test]
+    fn runtime_id_exposes_runtime_skill_overlay_id() {
+        assert_eq!(RuntimeId::Codex.skill_id(), "runtime-codex");
+        assert_eq!(RuntimeId::Claude.skill_id(), "runtime-claude");
     }
 
     fn agent(id: &str, title: &str, skills: Vec<&str>, file_ownership: Vec<&str>) -> WaveAgent {

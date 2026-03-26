@@ -134,6 +134,8 @@ pub enum ControlEventKind {
     ProofRecorded,
     RerunRequested,
     RerunCleared,
+    ClosureOverrideApplied,
+    ClosureOverrideCleared,
     HumanInputUpdated,
     ResultEnvelopeRecorded,
     WaveCompleted,

@@ -1,6 +1,7 @@
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+use serde::Deserialize;
 use sha2::Digest;
 use sha2::Sha256;
 use std::cmp::Ordering;
@@ -62,6 +63,11 @@ pub struct ResultEnvelopeStore {
 struct ClosureTextArtifact {
     path: PathBuf,
     text: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RuntimeDetailSnapshot {
+    runtime: Option<wave_domain::RuntimeExecutionRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,10 +245,11 @@ pub fn build_structured_result_envelope(
         .iter()
         .map(|marker| (*marker).to_string())
         .collect::<Vec<_>>();
+    let closure_root = closure_execution_root(repo_root, run);
     let last_message_path = resolve_path(repo_root, &agent_record.last_message_path);
     let output_text = read_optional_text(&last_message_path)?;
     let closure_text_artifacts = collect_structured_closure_text_artifacts(
-        repo_root,
+        &closure_root,
         run.wave_id,
         declared_agent.id.as_str(),
         &last_message_path,
@@ -526,6 +533,7 @@ fn build_structured_result_artifacts(
     agent_record: &AgentRunRecord,
     agent_id: &str,
 ) -> Vec<ProofArtifact> {
+    let closure_root = closure_execution_root(repo_root, run);
     let mut artifacts = vec![
         ProofArtifact {
             path: resolve_path(repo_root, &agent_record.last_message_path)
@@ -561,7 +569,7 @@ fn build_structured_result_artifacts(
         },
     ];
 
-    for (path, note) in structured_closure_artifact_paths(repo_root, run.wave_id, agent_id) {
+    for (path, note) in structured_closure_artifact_paths(&closure_root, run.wave_id, agent_id) {
         if !path.exists() {
             continue;
         }
@@ -618,7 +626,7 @@ fn collect_marker_evidence_from_text_artifacts(
 }
 
 fn collect_structured_closure_text_artifacts(
-    repo_root: &Path,
+    execution_root: &Path,
     wave_id: u32,
     agent_id: &str,
     last_message_path: &Path,
@@ -632,7 +640,7 @@ fn collect_structured_closure_text_artifacts(
         });
     }
 
-    for (path, _) in structured_closure_artifact_paths(repo_root, wave_id, agent_id) {
+    for (path, _) in structured_closure_artifact_paths(execution_root, wave_id, agent_id) {
         if let Some(text) = read_optional_text(&path)? {
             artifacts.push(ClosureTextArtifact { path, text });
         }
@@ -642,27 +650,42 @@ fn collect_structured_closure_text_artifacts(
 }
 
 fn structured_closure_artifact_paths(
-    repo_root: &Path,
+    execution_root: &Path,
     wave_id: u32,
     agent_id: &str,
 ) -> Vec<(PathBuf, &'static str)> {
     match agent_id {
         "A0" => vec![(
-            repo_root.join(format!(".wave/reviews/wave-{wave_id}-cont-qa.md")),
+            execution_root.join(format!(".wave/reviews/wave-{wave_id}-cont-qa.md")),
             "cont-qa-review",
+        )],
+        "A6" => vec![(
+            execution_root.join(format!(".wave/design/wave-{wave_id}.md")),
+            "design-review",
+        )],
+        "A7" => vec![(
+            execution_root.join(format!(".wave/security/wave-{wave_id}.md")),
+            "security-review",
         )],
         "A8" => vec![
             (
-                repo_root.join(format!(".wave/integration/wave-{wave_id}.md")),
+                execution_root.join(format!(".wave/integration/wave-{wave_id}.md")),
                 "integration-summary",
             ),
             (
-                repo_root.join(format!(".wave/integration/wave-{wave_id}.json")),
+                execution_root.join(format!(".wave/integration/wave-{wave_id}.json")),
                 "integration-summary-json",
             ),
         ],
         _ => Vec::new(),
     }
+}
+
+fn closure_execution_root(repo_root: &Path, run: &WaveRunRecord) -> PathBuf {
+    run.worktree
+        .as_ref()
+        .map(|worktree| resolve_path(repo_root, Path::new(worktree.path.as_str())))
+        .unwrap_or_else(|| repo_root.to_path_buf())
 }
 
 fn looks_like_doc_path(path: &str) -> bool {
@@ -752,6 +775,7 @@ pub fn normalize_result_envelope(
     normalized.closure.observed_final_markers =
         normalized.closure_input.final_markers.observed.clone();
     if let Some(runtime) = &mut normalized.runtime {
+        *runtime = runtime.normalized();
         for path in runtime.execution_identity.artifact_paths.values_mut() {
             *path = normalize_path_string(&PathBuf::from(path.as_str()), repo_root);
         }
@@ -803,6 +827,14 @@ pub fn validate_result_envelope(envelope: &ResultEnvelope) -> Result<()> {
                 ClosureVerdictPayload::ContQa(_)
             )
             | (
+                Some(wave_domain::ClosureRole::DesignReview),
+                ClosureVerdictPayload::Design(_)
+            )
+            | (
+                Some(wave_domain::ClosureRole::SecurityReview),
+                ClosureVerdictPayload::Security(_)
+            )
+            | (
                 Some(wave_domain::ClosureRole::Integration),
                 ClosureVerdictPayload::Integration(_)
             )
@@ -848,6 +880,58 @@ pub fn validate_result_envelope(envelope: &ResultEnvelope) -> Result<()> {
             }
         }
     }
+    if let Some(runtime) = &envelope.runtime {
+        if runtime.policy != runtime.policy.normalized() {
+            issues.push("runtime.policy must be normalized".to_string());
+        }
+        if runtime.skill_projection != runtime.skill_projection.normalized() {
+            issues.push("runtime.skill_projection must be normalized".to_string());
+        }
+        let expected_adapter = format!("wave-runtime/{}", runtime.selected_runtime.as_str());
+        if runtime.execution_identity.adapter != expected_adapter {
+            issues.push(format!(
+                "runtime.execution_identity.adapter must match {}",
+                expected_adapter
+            ));
+        }
+        if runtime.execution_identity.runtime != runtime.selected_runtime {
+            issues.push(
+                "runtime.execution_identity.runtime must match runtime.selected_runtime"
+                    .to_string(),
+            );
+        }
+        let expected_runtime_skill = runtime.selected_runtime.skill_id();
+        for skill in runtime_specific_overlay_skills(
+            &runtime.skill_projection.projected_skills,
+            &expected_runtime_skill,
+        ) {
+            issues.push(format!(
+                "runtime.skill_projection.projected_skills contains runtime overlay {skill} that does not match runtime.selected_runtime"
+            ));
+        }
+        for skill in runtime_specific_overlay_skills(
+            &runtime.skill_projection.auto_attached_skills,
+            &expected_runtime_skill,
+        ) {
+            issues.push(format!(
+                "runtime.skill_projection.auto_attached_skills contains runtime overlay {skill} that does not match runtime.selected_runtime"
+            ));
+        }
+        if let Some(fallback) = &runtime.fallback {
+            if runtime.policy.requested_runtime != Some(fallback.requested_runtime) {
+                issues.push(
+                    "runtime.fallback.requested_runtime must match runtime.policy.requested_runtime"
+                        .to_string(),
+                );
+            }
+            if fallback.selected_runtime != runtime.selected_runtime {
+                issues.push(
+                    "runtime.fallback.selected_runtime must match runtime.selected_runtime"
+                        .to_string(),
+                );
+            }
+        }
+    }
 
     let expected_disposition = envelope.expected_disposition();
     if envelope.disposition != expected_disposition {
@@ -887,6 +971,14 @@ pub fn validate_result_envelope(envelope: &ResultEnvelope) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn runtime_specific_overlay_skills(skills: &[String], expected_runtime_skill: &str) -> Vec<String> {
+    skills
+        .iter()
+        .filter(|skill| skill.starts_with("runtime-") && skill.as_str() != expected_runtime_skill)
+        .cloned()
+        .collect()
 }
 
 pub fn adapt_legacy_run_record(
@@ -944,10 +1036,11 @@ fn adapt_legacy_agent_run(
     agent: &AgentRunRecord,
 ) -> Result<ResultEnvelope> {
     let attempt_state = legacy_attempt_state(run, agent);
+    let closure_root = closure_execution_root(repo_root, run);
     let last_message_path = resolve_path(repo_root, &agent.last_message_path);
     let output_text = read_optional_text(&last_message_path)?;
     let legacy_text_artifacts = collect_structured_closure_text_artifacts(
-        repo_root,
+        &closure_root,
         run.wave_id,
         agent.id.as_str(),
         &last_message_path,
@@ -984,6 +1077,7 @@ fn adapt_legacy_agent_run(
         contradiction_ids: Vec::new(),
         verdict,
     };
+    let runtime = legacy_runtime_record(repo_root, agent)?;
 
     normalize_result_envelope(
         &ResultEnvelope {
@@ -1024,7 +1118,7 @@ fn adapt_legacy_agent_run(
                 marker_evidence,
             },
             closure,
-            runtime: None,
+            runtime,
             created_at_ms: run
                 .completed_at_ms
                 .or(run.started_at_ms)
@@ -1032,6 +1126,53 @@ fn adapt_legacy_agent_run(
         },
         Some(repo_root),
     )
+}
+
+fn legacy_runtime_record(
+    repo_root: &Path,
+    agent: &AgentRunRecord,
+) -> Result<Option<wave_domain::RuntimeExecutionRecord>> {
+    let runtime_detail_key = agent.runtime_detail_path.as_ref().map(|path| {
+        (
+            "runtime_detail".to_string(),
+            normalize_path_string(path, Some(repo_root)),
+        )
+    });
+
+    let runtime = if let Some(runtime) = &agent.runtime {
+        Some(runtime.clone())
+    } else {
+        let Some(runtime_detail_path) = agent.runtime_detail_path.as_ref() else {
+            return Ok(None);
+        };
+        load_runtime_record_from_detail(repo_root, runtime_detail_path)?
+    };
+
+    Ok(runtime.map(|mut runtime| {
+        if let Some((key, value)) = runtime_detail_key {
+            runtime
+                .execution_identity
+                .artifact_paths
+                .entry(key)
+                .or_insert(value);
+        }
+        runtime
+    }))
+}
+
+fn load_runtime_record_from_detail(
+    repo_root: &Path,
+    runtime_detail_path: &Path,
+) -> Result<Option<wave_domain::RuntimeExecutionRecord>> {
+    let resolved_path = resolve_path(repo_root, runtime_detail_path);
+    if !resolved_path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&resolved_path)
+        .with_context(|| format!("failed to read {}", resolved_path.display()))?;
+    let snapshot = serde_json::from_str::<RuntimeDetailSnapshot>(&raw)
+        .with_context(|| format!("failed to parse {}", resolved_path.display()))?;
+    Ok(snapshot.runtime)
 }
 
 fn legacy_attempt_state(run: &WaveRunRecord, agent: &AgentRunRecord) -> AttemptState {
@@ -1781,15 +1922,44 @@ mod tests {
         let normalized = normalize_result_envelope(&envelope, Some(&root)).expect("normalize");
         let runtime = normalized.runtime.expect("runtime");
         assert_eq!(
-            runtime.execution_identity.artifact_paths.get("runtime_detail"),
+            runtime
+                .execution_identity
+                .artifact_paths
+                .get("runtime_detail"),
             Some(&".wave/state/build/specs/wave-15/agents/A1/runtime-detail.json".to_string())
         );
         assert_eq!(
-            runtime.execution_identity.artifact_paths.get("skill_overlay"),
+            runtime
+                .execution_identity
+                .artifact_paths
+                .get("skill_overlay"),
             Some(&".wave/state/build/specs/wave-15/agents/A1/runtime-skill-overlay.md".to_string())
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn validate_result_envelope_accepts_design_review_verdict_for_design_role() {
+        let mut envelope = structured_envelope(
+            15,
+            "A6",
+            "attempt-design",
+            "result-design",
+            AttemptState::Succeeded,
+            vec!["[wave-design]".to_string()],
+            vec!["[wave-design]".to_string()],
+            15,
+        );
+        envelope.closure.verdict = ClosureVerdictPayload::Design(DesignClosureVerdict {
+            state: Some("aligned".to_string()),
+            findings: Some(0),
+            detail: Some("runtime decision cues are present".to_string()),
+        });
+
+        let normalized = normalize_result_envelope(&envelope, None).expect("normalize");
+
+        validate_result_envelope(&normalized).expect("design verdict should validate");
     }
 
     #[test]
@@ -2130,6 +2300,204 @@ mod tests {
     }
 
     #[test]
+    fn legacy_adapter_preserves_runtime_choice_and_fallback_metadata() {
+        let root = temp_root("legacy-runtime");
+        let agent_dir = root.join(".wave/state/build/specs/wave-15-legacy/agents/A1");
+        fs::create_dir_all(&agent_dir).expect("create agent dir");
+        fs::write(
+            agent_dir.join("last-message.txt"),
+            "[wave-proof]\n[wave-doc-delta]\n[wave-component]\n",
+        )
+        .expect("write message");
+        fs::write(agent_dir.join("runtime-detail.json"), "{}\n").expect("write runtime detail");
+
+        let run = WaveRunRecord {
+            run_id: "wave-15-legacy".to_string(),
+            wave_id: 15,
+            slug: "runtime-policy-and-multi-runtime-adapters".to_string(),
+            title: "Land runtime policy and multi-runtime adapters".to_string(),
+            status: WaveRunStatus::Succeeded,
+            dry_run: false,
+            bundle_dir: root.join(".wave/state/build/specs/wave-15-legacy"),
+            trace_path: root.join(".wave/traces/runs/wave-15-legacy.json"),
+            codex_home: root.join(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            launcher_pid: None,
+            launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
+            completed_at_ms: Some(3),
+            agents: vec![AgentRunRecord {
+                id: "A1".to_string(),
+                title: "Claude Adapter And Skill Projection".to_string(),
+                status: WaveRunStatus::Succeeded,
+                prompt_path: agent_dir.join("prompt.md"),
+                last_message_path: PathBuf::from(
+                    ".wave/state/build/specs/wave-15-legacy/agents/A1/last-message.txt",
+                ),
+                events_path: agent_dir.join("events.jsonl"),
+                stderr_path: agent_dir.join("stderr.txt"),
+                result_envelope_path: None,
+                runtime_detail_path: Some(PathBuf::from(
+                    ".wave/state/build/specs/wave-15-legacy/agents/A1/runtime-detail.json",
+                )),
+                expected_markers: vec![
+                    "[wave-proof]".to_string(),
+                    "[wave-doc-delta]".to_string(),
+                    "[wave-component]".to_string(),
+                ],
+                observed_markers: vec![
+                    "[wave-proof]".to_string(),
+                    "[wave-doc-delta]".to_string(),
+                    "[wave-component]".to_string(),
+                ],
+                exit_code: Some(0),
+                error: None,
+                runtime: Some(sample_claude_runtime_record(
+                    &root,
+                    ".wave/runtime/overlay.md",
+                    true,
+                )),
+            }],
+            error: None,
+        };
+
+        let envelope = adapt_legacy_run_record(&root, &run)
+            .expect("adapt legacy run")
+            .into_iter()
+            .next()
+            .expect("legacy envelope");
+        let runtime = envelope.runtime.expect("runtime");
+
+        assert_eq!(runtime.selected_runtime, wave_domain::RuntimeId::Claude);
+        assert_eq!(
+            runtime
+                .fallback
+                .as_ref()
+                .expect("fallback")
+                .requested_runtime,
+            wave_domain::RuntimeId::Codex
+        );
+        assert_eq!(
+            runtime
+                .execution_identity
+                .artifact_paths
+                .get("runtime_detail"),
+            Some(
+                &".wave/state/build/specs/wave-15-legacy/agents/A1/runtime-detail.json".to_string()
+            )
+        );
+        assert_eq!(
+            runtime.skill_projection.projected_skills,
+            vec!["wave-core".to_string(), "runtime-claude".to_string()]
+        );
+        assert_eq!(
+            runtime.skill_projection.auto_attached_skills,
+            vec!["runtime-claude".to_string()]
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_adapter_loads_runtime_from_runtime_detail_snapshot_when_agent_runtime_is_missing() {
+        let root = temp_root("legacy-runtime-detail");
+        let agent_dir = root.join(".wave/state/build/specs/wave-15-legacy/agents/A1");
+        fs::create_dir_all(&agent_dir).expect("create agent dir");
+        fs::write(
+            agent_dir.join("last-message.txt"),
+            "[wave-proof]\n[wave-doc-delta]\n[wave-component]\n",
+        )
+        .expect("write message");
+
+        let runtime = sample_claude_runtime_record(&root, ".wave/runtime/overlay.md", false);
+        fs::write(
+            agent_dir.join("runtime-detail.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "wave_id": 15,
+                "run_id": "wave-15-legacy",
+                "agent_id": "A1",
+                "agent_title": "Claude Adapter And Skill Projection",
+                "runtime": runtime,
+            }))
+            .expect("serialize runtime detail"),
+        )
+        .expect("write runtime detail");
+
+        let run = WaveRunRecord {
+            run_id: "wave-15-legacy".to_string(),
+            wave_id: 15,
+            slug: "runtime-policy-and-multi-runtime-adapters".to_string(),
+            title: "Land runtime policy and multi-runtime adapters".to_string(),
+            status: WaveRunStatus::Succeeded,
+            dry_run: false,
+            bundle_dir: root.join(".wave/state/build/specs/wave-15-legacy"),
+            trace_path: root.join(".wave/traces/runs/wave-15-legacy.json"),
+            codex_home: root.join(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            launcher_pid: None,
+            launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
+            completed_at_ms: Some(3),
+            agents: vec![AgentRunRecord {
+                id: "A1".to_string(),
+                title: "Claude Adapter And Skill Projection".to_string(),
+                status: WaveRunStatus::Succeeded,
+                prompt_path: agent_dir.join("prompt.md"),
+                last_message_path: PathBuf::from(
+                    ".wave/state/build/specs/wave-15-legacy/agents/A1/last-message.txt",
+                ),
+                events_path: agent_dir.join("events.jsonl"),
+                stderr_path: agent_dir.join("stderr.txt"),
+                result_envelope_path: None,
+                runtime_detail_path: Some(PathBuf::from(
+                    ".wave/state/build/specs/wave-15-legacy/agents/A1/runtime-detail.json",
+                )),
+                expected_markers: vec![
+                    "[wave-proof]".to_string(),
+                    "[wave-doc-delta]".to_string(),
+                    "[wave-component]".to_string(),
+                ],
+                observed_markers: vec![
+                    "[wave-proof]".to_string(),
+                    "[wave-doc-delta]".to_string(),
+                    "[wave-component]".to_string(),
+                ],
+                exit_code: Some(0),
+                error: None,
+                runtime: None,
+            }],
+            error: None,
+        };
+
+        let envelope = adapt_legacy_run_record(&root, &run)
+            .expect("adapt legacy run")
+            .into_iter()
+            .next()
+            .expect("legacy envelope");
+        let runtime = envelope.runtime.expect("runtime");
+
+        assert_eq!(runtime.selected_runtime, wave_domain::RuntimeId::Claude);
+        assert_eq!(runtime.execution_identity.adapter, "wave-runtime/claude");
+        assert_eq!(
+            runtime
+                .execution_identity
+                .artifact_paths
+                .get("runtime_detail"),
+            Some(
+                &".wave/state/build/specs/wave-15-legacy/agents/A1/runtime-detail.json".to_string()
+            )
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn adapts_legacy_closure_agents_into_typed_closure_verdicts() {
         let root = temp_root("legacy-closure");
         let last_message_path =
@@ -2460,6 +2828,75 @@ mod tests {
     }
 
     #[test]
+    fn structured_envelope_uses_worktree_rooted_design_review_when_last_message_is_incomplete() {
+        let root = temp_root("structured-design-worktree");
+        let agent = declared_agent("A6", "Design Review Steward", vec!["[wave-design]"]);
+        let mut run = structured_run(&root, 15, "A6", WaveRunStatus::Succeeded);
+        run.worktree = Some(wave_domain::WaveWorktreeRecord {
+            worktree_id: wave_domain::WaveWorktreeId::new("worktree-wave-15-test".to_string()),
+            wave_id: 15,
+            path: ".wave/state/worktrees/wave-15-test-worktree".to_string(),
+            base_ref: "main".to_string(),
+            snapshot_ref: "snapshot-wave-15-test".to_string(),
+            branch_ref: None,
+            shared_scope: wave_domain::WaveWorktreeScope::Wave,
+            state: wave_domain::WaveWorktreeState::Allocated,
+            allocated_at_ms: 1,
+            released_at_ms: None,
+            detail: Some("worktree-rooted design review".to_string()),
+        });
+        let agent_record = &run.agents[0];
+        let last_message_path = resolve_path(&root, &agent_record.last_message_path);
+        fs::create_dir_all(last_message_path.parent().expect("message parent")).expect("mkdir");
+        fs::write(
+            &last_message_path,
+            "Recorded the review in the owned design report.\n",
+        )
+        .expect("write last message");
+        let design_review_path =
+            root.join(".wave/state/worktrees/wave-15-test-worktree/.wave/design/wave-15.md");
+        fs::create_dir_all(design_review_path.parent().expect("design parent")).expect("mkdir");
+        fs::write(
+            &design_review_path,
+            "# Wave 15 Design Review\n\n[wave-design] state=concerns findings=1 detail=mixed runtime summaries remain explicit in operator surfaces\n",
+        )
+        .expect("write design review");
+
+        let envelope = build_structured_result_envelope(&root, &run, &agent, agent_record, 15)
+            .expect("build structured envelope");
+
+        match envelope.closure.verdict {
+            ClosureVerdictPayload::Design(verdict) => {
+                assert_eq!(verdict.state.as_deref(), Some("concerns"));
+                assert_eq!(verdict.findings, Some(1));
+                assert_eq!(
+                    verdict.detail.as_deref(),
+                    Some("mixed runtime summaries remain explicit in operator surfaces")
+                );
+            }
+            other => panic!("expected design verdict, got {other:?}"),
+        }
+        assert_eq!(envelope.closure.disposition, ClosureDisposition::Ready);
+        assert!(envelope.closure.blocking_reasons.is_empty());
+        assert!(envelope
+            .closure_input
+            .marker_evidence
+            .iter()
+            .any(|evidence| {
+                evidence.marker == "[wave-design]"
+                    && evidence.source.as_deref()
+                        == Some(
+                            ".wave/state/worktrees/wave-15-test-worktree/.wave/design/wave-15.md",
+                        )
+            }));
+        assert!(envelope.proof.artifacts.iter().any(|artifact| {
+            artifact.path == ".wave/state/worktrees/wave-15-test-worktree/.wave/design/wave-15.md"
+        }));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn structured_envelope_uses_cont_qa_review_when_last_message_is_incomplete() {
         let root = temp_root("structured-cont-qa-fallback");
         let agent = declared_agent("A0", "Running cont-QA", vec!["[wave-gate]"]);
@@ -2557,6 +2994,69 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("closure.disposition"));
         assert!(message.contains("does not match attempt_state"));
+    }
+
+    #[test]
+    fn validate_result_envelope_rejects_inconsistent_runtime_record() {
+        let mut envelope = structured_envelope(
+            15,
+            "A1",
+            "attempt-runtime-invalid",
+            "result-runtime-invalid",
+            AttemptState::Succeeded,
+            vec![
+                "[wave-proof]".to_string(),
+                "[wave-doc-delta]".to_string(),
+                "[wave-component]".to_string(),
+            ],
+            vec![
+                "[wave-proof]".to_string(),
+                "[wave-doc-delta]".to_string(),
+                "[wave-component]".to_string(),
+            ],
+            15,
+        );
+        envelope.runtime = Some(wave_domain::RuntimeExecutionRecord {
+            policy: wave_domain::RuntimeSelectionPolicy {
+                requested_runtime: Some(wave_domain::RuntimeId::Codex),
+                allowed_runtimes: vec![
+                    wave_domain::RuntimeId::Codex,
+                    wave_domain::RuntimeId::Claude,
+                    wave_domain::RuntimeId::Claude,
+                ],
+                fallback_runtimes: vec![wave_domain::RuntimeId::Claude],
+                selection_source: Some("executor.id".to_string()),
+            },
+            selected_runtime: wave_domain::RuntimeId::Claude,
+            selection_reason: "selected claude after fallback".to_string(),
+            fallback: Some(wave_domain::RuntimeFallbackRecord {
+                requested_runtime: wave_domain::RuntimeId::Local,
+                selected_runtime: wave_domain::RuntimeId::Codex,
+                reason: "codex unavailable".to_string(),
+            }),
+            execution_identity: wave_domain::RuntimeExecutionIdentity {
+                runtime: wave_domain::RuntimeId::Codex,
+                adapter: "wave-runtime/codex".to_string(),
+                binary: "/tmp/fake-codex".to_string(),
+                provider: "openai-codex".to_string(),
+                artifact_paths: BTreeMap::new(),
+            },
+            skill_projection: wave_domain::RuntimeSkillProjection {
+                declared_skills: vec!["wave-core".to_string(), "wave-core".to_string()],
+                projected_skills: vec!["wave-core".to_string(), "runtime-codex".to_string()],
+                dropped_skills: Vec::new(),
+                auto_attached_skills: vec!["runtime-claude".to_string()],
+            },
+        });
+
+        let error = validate_result_envelope(&envelope).expect_err("validation should fail");
+        let message = error.to_string();
+        assert!(message.contains("runtime.policy"));
+        assert!(message.contains("runtime.skill_projection"));
+        assert!(message.contains("runtime.execution_identity.adapter"));
+        assert!(message.contains("runtime.execution_identity.runtime"));
+        assert!(message.contains("runtime.fallback.requested_runtime"));
+        assert!(message.contains("runtime.fallback.selected_runtime"));
     }
 
     fn temp_root(label: &str) -> PathBuf {
@@ -2699,6 +3199,66 @@ mod tests {
             closure,
             runtime: None,
             created_at_ms,
+        }
+    }
+
+    fn sample_claude_runtime_record(
+        root: &Path,
+        overlay_path: &str,
+        include_runtime_detail_path: bool,
+    ) -> wave_domain::RuntimeExecutionRecord {
+        let mut artifact_paths = BTreeMap::from([(
+            "skill_overlay".to_string(),
+            root.join(overlay_path).to_string_lossy().into_owned(),
+        )]);
+        if include_runtime_detail_path {
+            artifact_paths.insert(
+                "runtime_detail".to_string(),
+                root.join(".wave/state/build/specs/wave-15-legacy/agents/A1/runtime-detail.json")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+
+        wave_domain::RuntimeExecutionRecord {
+            policy: wave_domain::RuntimeSelectionPolicy {
+                requested_runtime: Some(wave_domain::RuntimeId::Codex),
+                allowed_runtimes: vec![
+                    wave_domain::RuntimeId::Codex,
+                    wave_domain::RuntimeId::Claude,
+                    wave_domain::RuntimeId::Claude,
+                ],
+                fallback_runtimes: vec![
+                    wave_domain::RuntimeId::Claude,
+                    wave_domain::RuntimeId::Claude,
+                ],
+                selection_source: Some("executor.id".to_string()),
+            },
+            selected_runtime: wave_domain::RuntimeId::Claude,
+            selection_reason:
+                "selected claude after fallback because codex login status reported unavailable"
+                    .to_string(),
+            fallback: Some(wave_domain::RuntimeFallbackRecord {
+                requested_runtime: wave_domain::RuntimeId::Codex,
+                selected_runtime: wave_domain::RuntimeId::Claude,
+                reason: "codex login status reported unavailable".to_string(),
+            }),
+            execution_identity: wave_domain::RuntimeExecutionIdentity {
+                runtime: wave_domain::RuntimeId::Claude,
+                adapter: "wave-runtime/claude".to_string(),
+                binary: "/tmp/fake-claude".to_string(),
+                provider: "anthropic-claude-code".to_string(),
+                artifact_paths,
+            },
+            skill_projection: wave_domain::RuntimeSkillProjection {
+                declared_skills: vec!["wave-core".to_string(), "wave-core".to_string()],
+                projected_skills: vec!["wave-core".to_string(), "runtime-claude".to_string()],
+                dropped_skills: Vec::new(),
+                auto_attached_skills: vec![
+                    "runtime-claude".to_string(),
+                    "runtime-claude".to_string(),
+                ],
+            },
         }
     }
 }

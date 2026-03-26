@@ -46,6 +46,7 @@ use wave_app_server::ActiveRunDetail;
 use wave_app_server::OperatorSnapshot;
 use wave_app_server::load_operator_snapshot;
 use wave_config::ProjectConfig;
+use wave_domain::RerunScope;
 use wave_runtime::clear_rerun;
 use wave_runtime::request_rerun;
 use wave_trace::WaveRunStatus;
@@ -180,6 +181,7 @@ fn handle_request_rerun(app: &mut App) -> Result<()> {
             &app.config,
             wave_id,
             "Requested from the Wave operator TUI",
+            RerunScope::Full,
         )?;
         app.state.flash_message = Some(format!("requested rerun for wave {wave_id}"));
     }
@@ -792,16 +794,81 @@ fn run_summary_lines(run: &ActiveRunDetail) -> Vec<Line<'static>> {
     if let Some(elapsed_ms) = run.elapsed_ms {
         lines.push(Line::raw(format!("elapsed: {}", HumanDuration(elapsed_ms))));
     }
-    if !run.runtime_summary.selected_runtimes.is_empty() {
+    if let Some(source) = run.activity_source.as_deref() {
         lines.push(Line::raw(format!(
-            "runtime: {}",
+            "last activity: {} via {}",
+            run.last_activity_at_ms
+                .map(|timestamp| timestamp.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            source
+        )));
+    }
+    if run.stalled {
+        lines.push(Line::raw(format!(
+            "stall: {}",
+            run.stall_reason
+                .as_deref()
+                .unwrap_or("agent appears stalled")
+        )));
+    } else if let Some(reason) = run.stall_reason.as_deref() {
+        lines.push(Line::raw(format!("activity: {}", reason)));
+    }
+    if run_has_mixed_runtime_selection(run) {
+        lines.push(Line::raw(format!(
+            "selected runtimes: {}",
+            format_string_list(&run.runtime_summary.selected_runtimes)
+        )));
+        if !run.runtime_summary.requested_runtimes.is_empty() {
+            lines.push(Line::raw(format!(
+                "requested runtimes: {}",
+                format_string_list(&run.runtime_summary.requested_runtimes)
+            )));
+        }
+        if let Some(runtime) = current_agent_runtime_detail(run) {
+            lines.push(Line::raw(format!(
+                "current agent runtime: {}",
+                runtime_decision_summary(runtime)
+            )));
+            if let Some(fallback) = runtime.fallback.as_ref() {
+                lines.push(Line::raw(format!(
+                    "current agent fallback: {}",
+                    fallback.reason
+                )));
+            }
+            lines.push(Line::raw(format!(
+                "current agent adapter: {} provider={}",
+                runtime.execution_identity.adapter, runtime.execution_identity.provider
+            )));
+        }
+    } else if let Some(runtime) = representative_runtime_detail(run) {
+        lines.push(Line::raw(format!(
+            "runtime decision: {}",
+            runtime_decision_summary(runtime)
+        )));
+        if let Some(fallback) = runtime.fallback.as_ref() {
+            lines.push(Line::raw(format!("fallback reason: {}", fallback.reason)));
+        }
+        lines.push(Line::raw(format!(
+            "adapter: {} provider={}",
+            runtime.execution_identity.adapter, runtime.execution_identity.provider
+        )));
+    } else if !run.runtime_summary.selected_runtimes.is_empty() {
+        lines.push(Line::raw(format!(
+            "selected runtimes: {}",
             run.runtime_summary.selected_runtimes.join(", ")
         )));
     }
-    if run.runtime_summary.fallback_count > 0 {
+    if !run.runtime_summary.selection_sources.is_empty() {
         lines.push(Line::raw(format!(
-            "fallbacks: {} agent(s)",
-            run.runtime_summary.fallback_count
+            "selection sources: {}",
+            run.runtime_summary.selection_sources.join(", ")
+        )));
+    }
+    if run.runtime_summary.fallback_count > 0 || !run.runtime_summary.fallback_targets.is_empty() {
+        lines.push(Line::raw(format!(
+            "fallbacks: {} target={}",
+            run.runtime_summary.fallback_count,
+            format_string_list(&run.runtime_summary.fallback_targets)
         )));
     }
     if !run.replay.ok {
@@ -811,6 +878,83 @@ fn run_summary_lines(run: &ActiveRunDetail) -> Vec<Line<'static>> {
         ));
     }
     lines
+}
+
+fn run_has_mixed_runtime_selection(run: &ActiveRunDetail) -> bool {
+    run.runtime_summary.selected_runtimes.len() > 1
+}
+
+fn current_agent_runtime_detail(run: &ActiveRunDetail) -> Option<&wave_app_server::RuntimeDetail> {
+    run.current_agent_id.as_deref().and_then(|agent_id| {
+        run.agents
+            .iter()
+            .find(|agent| agent.id == agent_id)
+            .and_then(|agent| agent.runtime.as_ref())
+    })
+}
+
+fn representative_runtime_detail(run: &ActiveRunDetail) -> Option<&wave_app_server::RuntimeDetail> {
+    current_agent_runtime_detail(run)
+        .or_else(|| {
+            run.agents
+                .iter()
+                .filter_map(|agent| agent.runtime.as_ref())
+                .find(|runtime| runtime.fallback.is_some())
+        })
+        .or_else(|| {
+            run.agents
+                .iter()
+                .filter_map(|agent| agent.runtime.as_ref())
+                .next()
+        })
+}
+
+fn runtime_decision_summary(runtime: &wave_app_server::RuntimeDetail) -> String {
+    let requested = runtime
+        .policy
+        .requested_runtime
+        .as_deref()
+        .unwrap_or("unspecified");
+    let source = runtime
+        .policy
+        .selection_source
+        .as_deref()
+        .unwrap_or("runtime policy");
+    format!(
+        "requested {} -> selected {} via {}",
+        requested, runtime.selected_runtime, source
+    )
+}
+
+fn agent_runtime_label(runtime: &wave_app_server::RuntimeDetail) -> String {
+    if let Some(fallback) = runtime.fallback.as_ref() {
+        format!(
+            "{} <- {} [{}]",
+            runtime.selected_runtime,
+            fallback.requested_runtime,
+            fallback_reason_tag(&fallback.reason)
+        )
+    } else {
+        let requested = runtime
+            .policy
+            .requested_runtime
+            .as_deref()
+            .unwrap_or(runtime.selected_runtime.as_str());
+        format!("{} via {}", runtime.selected_runtime, requested)
+    }
+}
+
+fn fallback_reason_tag(reason: &str) -> &'static str {
+    let lower = reason.to_ascii_lowercase();
+    if lower.contains("auth") || lower.contains("login") {
+        "auth"
+    } else if lower.contains("unavailable") || lower.contains("blocked") {
+        "unavailable"
+    } else if lower.contains("missing") {
+        "missing"
+    } else {
+        "fallback"
+    }
 }
 
 fn debug_label(value: impl fmt::Debug) -> String {
@@ -936,13 +1080,7 @@ fn draw_agents_tab(
         let runtime = agent
             .runtime
             .as_ref()
-            .map(|runtime| {
-                if runtime.fallback.is_some() {
-                    format!("{} fallback", runtime.selected_runtime)
-                } else {
-                    runtime.selected_runtime.clone()
-                }
-            })
+            .map(agent_runtime_label)
             .unwrap_or_else(|| "n/a".to_string());
         Row::new(vec![
             Cell::from(agent.id.clone()),
@@ -963,9 +1101,9 @@ fn draw_agents_tab(
         [
             Constraint::Length(4),
             Constraint::Percentage(28),
-            Constraint::Length(18),
+            Constraint::Length(28),
             Constraint::Length(10),
-            Constraint::Percentage(40),
+            Constraint::Percentage(32),
         ],
     )
     .header(
@@ -1120,7 +1258,7 @@ fn queue_table_rows(snapshot: &OperatorSnapshot) -> Vec<(String, String, String)
 fn control_status_items(snapshot: &OperatorSnapshot, selected_wave_id: Option<u32>) -> Vec<String> {
     let mut items = selected_active_run(snapshot, selected_wave_id)
         .map(|run| {
-            if run.replay.ok {
+            let mut lines = if run.replay.ok {
                 vec![format!(
                     "Replay OK for wave {} run {}",
                     run.wave_id, run.run_id
@@ -1131,14 +1269,109 @@ fn control_status_items(snapshot: &OperatorSnapshot, selected_wave_id: Option<u3
                     .iter()
                     .map(|issue| format!("{}: {}", issue.kind, issue.detail))
                     .collect::<Vec<_>>()
+            };
+            if run_has_mixed_runtime_selection(run) {
+                lines.push(format!(
+                    "Run runtimes: {}",
+                    format_string_list(&run.runtime_summary.selected_runtimes)
+                ));
+                if !run.runtime_summary.requested_runtimes.is_empty() {
+                    lines.push(format!(
+                        "Requested runtimes: {}",
+                        format_string_list(&run.runtime_summary.requested_runtimes)
+                    ));
+                }
+                if let Some(runtime) = current_agent_runtime_detail(run) {
+                    lines.push(format!(
+                        "Current agent runtime: {}",
+                        runtime_decision_summary(runtime)
+                    ));
+                    lines.push(format!(
+                        "Current agent adapter: {} ({})",
+                        runtime.execution_identity.adapter, runtime.execution_identity.provider
+                    ));
+                    if let Some(fallback) = runtime.fallback.as_ref() {
+                        lines.push(format!(
+                            "Current agent fallback: {} -> {} ({})",
+                            fallback.requested_runtime, fallback.selected_runtime, fallback.reason
+                        ));
+                    }
+                }
+            } else if let Some(runtime) = representative_runtime_detail(run) {
+                lines.push(format!(
+                    "Run runtime: {}",
+                    runtime_decision_summary(runtime)
+                ));
+                lines.push(format!(
+                    "Run adapter: {} ({})",
+                    runtime.execution_identity.adapter, runtime.execution_identity.provider
+                ));
+                if let Some(fallback) = runtime.fallback.as_ref() {
+                    lines.push(format!(
+                        "Run fallback: {} -> {} ({})",
+                        fallback.requested_runtime, fallback.selected_runtime, fallback.reason
+                    ));
+                }
             }
+            if let Some(source) = run.activity_source.as_deref() {
+                lines.push(format!(
+                    "Last activity: {} via {}",
+                    run.last_activity_at_ms
+                        .map(|timestamp| timestamp.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    source
+                ));
+            }
+            lines.push(format!("Stalled: {}", yes_no(run.stalled)));
+            if let Some(reason) = run.stall_reason.as_deref() {
+                lines.push(format!("Stall detail: {}", reason));
+            }
+            lines
         })
         .unwrap_or_else(|| vec!["No active replay state.".to_string()]);
+    if let Some(wave_id) = selected_wave_id {
+        if let Some(record) = snapshot
+            .closure_overrides
+            .iter()
+            .find(|record| record.wave_id == wave_id)
+        {
+            items.push(format!(
+                "Manual close: {} ({})",
+                if record.is_active() { "applied" } else { "cleared" },
+                record.reason
+            ));
+            items.push(format!("Manual close source run: {}", record.source_run_id));
+        }
+    }
+    items.push(format!(
+        "Launcher boundary: {}",
+        snapshot.launcher.executor_boundary
+    ));
+    items.push(format!(
+        "Launcher selection policy: {}",
+        snapshot.launcher.selection_policy
+    ));
+    items.push(format!(
+        "Launcher fallback policy: {}",
+        snapshot.launcher.fallback_policy
+    ));
+    items.push(format!(
+        "Launcher available: {}",
+        format_string_list(&snapshot.launcher.available_runtimes)
+    ));
+    items.push(format!(
+        "Launcher unavailable: {}",
+        format_string_list(&snapshot.launcher.unavailable_runtimes)
+    ));
     items.extend(snapshot.launcher.runtimes.iter().map(|runtime| {
         format!(
-            "runtime {}: {} ({})",
+            "availability {}: {} ({})",
             runtime.runtime,
-            if runtime.available { "ready" } else { "blocked" },
+            if runtime.available {
+                "ready"
+            } else {
+                "blocked"
+            },
             runtime.detail
         )
     }));
@@ -1386,6 +1619,10 @@ mod tests {
             current_agent_id: Some("A2".to_string()),
             current_agent_title: Some("Status Bindings And Control Subscriptions".to_string()),
             activity_excerpt: "No live agent output yet.".to_string(),
+            last_activity_at_ms: Some(4),
+            activity_source: Some("events".to_string()),
+            stalled: false,
+            stall_reason: None,
             proof: wave_app_server::ProofSnapshot {
                 declared_artifacts: vec![wave_app_server::ProofArtifactStatus {
                     path: "crates/wave-runtime/src/lib.rs".to_string(),
@@ -1406,6 +1643,9 @@ mod tests {
             },
             runtime_summary: wave_app_server::RuntimeSummary {
                 selected_runtimes: vec!["codex".to_string()],
+                requested_runtimes: vec!["codex".to_string()],
+                selection_sources: vec!["executor.id".to_string()],
+                fallback_targets: Vec::new(),
                 fallback_count: 0,
                 agents_with_runtime: 1,
             },
@@ -1434,6 +1674,7 @@ mod tests {
                 present_closure_agents: vec!["A0".to_string(), "A8".to_string(), "A9".to_string()],
                 missing_closure_agents: Vec::new(),
                 rerun_requested: false,
+                closure_override_applied: false,
                 completed: false,
                 last_run_status: Some(WaveRunStatus::Running),
                 readiness: WaveReadinessReadModel {
@@ -1583,6 +1824,95 @@ mod tests {
     }
 
     #[test]
+    fn run_summary_lines_keep_mixed_runtime_runs_explicit() {
+        let mut snapshot = test_snapshot();
+        let run = snapshot
+            .active_run_details
+            .first_mut()
+            .expect("active run detail");
+        run.runtime_summary.selected_runtimes = vec!["claude".to_string(), "codex".to_string()];
+        run.runtime_summary.requested_runtimes = vec!["claude".to_string(), "codex".to_string()];
+        run.runtime_summary.agents_with_runtime = 2;
+        let mut codex_agent = run.agents[0].clone();
+        codex_agent.id = "A2".to_string();
+        codex_agent.title = "Codex Adapter".to_string();
+        codex_agent.runtime = Some(wave_app_server::RuntimeDetail {
+            selected_runtime: "codex".to_string(),
+            selection_reason: "selected codex".to_string(),
+            policy: wave_app_server::RuntimePolicyDetail {
+                requested_runtime: Some("codex".to_string()),
+                allowed_runtimes: vec!["codex".to_string(), "claude".to_string()],
+                fallback_runtimes: vec!["claude".to_string()],
+                selection_source: Some("executor.id".to_string()),
+                uses_fallback: false,
+            },
+            fallback: None,
+            execution_identity: wave_app_server::RuntimeExecutionIdentityDetail {
+                adapter: "wave-runtime/codex".to_string(),
+                binary: "codex".to_string(),
+                provider: "openai-codex-cli".to_string(),
+                artifact_paths: std::collections::BTreeMap::new(),
+            },
+            skill_projection: wave_app_server::RuntimeSkillProjectionDetail {
+                declared_skills: vec!["wave-core".to_string()],
+                projected_skills: vec!["wave-core".to_string()],
+                dropped_skills: Vec::new(),
+                auto_attached_skills: vec!["runtime-codex".to_string()],
+            },
+        });
+        run.agents.push(codex_agent);
+
+        let rendered = run_summary_lines(run)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line == "selected runtimes: claude, codex")
+        );
+        assert!(rendered.iter().any(|line| line
+            == "current agent runtime: requested codex -> selected claude via executor.id"));
+        assert!(
+            rendered
+                .iter()
+                .all(|line| !line.starts_with("runtime decision:"))
+        );
+    }
+
+    #[test]
+    fn control_items_keep_mixed_runtime_runs_explicit() {
+        let mut snapshot = test_snapshot();
+        let run = snapshot
+            .active_run_details
+            .first_mut()
+            .expect("active run detail");
+        run.runtime_summary.selected_runtimes = vec!["claude".to_string(), "codex".to_string()];
+        run.runtime_summary.requested_runtimes = vec!["claude".to_string(), "codex".to_string()];
+
+        let rendered = control_status_items(&snapshot, Some(5));
+
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line == "Run runtimes: claude, codex")
+        );
+        assert!(rendered.iter().any(|line| line
+            == "Current agent runtime: requested codex -> selected claude via executor.id"));
+        assert!(
+            rendered
+                .iter()
+                .all(|line| !line.starts_with("Run runtime:"))
+        );
+    }
+
+    #[test]
     fn layout_mode_switches_at_threshold() {
         assert_eq!(
             shell_layout_mode(NARROW_LAYOUT_THRESHOLD - 1),
@@ -1607,12 +1937,13 @@ mod tests {
         use wave_app_server::ProofSnapshot;
         use wave_app_server::QueuePanelSnapshot;
         use wave_app_server::QueuePanelWaveSnapshot;
+        use wave_app_server::RunPanelSnapshot;
         use wave_app_server::RuntimeDetail;
         use wave_app_server::RuntimeExecutionIdentityDetail;
         use wave_app_server::RuntimeFallbackDetail;
+        use wave_app_server::RuntimePolicyDetail;
         use wave_app_server::RuntimeSkillProjectionDetail;
         use wave_app_server::RuntimeSummary;
-        use wave_app_server::RunPanelSnapshot;
         use wave_runtime::RerunIntentRecord;
         use wave_runtime::RerunIntentStatus;
 
@@ -1676,6 +2007,10 @@ mod tests {
             current_agent_id: Some("A1".to_string()),
             current_agent_title: Some("TUI Shell And Layout Scaffold".to_string()),
             activity_excerpt: "No live agent output yet.".to_string(),
+            last_activity_at_ms: Some(2),
+            activity_source: Some("last-message".to_string()),
+            stalled: false,
+            stall_reason: None,
             proof: ProofSnapshot {
                 declared_artifacts: vec![ProofArtifactStatus {
                     path: "crates/wave-tui/src/lib.rs".to_string(),
@@ -1697,6 +2032,9 @@ mod tests {
             execution: active_execution.clone(),
             runtime_summary: RuntimeSummary {
                 selected_runtimes: vec!["claude".to_string()],
+                requested_runtimes: vec!["codex".to_string()],
+                selection_sources: vec!["executor.id".to_string()],
+                fallback_targets: vec!["claude".to_string()],
                 fallback_count: 1,
                 agents_with_runtime: 1,
             },
@@ -1716,6 +2054,13 @@ mod tests {
                     runtime: Some(RuntimeDetail {
                         selected_runtime: "claude".to_string(),
                         selection_reason: "selected claude after fallback".to_string(),
+                        policy: RuntimePolicyDetail {
+                            requested_runtime: Some("codex".to_string()),
+                            allowed_runtimes: vec!["codex".to_string(), "claude".to_string()],
+                            fallback_runtimes: vec!["claude".to_string()],
+                            selection_source: Some("executor.id".to_string()),
+                            uses_fallback: true,
+                        },
                         fallback: Some(RuntimeFallbackDetail {
                             requested_runtime: "codex".to_string(),
                             selected_runtime: "claude".to_string(),
@@ -1839,6 +2184,7 @@ mod tests {
                     ],
                     missing_closure_agents: Vec::new(),
                     rerun_requested: false,
+                    closure_override_applied: false,
                     completed: false,
                     last_run_status: Some(WaveRunStatus::Running),
                     readiness: WaveReadinessReadModel {
@@ -1991,6 +2337,15 @@ mod tests {
                 },
             },
             launcher: LauncherStatus {
+                executor_boundary: "runtime-neutral adapter registry in wave-runtime".to_string(),
+                selection_policy:
+                    "explicit executor runtime selection with default codex and authored fallback order"
+                        .to_string(),
+                fallback_policy:
+                    "fallback only when the selected runtime is unavailable before meaningful work starts"
+                        .to_string(),
+                available_runtimes: Vec::new(),
+                unavailable_runtimes: vec!["codex".to_string(), "claude".to_string()],
                 runtimes: vec![
                     wave_runtime::RuntimeAvailability {
                         runtime: wave_domain::RuntimeId::Codex,
@@ -2013,10 +2368,12 @@ mod tests {
                 wave_id: 5,
                 reason: "Requested from the Wave operator TUI".to_string(),
                 requested_by: "operator".to_string(),
+                scope: RerunScope::Full,
                 status: RerunIntentStatus::Requested,
                 requested_at_ms: 1,
                 cleared_at_ms: None,
             }],
+            closure_overrides: Vec::new(),
             control_actions: vec![
                 ControlAction {
                     key: "r".to_string(),

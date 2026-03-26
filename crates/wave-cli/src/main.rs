@@ -29,17 +29,23 @@ use wave_dark_factory::has_errors;
 use wave_dark_factory::lint_project;
 use wave_dark_factory::validate_context7_bundle_catalog;
 use wave_dark_factory::validate_skill_catalog;
+use wave_domain::RerunScope;
+use wave_domain::WaveClosureOverrideRecord;
 use wave_runtime::AutonomousOptions;
 use wave_runtime::DogfoodEvidenceReport;
 use wave_runtime::LaunchOptions;
 use wave_runtime::LaunchPreflightError;
 use wave_runtime::LaunchPreflightReport;
 use wave_runtime::RerunIntentRecord;
+use wave_runtime::active_closure_override_wave_ids;
+use wave_runtime::apply_closure_override;
 use wave_runtime::autonomous_launch;
 use wave_runtime::clear_rerun;
+use wave_runtime::clear_closure_override;
 use wave_runtime::dogfood_evidence_report;
 use wave_runtime::draft_wave;
 use wave_runtime::launch_wave;
+use wave_runtime::list_closure_overrides;
 use wave_runtime::load_latest_runs;
 use wave_runtime::pending_rerun_wave_ids;
 use wave_runtime::repair_orphaned_runs;
@@ -137,6 +143,10 @@ enum ControlCommand {
         #[command(subcommand)]
         command: RerunCommand,
     },
+    Close {
+        #[command(subcommand)]
+        command: CloseCommand,
+    },
     Repair {
         #[arg(long)]
         json: bool,
@@ -168,6 +178,32 @@ enum RerunCommand {
         wave: u32,
         #[arg(long)]
         reason: String,
+        #[arg(long, default_value = "full")]
+        scope: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Clear {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CloseCommand {
+    Apply {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        source_run: Option<String>,
+        #[arg(long = "evidence-path")]
+        evidence_paths: Vec<String>,
+        #[arg(long)]
+        detail: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -223,6 +259,7 @@ struct DoctorReport {
     role_prompts: RolePromptSurface,
     authority: AuthoritySurface,
     runtime_boundary: wave_runtime::RuntimeBoundaryStatus,
+    closure_overrides: Vec<WaveClosureOverrideRecord>,
 }
 
 #[derive(Debug, Serialize)]
@@ -238,6 +275,7 @@ struct ControlShowReport {
     wave: WaveStatusReadModel,
     latest_run: Option<ActiveRunDetail>,
     rerun_intent: Option<RerunIntentRecord>,
+    closure_override: Option<WaveClosureOverrideRecord>,
 }
 
 #[derive(Debug, Serialize)]
@@ -281,6 +319,7 @@ struct ProjectShowReport {
     role_prompts: RolePromptSurface,
     authority: AuthoritySurface,
     runtime_boundary: wave_runtime::RuntimeBoundaryStatus,
+    closure_overrides: Vec<WaveClosureOverrideRecord>,
 }
 
 #[derive(Debug, Serialize)]
@@ -377,6 +416,7 @@ fn main() -> Result<()> {
     let skill_catalog_issues = validate_skill_catalog(&root);
     let latest_runs = load_latest_runs(&root, &config)?;
     let rerun_wave_ids = pending_rerun_wave_ids(&root, &config)?;
+    let closure_override_wave_ids = active_closure_override_wave_ids(&root, &config)?;
     let runtime_boundary = runtime_boundary_status();
     let spine = build_projection_spine_from_authority(
         &root,
@@ -386,7 +426,11 @@ fn main() -> Result<()> {
         &skill_catalog_issues,
         &latest_runs,
         &rerun_wave_ids,
-        runtime_boundary.runtimes.iter().any(|runtime| runtime.available),
+        &closure_override_wave_ids,
+        runtime_boundary
+            .runtimes
+            .iter()
+            .any(|runtime| runtime.available),
     )?;
 
     match cli.command {
@@ -435,15 +479,50 @@ fn main() -> Result<()> {
         Some(Command::Control {
             command:
                 ControlCommand::Rerun {
-                    command: RerunCommand::Request { wave, reason, json },
+                    command:
+                        RerunCommand::Request {
+                            wave,
+                            reason,
+                            scope,
+                            json,
+                        },
                 },
-        }) => render_rerun_request(&root, &config, wave, &reason, json),
+        }) => render_rerun_request(&root, &config, wave, &reason, &scope, json),
         Some(Command::Control {
             command:
                 ControlCommand::Rerun {
                     command: RerunCommand::Clear { wave, json },
                 },
         }) => render_rerun_clear(&root, &config, wave, json),
+        Some(Command::Control {
+            command:
+                ControlCommand::Close {
+                    command:
+                        CloseCommand::Apply {
+                            wave,
+                            reason,
+                            source_run,
+                            evidence_paths,
+                            detail,
+                            json,
+                        },
+                },
+        }) => render_close_apply(
+            &root,
+            &config,
+            wave,
+            &reason,
+            source_run.as_deref(),
+            evidence_paths,
+            detail,
+            json,
+        ),
+        Some(Command::Control {
+            command:
+                ControlCommand::Close {
+                    command: CloseCommand::Clear { wave, json },
+                },
+        }) => render_close_clear(&root, &config, wave, json),
         Some(Command::Control {
             command: ControlCommand::Repair { json },
         }) => render_control_repair(&root, &config, json),
@@ -561,7 +640,11 @@ fn render_summary(config: &ProjectConfig, spine: &ProjectionSpine) -> Result<()>
             .map(|runtime| format!(
                 "{}={}",
                 runtime.runtime,
-                if runtime.available { "ready" } else { "blocked" }
+                if runtime.available {
+                    "ready"
+                } else {
+                    "blocked"
+                }
             ))
             .collect::<Vec<_>>()
             .join(", ")
@@ -641,6 +724,10 @@ fn ensure_authority_roots_materialized(config: &ProjectConfig, root: &Path) -> R
 fn render_project(config: &ProjectConfig, root: &Path, json: bool) -> Result<()> {
     ensure_authority_roots_materialized(config, root)?;
     let resolved = config.resolved_paths(root);
+    let mut closure_overrides = list_closure_overrides(root, config)?
+        .into_values()
+        .collect::<Vec<_>>();
+    closure_overrides.sort_by_key(|record| record.wave_id);
     let report = ProjectShowReport {
         project_name: config.project_name.clone(),
         default_lane: config.default_lane.clone(),
@@ -652,6 +739,7 @@ fn render_project(config: &ProjectConfig, root: &Path, json: bool) -> Result<()>
         role_prompts: role_prompt_surface(config, root),
         authority: authority_surface(config, root),
         runtime_boundary: runtime_boundary_status(),
+        closure_overrides,
     };
     if json {
         print_json(&report)
@@ -678,7 +766,11 @@ fn render_project(config: &ProjectConfig, root: &Path, json: bool) -> Result<()>
                 .map(|runtime| format!(
                     "{}={} ({})",
                     runtime.runtime,
-                    if runtime.available { "ready" } else { "blocked" },
+                    if runtime.available {
+                        "ready"
+                    } else {
+                        "blocked"
+                    },
                     runtime.detail
                 ))
                 .collect::<Vec<_>>()
@@ -739,6 +831,26 @@ fn render_project(config: &ProjectConfig, root: &Path, json: bool) -> Result<()>
             report.authority.compatibility.trace_runs.display()
         );
         println!("projection source: {}", report.authority.projection_source);
+        println!(
+            "closure overrides: {}",
+            if report.closure_overrides.is_empty() {
+                "none".to_string()
+            } else {
+                report
+                    .closure_overrides
+                    .iter()
+                    .map(|record| {
+                        format!(
+                            "wave {}={} ({})",
+                            record.wave_id,
+                            closure_override_status_label(record),
+                            record.reason
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        );
         Ok(())
     }
 }
@@ -833,11 +945,35 @@ fn render_doctor(
             .map(|runtime| format!(
                 "{}={} ({})",
                 runtime.runtime,
-                if runtime.available { "ready" } else { "blocked" },
+                if runtime.available {
+                    "ready"
+                } else {
+                    "blocked"
+                },
                 runtime.detail
             ))
             .collect::<Vec<_>>()
             .join(", ")
+    );
+    println!(
+        "closure overrides: {}",
+        if report.closure_overrides.is_empty() {
+            "none".to_string()
+        } else {
+            report
+                .closure_overrides
+                .iter()
+                .map(|record| {
+                    format!(
+                        "wave {}={} source_run={}",
+                        record.wave_id,
+                        closure_override_status_label(record),
+                        record.source_run_id
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
     );
     println!(
         "configured canonical roots: build_specs={} events={} control_events={} coordination={} scheduler_events={} results={} derived={} projections={} state_traces={}",
@@ -914,6 +1050,10 @@ fn build_doctor_report(
     let role_prompts = role_prompt_surface(config, root);
     let authority = authority_surface(config, root);
     let runtime_boundary = runtime_boundary_status();
+    let mut closure_overrides = list_closure_overrides(root, config)?
+        .into_values()
+        .collect::<Vec<_>>();
+    closure_overrides.sort_by_key(|record| record.wave_id);
     let role_prompt_checks = resolved_paths
         .role_prompts
         .all_files()
@@ -1069,16 +1209,25 @@ fn build_doctor_report(
         },
         DoctorCheck {
             name: "runtime-boundary",
-            ok: runtime_boundary.runtimes.iter().any(|runtime| runtime.available),
+            ok: runtime_boundary
+                .runtimes
+                .iter()
+                .any(|runtime| runtime.available),
             detail: runtime_boundary
                 .runtimes
                 .iter()
-                .map(|runtime| format!(
-                    "{}={} ({})",
-                    runtime.runtime,
-                    if runtime.available { "ready" } else { "blocked" },
-                    runtime.detail
-                ))
+                .map(|runtime| {
+                    format!(
+                        "{}={} ({})",
+                        runtime.runtime,
+                        if runtime.available {
+                            "ready"
+                        } else {
+                            "blocked"
+                        },
+                        runtime.detail
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", "),
         },
@@ -1121,6 +1270,7 @@ fn build_doctor_report(
         role_prompts,
         authority,
         runtime_boundary,
+        closure_overrides,
     })
 }
 
@@ -1271,10 +1421,16 @@ fn render_control_show(
         .iter()
         .find(|intent| intent.wave_id == wave_id)
         .cloned();
+    let closure_override = snapshot
+        .closure_overrides
+        .iter()
+        .find(|record| record.wave_id == wave_id)
+        .cloned();
     let report = ControlShowReport {
         wave,
         latest_run,
         rerun_intent,
+        closure_override,
     };
     if json {
         print_json(&report)
@@ -1282,6 +1438,14 @@ fn render_control_show(
         println!("wave {} {}", report.wave.id, report.wave.title);
         println!("ready: {}", report.wave.ready);
         println!("rerun requested: {}", report.wave.rerun_requested);
+        println!(
+            "manual close: {}",
+            if report.wave.closure_override_applied {
+                "applied"
+            } else {
+                "none"
+            }
+        );
         println!("completed: {}", report.wave.completed);
         println!(
             "last run: {}",
@@ -1309,7 +1473,8 @@ fn render_control_show(
             println!(
                 "current agent: {}",
                 run.current_agent_id
-                    .zip(run.current_agent_title)
+                    .clone()
+                    .zip(run.current_agent_title.clone())
                     .map(|(id, title)| format!("{id} {title}"))
                     .unwrap_or_else(|| "none".to_string())
             );
@@ -1319,12 +1484,169 @@ fn render_control_show(
             );
             println!("proof source: {}", run.proof.proof_source);
             println!("replay ok: {}", run.replay.ok);
+            println!(
+                "last activity: {}",
+                run.last_activity_at_ms
+                    .map(|timestamp| timestamp.to_string())
+                    .unwrap_or_else(|| "none".to_string())
+            );
+            println!(
+                "activity source: {}",
+                run.activity_source
+                    .clone()
+                    .unwrap_or_else(|| "none".to_string())
+            );
+            println!("stalled: {}", run.stalled);
+            if let Some(reason) = run.stall_reason.clone() {
+                println!("stall reason: {}", reason);
+            }
+            for line in control_runtime_lines(&run) {
+                println!("{line}");
+            }
+            println!(
+                "launcher available: {}",
+                format_string_list(&snapshot.launcher.available_runtimes)
+            );
+            println!(
+                "launcher unavailable: {}",
+                format_string_list(&snapshot.launcher.unavailable_runtimes)
+            );
         }
         if let Some(intent) = report.rerun_intent {
-            println!("rerun intent: {} ({})", intent.reason, intent.requested_by);
+            println!(
+                "rerun intent: {} ({}, scope={})",
+                intent.reason,
+                intent.requested_by,
+                rerun_scope_label(intent.scope)
+            );
+        }
+        if let Some(record) = report.closure_override {
+            println!(
+                "closure override: {} ({})",
+                closure_override_status_label(&record),
+                record.reason
+            );
+            println!("closure override source run: {}", record.source_run_id);
+            println!(
+                "closure override evidence: {}",
+                format_string_list(&record.evidence_paths)
+            );
+            if let Some(detail) = record.detail {
+                println!("closure override detail: {}", detail);
+            }
         }
         Ok(())
     }
+}
+
+fn control_runtime_lines(run: &ActiveRunDetail) -> Vec<String> {
+    if run_has_mixed_runtime_selection(run) {
+        let mut lines = vec![format!(
+            "run runtimes: {}",
+            format_string_list(&run.runtime_summary.selected_runtimes)
+        )];
+        if !run.runtime_summary.requested_runtimes.is_empty() {
+            lines.push(format!(
+                "requested runtimes: {}",
+                format_string_list(&run.runtime_summary.requested_runtimes)
+            ));
+        }
+        if !run.runtime_summary.selection_sources.is_empty() {
+            lines.push(format!(
+                "selection sources: {}",
+                format_string_list(&run.runtime_summary.selection_sources)
+            ));
+        }
+        if run.runtime_summary.fallback_count > 0
+            || !run.runtime_summary.fallback_targets.is_empty()
+        {
+            lines.push(format!(
+                "fallbacks: {} target={}",
+                run.runtime_summary.fallback_count,
+                format_string_list(&run.runtime_summary.fallback_targets)
+            ));
+        }
+        if let Some(runtime) = current_agent_runtime_detail(run) {
+            lines.push(format!(
+                "current agent runtime: {}",
+                runtime_decision_summary(runtime)
+            ));
+            if let Some(fallback) = runtime.fallback.as_ref() {
+                lines.push(format!(
+                    "current agent fallback reason: {}",
+                    fallback.reason
+                ));
+            }
+            lines.push(format!(
+                "current agent adapter: {} ({})",
+                runtime.execution_identity.adapter, runtime.execution_identity.provider
+            ));
+        }
+        lines
+    } else {
+        representative_runtime_detail(run)
+            .map(|runtime| {
+                let mut lines = vec![format!(
+                    "runtime decision: {}",
+                    runtime_decision_summary(runtime)
+                )];
+                if let Some(fallback) = runtime.fallback.as_ref() {
+                    lines.push(format!("fallback reason: {}", fallback.reason));
+                }
+                lines.push(format!(
+                    "adapter: {} ({})",
+                    runtime.execution_identity.adapter, runtime.execution_identity.provider
+                ));
+                lines
+            })
+            .unwrap_or_default()
+    }
+}
+
+fn run_has_mixed_runtime_selection(run: &ActiveRunDetail) -> bool {
+    run.runtime_summary.selected_runtimes.len() > 1
+}
+
+fn current_agent_runtime_detail(run: &ActiveRunDetail) -> Option<&wave_app_server::RuntimeDetail> {
+    run.current_agent_id.as_deref().and_then(|agent_id| {
+        run.agents
+            .iter()
+            .find(|agent| agent.id == agent_id)
+            .and_then(|agent| agent.runtime.as_ref())
+    })
+}
+
+fn representative_runtime_detail(run: &ActiveRunDetail) -> Option<&wave_app_server::RuntimeDetail> {
+    current_agent_runtime_detail(run)
+        .or_else(|| {
+            run.agents
+                .iter()
+                .filter_map(|agent| agent.runtime.as_ref())
+                .find(|runtime| runtime.fallback.is_some())
+        })
+        .or_else(|| {
+            run.agents
+                .iter()
+                .filter_map(|agent| agent.runtime.as_ref())
+                .next()
+        })
+}
+
+fn runtime_decision_summary(runtime: &wave_app_server::RuntimeDetail) -> String {
+    let requested = runtime
+        .policy
+        .requested_runtime
+        .as_deref()
+        .unwrap_or("unspecified");
+    let source = runtime
+        .policy
+        .selection_source
+        .as_deref()
+        .unwrap_or("runtime policy");
+    format!(
+        "requested {} -> selected {} via {}",
+        requested, runtime.selected_runtime, source
+    )
 }
 
 fn render_task_list(
@@ -1395,8 +1717,12 @@ fn render_rerun_list(root: &Path, config: &ProjectConfig, json: bool) -> Result<
     } else {
         for intent in snapshot.rerun_intents {
             println!(
-                "- wave {} | status={:?} | requested_by={} | reason={}",
-                intent.wave_id, intent.status, intent.requested_by, intent.reason
+                "- wave {} | status={:?} | scope={} | requested_by={} | reason={}",
+                intent.wave_id,
+                intent.status,
+                rerun_scope_label(intent.scope),
+                intent.requested_by,
+                intent.reason
             );
         }
         Ok(())
@@ -1408,14 +1734,16 @@ fn render_rerun_request(
     config: &ProjectConfig,
     wave_id: u32,
     reason: &str,
+    scope: &str,
     json: bool,
 ) -> Result<()> {
-    let record = request_rerun(root, config, wave_id, reason)?;
+    let record = request_rerun(root, config, wave_id, reason, parse_rerun_scope(scope)?)?;
     if json {
         print_json(&record)
     } else {
         println!("requested rerun for wave {}", wave_id);
         println!("reason: {}", record.reason);
+        println!("scope: {}", rerun_scope_label(record.scope));
         Ok(())
     }
 }
@@ -1471,6 +1799,55 @@ fn render_control_repair(root: &Path, config: &ProjectConfig, json: bool) -> Res
             );
         }
         Ok(())
+    }
+}
+
+fn render_close_apply(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    reason: &str,
+    source_run: Option<&str>,
+    evidence_paths: Vec<String>,
+    detail: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let record = apply_closure_override(
+        root,
+        config,
+        wave_id,
+        reason,
+        source_run,
+        evidence_paths,
+        detail,
+    )?;
+    if json {
+        print_json(&record)
+    } else {
+        println!("applied closure override for wave {}", record.wave_id);
+        println!("status: {}", closure_override_status_label(&record));
+        println!("reason: {}", record.reason);
+        println!("source run: {}", record.source_run_id);
+        println!("evidence: {}", format_string_list(&record.evidence_paths));
+        Ok(())
+    }
+}
+
+fn render_close_clear(root: &Path, config: &ProjectConfig, wave_id: u32, json: bool) -> Result<()> {
+    let record = clear_closure_override(root, config, wave_id)?;
+    if json {
+        print_json(&record)
+    } else {
+        match record {
+            Some(record) => {
+                println!("cleared closure override for wave {}", record.wave_id);
+                Ok(())
+            }
+            None => {
+                println!("no closure override recorded for wave {}", wave_id);
+                Ok(())
+            }
+        }
     }
 }
 
@@ -1821,6 +2198,35 @@ fn render_not_ready(command: &str, note: &str) -> Result<()> {
     Ok(())
 }
 
+fn parse_rerun_scope(raw: &str) -> Result<RerunScope> {
+    match raw {
+        "full" => Ok(RerunScope::Full),
+        "from-first-incomplete" => Ok(RerunScope::FromFirstIncomplete),
+        "closure-only" => Ok(RerunScope::ClosureOnly),
+        "promotion-only" => Ok(RerunScope::PromotionOnly),
+        _ => anyhow::bail!(
+            "unknown rerun scope {raw}; expected full, from-first-incomplete, closure-only, or promotion-only"
+        ),
+    }
+}
+
+fn rerun_scope_label(scope: RerunScope) -> &'static str {
+    match scope {
+        RerunScope::Full => "full",
+        RerunScope::FromFirstIncomplete => "from-first-incomplete",
+        RerunScope::ClosureOnly => "closure-only",
+        RerunScope::PromotionOnly => "promotion-only",
+    }
+}
+
+fn closure_override_status_label(record: &WaveClosureOverrideRecord) -> &'static str {
+    if record.is_active() {
+        "applied"
+    } else {
+        "cleared"
+    }
+}
+
 fn select_wave_id(snapshot: &OperatorSnapshot, requested: Option<u32>) -> Result<u32> {
     if let Some(wave_id) = requested {
         return Ok(wave_id);
@@ -2046,6 +2452,7 @@ mod tests {
                     primary_reason: None,
                 },
                 rerun_requested: false,
+                closure_override_applied: false,
                 completed: false,
                 last_run_status: None,
             }],
@@ -2294,6 +2701,7 @@ mod tests {
                     primary_reason: None,
                 },
                 rerun_requested: false,
+                closure_override_applied: false,
                 completed: false,
                 last_run_status: None,
             }],
@@ -2334,6 +2742,142 @@ mod tests {
         assert!(resolved.authority.state_events_scheduler_dir.exists());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn control_runtime_lines_keep_mixed_runtime_runs_explicit() {
+        let run = ActiveRunDetail {
+            wave_id: 15,
+            wave_slug: "runtime-policy".to_string(),
+            wave_title: "Runtime Policy".to_string(),
+            run_id: "wave-15-test".to_string(),
+            status: wave_trace::WaveRunStatus::Running,
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            elapsed_ms: Some(3_000),
+            current_agent_id: Some("A2".to_string()),
+            current_agent_title: Some("Claude Adapter".to_string()),
+            activity_excerpt: "testing runtime boundary".to_string(),
+            last_activity_at_ms: Some(2),
+            activity_source: Some("events".to_string()),
+            stalled: false,
+            stall_reason: None,
+            proof: wave_app_server::ProofSnapshot {
+                declared_artifacts: Vec::new(),
+                complete: false,
+                proof_source: "structured-envelope".to_string(),
+                completed_agents: 2,
+                envelope_backed_agents: 2,
+                compatibility_backed_agents: 0,
+                total_agents: 6,
+            },
+            replay: wave_trace::ReplayReport {
+                run_id: "wave-15-test".to_string(),
+                wave_id: 15,
+                ok: true,
+                issues: Vec::new(),
+            },
+            runtime_summary: wave_app_server::RuntimeSummary {
+                selected_runtimes: vec!["claude".to_string(), "codex".to_string()],
+                requested_runtimes: vec!["claude".to_string(), "codex".to_string()],
+                selection_sources: vec!["executor.id".to_string()],
+                fallback_targets: vec!["claude".to_string()],
+                fallback_count: 1,
+                agents_with_runtime: 2,
+            },
+            execution: empty_execution(),
+            agents: vec![
+                wave_app_server::AgentPanelItem {
+                    id: "A1".to_string(),
+                    title: "Codex Adapter".to_string(),
+                    status: wave_trace::WaveRunStatus::Succeeded,
+                    current_task: "done".to_string(),
+                    proof_complete: true,
+                    proof_source: "structured-envelope".to_string(),
+                    expected_markers: vec!["[wave-proof]".to_string()],
+                    observed_markers: vec!["[wave-proof]".to_string()],
+                    missing_markers: Vec::new(),
+                    deliverables: Vec::new(),
+                    error: None,
+                    runtime: Some(test_runtime_detail(
+                        "codex",
+                        "wave-runtime/codex",
+                        "openai-codex-cli",
+                        false,
+                    )),
+                },
+                wave_app_server::AgentPanelItem {
+                    id: "A2".to_string(),
+                    title: "Claude Adapter".to_string(),
+                    status: wave_trace::WaveRunStatus::Running,
+                    current_task: "running".to_string(),
+                    proof_complete: false,
+                    proof_source: "structured-envelope".to_string(),
+                    expected_markers: vec!["[wave-proof]".to_string()],
+                    observed_markers: Vec::new(),
+                    missing_markers: vec!["[wave-proof]".to_string()],
+                    deliverables: Vec::new(),
+                    error: None,
+                    runtime: Some(test_runtime_detail(
+                        "claude",
+                        "wave-runtime/claude",
+                        "anthropic-claude-code",
+                        true,
+                    )),
+                },
+            ],
+        };
+
+        let lines = control_runtime_lines(&run);
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "run runtimes: claude, codex")
+        );
+        assert!(lines.iter().any(|line| line
+            == "current agent runtime: requested codex -> selected claude via executor.id"));
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.starts_with("runtime decision:"))
+        );
+    }
+
+    fn test_runtime_detail(
+        selected_runtime: &str,
+        adapter: &str,
+        provider: &str,
+        uses_fallback: bool,
+    ) -> wave_app_server::RuntimeDetail {
+        wave_app_server::RuntimeDetail {
+            selected_runtime: selected_runtime.to_string(),
+            selection_reason: format!("selected {selected_runtime}"),
+            policy: wave_app_server::RuntimePolicyDetail {
+                requested_runtime: Some("codex".to_string()),
+                allowed_runtimes: vec!["codex".to_string(), "claude".to_string()],
+                fallback_runtimes: vec!["claude".to_string()],
+                selection_source: Some("executor.id".to_string()),
+                uses_fallback,
+            },
+            fallback: uses_fallback.then(|| wave_app_server::RuntimeFallbackDetail {
+                requested_runtime: "codex".to_string(),
+                selected_runtime: selected_runtime.to_string(),
+                reason: "codex unavailable".to_string(),
+            }),
+            execution_identity: wave_app_server::RuntimeExecutionIdentityDetail {
+                adapter: adapter.to_string(),
+                binary: selected_runtime.to_string(),
+                provider: provider.to_string(),
+                artifact_paths: BTreeMap::new(),
+            },
+            skill_projection: wave_app_server::RuntimeSkillProjectionDetail {
+                declared_skills: vec!["wave-core".to_string()],
+                projected_skills: vec!["wave-core".to_string()],
+                dropped_skills: Vec::new(),
+                auto_attached_skills: vec![format!("runtime-{selected_runtime}")],
+            },
+        }
     }
 
     fn proof_test_wave() -> WaveDocument {
