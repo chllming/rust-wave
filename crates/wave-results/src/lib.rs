@@ -72,6 +72,7 @@ pub struct EffectiveResultEnvelopeView {
     pub required_final_markers: Vec<String>,
     pub observed_final_markers: Vec<String>,
     pub summary: Option<String>,
+    pub runtime: Option<wave_domain::RuntimeExecutionRecord>,
 }
 
 impl ResultEnvelopeStore {
@@ -320,6 +321,7 @@ pub fn build_structured_result_envelope(
                 marker_evidence,
             },
             closure,
+            runtime: agent_record.runtime.clone(),
             created_at_ms,
         },
         Some(repo_root),
@@ -428,16 +430,22 @@ pub fn closure_contract_error(agent_id: &str, closure: &ClosureState) -> Option<
         ("A0", _) => Some("cont-QA report is missing structured closure verdict".to_string()),
         ("A6", ClosureVerdictPayload::Design(verdict)) => match verdict.state.as_deref() {
             Some("aligned") | Some("concerns") => None,
-            Some(state) => Some(format!("design review state is {state}, not aligned or concerns")),
+            Some(state) => Some(format!(
+                "design review state is {state}, not aligned or concerns"
+            )),
             None => Some("design review report is missing state=<...>".to_string()),
         },
         ("A6", _) => Some("design review report is missing structured closure verdict".to_string()),
         ("A7", ClosureVerdictPayload::Security(verdict)) => match verdict.state.as_deref() {
             Some("clear") | Some("concerns") => None,
-            Some(state) => Some(format!("security review state is {state}, not clear or concerns")),
+            Some(state) => Some(format!(
+                "security review state is {state}, not clear or concerns"
+            )),
             None => Some("security review report is missing state=<...>".to_string()),
         },
-        ("A7", _) => Some("security review report is missing structured closure verdict".to_string()),
+        ("A7", _) => {
+            Some("security review report is missing structured closure verdict".to_string())
+        }
         ("A8", ClosureVerdictPayload::Integration(verdict)) => match verdict.state.as_deref() {
             Some("ready-for-doc-closure") => None,
             Some(state) => Some(format!(
@@ -743,6 +751,11 @@ pub fn normalize_result_envelope(
         normalized.closure_input.final_markers.required.clone();
     normalized.closure.observed_final_markers =
         normalized.closure_input.final_markers.observed.clone();
+    if let Some(runtime) = &mut normalized.runtime {
+        for path in runtime.execution_identity.artifact_paths.values_mut() {
+            *path = normalize_path_string(&PathBuf::from(path.as_str()), repo_root);
+        }
+    }
     validate_result_envelope(&normalized)?;
     Ok(normalized)
 }
@@ -1011,6 +1024,7 @@ fn adapt_legacy_agent_run(
                 marker_evidence,
             },
             closure,
+            runtime: None,
             created_at_ms: run
                 .completed_at_ms
                 .or(run.started_at_ms)
@@ -1116,6 +1130,7 @@ fn effective_view_from_domain_envelope(envelope: ResultEnvelope) -> EffectiveRes
         required_final_markers: envelope.closure_input.final_markers.required,
         observed_final_markers: envelope.closure_input.final_markers.observed,
         summary: envelope.summary,
+        runtime: envelope.runtime,
     }
 }
 
@@ -1129,6 +1144,7 @@ fn effective_view_from_trace_envelope(
         required_final_markers: envelope.final_markers.required,
         observed_final_markers: envelope.final_markers.observed,
         summary: envelope.summary,
+        runtime: envelope.runtime,
     }
 }
 
@@ -1647,6 +1663,7 @@ mod tests {
                     }],
                 },
                 closure,
+                runtime: None,
                 created_at_ms: 42,
             })
             .expect("write envelope");
@@ -1692,6 +1709,84 @@ mod tests {
                 .expect("latest completed or failed")
                 .map(|envelope| envelope.result_envelope_id),
             Some(ResultEnvelopeId::new("result-1"))
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn normalize_result_envelope_normalizes_runtime_artifact_paths() {
+        let root = temp_root("runtime-artifacts");
+        let runtime_detail_path =
+            root.join(".wave/state/build/specs/wave-15/agents/A1/runtime-detail.json");
+        let overlay_path =
+            root.join(".wave/state/build/specs/wave-15/agents/A1/runtime-skill-overlay.md");
+        fs::create_dir_all(runtime_detail_path.parent().expect("runtime detail parent"))
+            .expect("create runtime artifact dir");
+        fs::write(&runtime_detail_path, "{}\n").expect("write runtime detail");
+        fs::write(&overlay_path, "overlay\n").expect("write runtime overlay");
+
+        let mut envelope = structured_envelope(
+            15,
+            "A1",
+            "attempt-runtime",
+            "result-runtime",
+            AttemptState::Succeeded,
+            vec![
+                "[wave-proof]".to_string(),
+                "[wave-doc-delta]".to_string(),
+                "[wave-component]".to_string(),
+            ],
+            vec![
+                "[wave-proof]".to_string(),
+                "[wave-doc-delta]".to_string(),
+                "[wave-component]".to_string(),
+            ],
+            7,
+        );
+        envelope.runtime = Some(wave_domain::RuntimeExecutionRecord {
+            policy: wave_domain::RuntimeSelectionPolicy {
+                requested_runtime: Some(wave_domain::RuntimeId::Claude),
+                allowed_runtimes: vec![wave_domain::RuntimeId::Claude],
+                fallback_runtimes: Vec::new(),
+                selection_source: Some("executor.id".to_string()),
+            },
+            selected_runtime: wave_domain::RuntimeId::Claude,
+            selection_reason: "selected claude from executor.id".to_string(),
+            fallback: None,
+            execution_identity: wave_domain::RuntimeExecutionIdentity {
+                runtime: wave_domain::RuntimeId::Claude,
+                adapter: "wave-runtime/claude".to_string(),
+                binary: "/tmp/fake-claude".to_string(),
+                provider: "anthropic-claude-code".to_string(),
+                artifact_paths: std::collections::BTreeMap::from([
+                    (
+                        "runtime_detail".to_string(),
+                        runtime_detail_path.to_string_lossy().into_owned(),
+                    ),
+                    (
+                        "skill_overlay".to_string(),
+                        overlay_path.to_string_lossy().into_owned(),
+                    ),
+                ]),
+            },
+            skill_projection: wave_domain::RuntimeSkillProjection {
+                declared_skills: vec!["wave-core".to_string()],
+                projected_skills: vec!["wave-core".to_string(), "runtime-claude".to_string()],
+                dropped_skills: Vec::new(),
+                auto_attached_skills: vec!["runtime-claude".to_string()],
+            },
+        });
+
+        let normalized = normalize_result_envelope(&envelope, Some(&root)).expect("normalize");
+        let runtime = normalized.runtime.expect("runtime");
+        assert_eq!(
+            runtime.execution_identity.artifact_paths.get("runtime_detail"),
+            Some(&".wave/state/build/specs/wave-15/agents/A1/runtime-detail.json".to_string())
+        );
+        assert_eq!(
+            runtime.execution_identity.artifact_paths.get("skill_overlay"),
+            Some(&".wave/state/build/specs/wave-15/agents/A1/runtime-skill-overlay.md".to_string())
         );
 
         let _ = fs::remove_dir_all(root);
@@ -1957,6 +2052,9 @@ mod tests {
             started_at_ms: Some(2),
             launcher_pid: None,
             launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: Some(3),
             agents: vec![AgentRunRecord {
                 id: "A1".to_string(),
@@ -1972,6 +2070,7 @@ mod tests {
                 stderr_path: root
                     .join(".wave/state/build/specs/wave-12-legacy/agents/A1/stderr.txt"),
                 result_envelope_path: None,
+                runtime_detail_path: None,
                 expected_markers: vec![
                     "[wave-proof]".to_string(),
                     "[wave-doc-delta]".to_string(),
@@ -1980,6 +2079,7 @@ mod tests {
                 observed_markers: vec!["[wave-proof]".to_string(), "[wave-doc-delta]".to_string()],
                 exit_code: Some(1),
                 error: Some("missing component proof".to_string()),
+                runtime: None,
             }],
             error: Some("agent failure".to_string()),
         };
@@ -2055,6 +2155,9 @@ mod tests {
             started_at_ms: Some(2),
             launcher_pid: None,
             launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: Some(3),
             agents: vec![AgentRunRecord {
                 id: "A8".to_string(),
@@ -2070,10 +2173,12 @@ mod tests {
                 stderr_path: root
                     .join(".wave/state/build/specs/wave-12-legacy/agents/A8/stderr.txt"),
                 result_envelope_path: None,
+                runtime_detail_path: None,
                 expected_markers: vec!["[wave-integration]".to_string()],
                 observed_markers: vec!["[wave-integration]".to_string()],
                 exit_code: Some(0),
                 error: None,
+                runtime: None,
             }],
             error: None,
         };
@@ -2123,6 +2228,9 @@ mod tests {
             started_at_ms: Some(2),
             launcher_pid: None,
             launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: Some(3),
             agents: vec![AgentRunRecord {
                 id: "A8".to_string(),
@@ -2138,10 +2246,12 @@ mod tests {
                 stderr_path: root
                     .join(".wave/state/build/specs/wave-12-legacy/agents/A8/stderr.txt"),
                 result_envelope_path: None,
+                runtime_detail_path: None,
                 expected_markers: vec!["[wave-integration]".to_string()],
                 observed_markers: vec!["[wave-integration]".to_string()],
                 exit_code: Some(0),
                 error: None,
+                runtime: None,
             }],
             error: None,
         };
@@ -2202,6 +2312,9 @@ mod tests {
             started_at_ms: Some(2),
             launcher_pid: None,
             launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: Some(3),
             agents: vec![AgentRunRecord {
                 id: "A8".to_string(),
@@ -2217,10 +2330,12 @@ mod tests {
                 stderr_path: root
                     .join(".wave/state/build/specs/wave-12-legacy/agents/A8/stderr.txt"),
                 result_envelope_path: None,
+                runtime_detail_path: None,
                 expected_markers: vec!["[wave-integration]".to_string()],
                 observed_markers: vec!["[wave-integration]".to_string()],
                 exit_code: Some(0),
                 error: None,
+                runtime: None,
             }],
             error: None,
         };
@@ -2493,6 +2608,9 @@ mod tests {
             started_at_ms: Some(2),
             launcher_pid: None,
             launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: Some(3),
             agents: vec![AgentRunRecord {
                 id: agent_id.to_string(),
@@ -2505,6 +2623,7 @@ mod tests {
                 events_path: agent_dir.join("events.jsonl"),
                 stderr_path: agent_dir.join("stderr.txt"),
                 result_envelope_path: None,
+                runtime_detail_path: None,
                 expected_markers: declared_agent(agent_id, "Test agent", vec![])
                     .expected_final_markers()
                     .iter()
@@ -2517,6 +2636,7 @@ mod tests {
                     .collect(),
                 exit_code: Some(0),
                 error: None,
+                runtime: None,
             }],
             error: None,
         }
@@ -2577,6 +2697,7 @@ mod tests {
                 marker_evidence: Vec::new(),
             },
             closure,
+            runtime: None,
             created_at_ms,
         }
     }

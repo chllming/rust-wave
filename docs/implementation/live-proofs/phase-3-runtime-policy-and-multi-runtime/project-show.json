@@ -1,0 +1,97 @@
+{
+  "project_name": "Codex Wave Mode",
+  "default_lane": "main",
+  "default_mode": "dark-factory",
+  "waves_dir": "./waves",
+  "docs_dir": "./docs",
+  "skills_dir": "./skills",
+  "codex_vendor_dir": "./third_party/codex-rs",
+  "role_prompts": {
+    "dir": "./docs/agents",
+    "cont_qa": "./docs/agents/wave-cont-qa-role.md",
+    "cont_eval": "./docs/agents/wave-cont-eval-role.md",
+    "integration": "./docs/agents/wave-integration-role.md",
+    "documentation": "./docs/agents/wave-documentation-role.md",
+    "design": "./docs/agents/wave-design-role.md",
+    "security": "./docs/agents/wave-security-role.md"
+  },
+  "authority": {
+    "project_codex_home": "./.wave/codex",
+    "state_dir": "./.wave/state",
+    "configured_canonical": {
+      "build_specs": "./.wave/state/build/specs",
+      "events": "./.wave/state/events",
+      "control_events": "./.wave/state/events/control",
+      "coordination": "./.wave/state/events/coordination",
+      "scheduler_events": "./.wave/state/events/scheduler",
+      "results": "./.wave/state/results",
+      "derived": "./.wave/state/derived",
+      "projections": "./.wave/state/projections",
+      "state_traces": "./.wave/state/traces"
+    },
+    "materialized_canonical": {
+      "build_specs": {
+        "path": "./.wave/state/build/specs",
+        "exists": true
+      },
+      "events": {
+        "path": "./.wave/state/events",
+        "exists": true
+      },
+      "control_events": {
+        "path": "./.wave/state/events/control",
+        "exists": true
+      },
+      "coordination": {
+        "path": "./.wave/state/events/coordination",
+        "exists": true
+      },
+      "scheduler_events": {
+        "path": "./.wave/state/events/scheduler",
+        "exists": true
+      },
+      "results": {
+        "path": "./.wave/state/results",
+        "exists": true
+      },
+      "derived": {
+        "path": "./.wave/state/derived",
+        "exists": true
+      },
+      "projections": {
+        "path": "./.wave/state/projections",
+        "exists": true
+      },
+      "state_traces": {
+        "path": "./.wave/state/traces",
+        "exists": true
+      }
+    },
+    "compatibility": {
+      "state_control": "./.wave/state/control",
+      "state_runs": "./.wave/state/runs",
+      "trace_root": "./.wave/traces",
+      "trace_runs": "./.wave/traces/runs"
+    },
+    "projection_source": "planning status, queue/control JSON, and operator-facing status surfaces are reducer-backed projections over canonical scheduler authority plus compatibility run records; proof and closure surfaces are envelope-first, and replay remains compatibility-backed"
+  },
+  "runtime_boundary": {
+    "executor_boundary": "runtime-neutral adapter registry in wave-runtime",
+    "selection_policy": "explicit executor runtime selection with default codex and authored fallback order",
+    "fallback_policy": "fallback only when the selected runtime is unavailable before meaningful work starts",
+    "runtimes": [
+      {
+        "runtime": "codex",
+        "binary": "codex",
+        "available": true,
+        "detail": "available"
+      },
+      {
+        "runtime": "claude",
+        "binary": "claude",
+        "available": true,
+        "detail": "available"
+      }
+    ]
+  }
+}

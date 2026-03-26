@@ -1,0 +1,195 @@
+{
+  "generated_at_ms": 1774514645366,
+  "latest_run_details": [
+    {
+      "wave_id": 15,
+      "wave_slug": "runtime-policy",
+      "wave_title": "Runtime Policy",
+      "run_id": "wave-15-proof",
+      "status": "running",
+      "created_at_ms": 1,
+      "started_at_ms": 2,
+      "elapsed_ms": 1774514645364,
+      "current_agent_id": "A1",
+      "current_agent_title": "Implementation",
+      "activity_excerpt": "[wave-proof]",
+      "execution": {
+        "worktree": null,
+        "promotion": null,
+        "scheduling": null,
+        "merge_blocked": false,
+        "closure_blocked_by_promotion": false
+      },
+      "runtime_summary": {
+        "selected_runtimes": [
+          "claude"
+        ],
+        "fallback_count": 1,
+        "agents_with_runtime": 1
+      },
+      "proof": {
+        "declared_artifacts": [],
+        "complete": true,
+        "proof_source": "structured-envelope",
+        "completed_agents": 1,
+        "envelope_backed_agents": 1,
+        "compatibility_backed_agents": 0,
+        "total_agents": 1
+      },
+      "replay": {
+        "run_id": "wave-15-proof",
+        "wave_id": 15,
+        "ok": true,
+        "issues": []
+      },
+      "agents": [
+        {
+          "id": "A1",
+          "title": "Implementation",
+          "status": "running",
+          "current_task": "Implementation",
+          "proof_complete": true,
+          "proof_source": "structured-envelope",
+          "expected_markers": [
+            "[wave-proof]"
+          ],
+          "observed_markers": [
+            "[wave-proof]"
+          ],
+          "missing_markers": [],
+          "deliverables": [
+            "README.md"
+          ],
+          "error": null,
+          "runtime": {
+            "selected_runtime": "claude",
+            "selection_reason": "selected claude after fallback because codex login status reported unavailable",
+            "fallback": {
+              "requested_runtime": "codex",
+              "selected_runtime": "claude",
+              "reason": "codex login status reported unavailable"
+            },
+            "execution_identity": {
+              "adapter": "wave-runtime/claude",
+              "binary": "/tmp/fake-claude",
+              "provider": "anthropic-claude-code",
+              "artifact_paths": {
+                "runtime_detail": "/tmp/wave-app-server-runtime-proof-2902907-1774514645362/.wave/state/build/specs/wave-15-proof/agents/A1/runtime-detail.json",
+                "system_prompt": "/tmp/wave-app-server-runtime-proof-2902907-1774514645362/.wave/state/build/specs/wave-15-proof/agents/A1/claude-system-prompt.txt"
+              }
+            },
+            "skill_projection": {
+              "declared_skills": [
+                "wave-core"
+              ],
+              "projected_skills": [
+                "wave-core",
+                "runtime-claude"
+              ],
+              "dropped_skills": [],
+              "auto_attached_skills": [
+                "runtime-claude"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "active_run_details": [
+    {
+      "wave_id": 15,
+      "wave_slug": "runtime-policy",
+      "wave_title": "Runtime Policy",
+      "run_id": "wave-15-proof",
+      "status": "running",
+      "created_at_ms": 1,
+      "started_at_ms": 2,
+      "elapsed_ms": 1774514645364,
+      "current_agent_id": "A1",
+      "current_agent_title": "Implementation",
+      "activity_excerpt": "[wave-proof]",
+      "execution": {
+        "worktree": null,
+        "promotion": null,
+        "scheduling": null,
+        "merge_blocked": false,
+        "closure_blocked_by_promotion": false
+      },
+      "runtime_summary": {
+        "selected_runtimes": [
+          "claude"
+        ],
+        "fallback_count": 1,
+        "agents_with_runtime": 1
+      },
+      "proof": {
+        "declared_artifacts": [],
+        "complete": true,
+        "proof_source": "structured-envelope",
+        "completed_agents": 1,
+        "envelope_backed_agents": 1,
+        "compatibility_backed_agents": 0,
+        "total_agents": 1
+      },
+      "replay": {
+        "run_id": "wave-15-proof",
+        "wave_id": 15,
+        "ok": true,
+        "issues": []
+      },
+      "agents": [
+        {
+          "id": "A1",
+          "title": "Implementation",
+          "status": "running",
+          "current_task": "Implementation",
+          "proof_complete": true,
+          "proof_source": "structured-envelope",
+          "expected_markers": [
+            "[wave-proof]"
+          ],
+          "observed_markers": [
+            "[wave-proof]"
+          ],
+          "missing_markers": [],
+          "deliverables": [
+            "README.md"
+          ],
+          "error": null,
+          "runtime": {
+            "selected_runtime": "claude",
+            "selection_reason": "selected claude after fallback because codex login status reported unavailable",
+            "fallback": {
+              "requested_runtime": "codex",
+              "selected_runtime": "claude",
+              "reason": "codex login status reported unavailable"
+            },
+            "execution_identity": {
+              "adapter": "wave-runtime/claude",
+              "binary": "/tmp/fake-claude",
+              "provider": "anthropic-claude-code",
+              "artifact_paths": {
+                "runtime_detail": "/tmp/wave-app-server-runtime-proof-2902907-1774514645362/.wave/state/build/specs/wave-15-proof/agents/A1/runtime-detail.json",
+                "system_prompt": "/tmp/wave-app-server-runtime-proof-2902907-1774514645362/.wave/state/build/specs/wave-15-proof/agents/A1/claude-system-prompt.txt"
+              }
+            },
+            "skill_projection": {
+              "declared_skills": [
+                "wave-core"
+              ],
+              "projected_skills": [
+                "wave-core",
+                "runtime-claude"
+              ],
+              "dropped_skills": [],
+              "auto_attached_skills": [
+                "runtime-claude"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

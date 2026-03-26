@@ -18,11 +18,11 @@ What is still not live:
 ## Proof Files
 
 - `scheduler-events.jsonl`
-  runtime-style scheduler authority sequence showing budget bootstrap, claim acquisition, lease grant, lease renewal, lease release, lease expiry, and claim release
+  runtime-backed scheduler authority sequence showing budget bootstrap, claim acquisition, lease grant, lease renewal, lease release, lease expiry, and claim release
 - `projection-snapshot.json`
-  scenario-style projection excerpts showing ready-unclaimed, claimed-and-non-claimable, active-with-live-lease, expired-lease, and budget-blocked ownership states
+  projection/read-model snapshot showing ready-unclaimed, claimed-and-non-claimable, active-with-live-lease, expired-lease, and budget-blocked ownership states over canonical scheduler truth
 - `concurrent-claim-refusal.json`
-  human-readable proof that one launcher path acquires the claim and a second launcher path is refused before run-state mutation
+  runtime-backed proof that one launcher path acquires the claim and a second launcher path is refused before run-state mutation
 
 ## What To Inspect
 
@@ -34,8 +34,10 @@ What is still not live:
 5. `budget_blocked` shows a wave that is planning-ready but still cannot start because scheduler capacity is exhausted.
 6. Open `concurrent-claim-refusal.json`.
    It records the admitted claim plus the refused concurrent launcher path and shows that no run-state file was written for the loser.
+   This is runtime-backed proof, not a reducer-only fixture.
 7. Open `scheduler-events.jsonl`.
    Wave `30` shows the live serial path through grant, renewal, release, and claim release.
    Wave `31` shows the live expiry path through grant, expiry, and claim release.
+   This is also runtime-backed proof.
 
 This proof bundle is intentionally Phase-1 scoped: scheduler authority is now canonical and operationally enforced for serial execution, but true parallel-wave execution still belongs to Wave 14 and later.

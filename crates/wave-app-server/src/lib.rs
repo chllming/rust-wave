@@ -9,6 +9,7 @@
 
 use anyhow::Result;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -25,11 +26,11 @@ use wave_control_plane::build_projection_spine_from_authority;
 use wave_dark_factory::lint_project;
 use wave_dark_factory::validate_skill_catalog;
 use wave_runtime::RerunIntentRecord;
-use wave_runtime::codex_binary_available;
 use wave_runtime::list_rerun_intents;
 use wave_runtime::load_latest_runs;
 use wave_runtime::load_relevant_runs;
 use wave_runtime::pending_rerun_wave_ids;
+use wave_runtime::runtime_boundary_status;
 use wave_spec::WaveAgent;
 use wave_spec::WaveDocument;
 use wave_spec::load_wave_documents;
@@ -157,6 +158,8 @@ pub struct ActiveRunDetail {
     pub current_agent_id: Option<String>,
     pub current_agent_title: Option<String>,
     pub activity_excerpt: String,
+    pub execution: wave_control_plane::WaveExecutionState,
+    pub runtime_summary: RuntimeSummary,
     pub proof: ProofSnapshot,
     pub replay: ReplayReport,
     pub agents: Vec<AgentPanelItem>,
@@ -175,6 +178,46 @@ pub struct AgentPanelItem {
     pub missing_markers: Vec<String>,
     pub deliverables: Vec<String>,
     pub error: Option<String>,
+    pub runtime: Option<RuntimeDetail>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuntimeSummary {
+    pub selected_runtimes: Vec<String>,
+    pub fallback_count: usize,
+    pub agents_with_runtime: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuntimeDetail {
+    pub selected_runtime: String,
+    pub selection_reason: String,
+    pub fallback: Option<RuntimeFallbackDetail>,
+    pub execution_identity: RuntimeExecutionIdentityDetail,
+    pub skill_projection: RuntimeSkillProjectionDetail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuntimeFallbackDetail {
+    pub requested_runtime: String,
+    pub selected_runtime: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuntimeExecutionIdentityDetail {
+    pub adapter: String,
+    pub binary: String,
+    pub provider: String,
+    pub artifact_paths: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuntimeSkillProjectionDetail {
+    pub declared_skills: Vec<String>,
+    pub projected_skills: Vec<String>,
+    pub dropped_skills: Vec<String>,
+    pub auto_attached_skills: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -204,7 +247,7 @@ pub struct ControlAction {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LauncherStatus {
-    pub codex_binary_available: bool,
+    pub runtimes: Vec<wave_runtime::RuntimeAvailability>,
     pub ready: bool,
 }
 
@@ -214,7 +257,8 @@ pub fn load_operator_snapshot(root: &Path, config: &ProjectConfig) -> Result<Ope
     let skill_catalog_issues = validate_skill_catalog(root);
     let latest_runs = load_latest_runs(root, config)?;
     let rerun_wave_ids = pending_rerun_wave_ids(root, config)?;
-    let launcher_ready = codex_binary_available();
+    let runtime_boundary = runtime_boundary_status();
+    let launcher_ready = runtime_boundary.runtimes.iter().any(|runtime| runtime.available);
     let spine = build_projection_spine_from_authority(
         root,
         config,
@@ -237,6 +281,7 @@ pub fn load_operator_snapshot(root: &Path, config: &ProjectConfig) -> Result<Ope
         .collect::<Vec<_>>();
     Ok(build_operator_snapshot(
         &spine,
+        runtime_boundary,
         rerun_intents,
         latest_run_details,
         active_run_details,
@@ -252,6 +297,7 @@ pub fn load_relevant_run_records(
 
 pub fn build_operator_snapshot(
     spine: &ProjectionSpine,
+    runtime_boundary: wave_runtime::RuntimeBoundaryStatus,
     mut rerun_intents: Vec<RerunIntentRecord>,
     latest_run_details: Vec<ActiveRunDetail>,
     active_run_details: Vec<ActiveRunDetail>,
@@ -260,7 +306,7 @@ pub fn build_operator_snapshot(
     let control_status = build_control_status_read_model_from_spine(spine);
     let control_actions = build_control_actions(&spine.operator.control.actions);
     let launcher = LauncherStatus {
-        codex_binary_available: spine.operator.control.launcher_ready,
+        runtimes: runtime_boundary.runtimes,
         ready: spine.operator.control.launcher_ready,
     };
     let panels = build_operator_panels_snapshot(
@@ -437,6 +483,17 @@ pub fn build_run_detail(
         .unwrap_or_else(|| "No live agent output yet.".to_string());
     let proof = build_proof_snapshot(root, wave, run);
     let replay = validate_replay(run);
+    let agents = run
+        .agents
+        .iter()
+        .map(|agent| {
+            let declared = wave
+                .agents
+                .iter()
+                .find(|candidate| candidate.id == agent.id);
+            build_agent_panel_item(root, run, agent, declared)
+        })
+        .collect::<Vec<_>>();
 
     Some(ActiveRunDetail {
         wave_id: run.wave_id,
@@ -454,20 +511,20 @@ pub fn build_run_detail(
         current_agent_id: current_agent.map(|agent| agent.id.clone()),
         current_agent_title: current_agent.map(|agent| agent.title.clone()),
         activity_excerpt,
+        execution: build_run_execution_state(run),
+        runtime_summary: build_runtime_summary(&agents),
         proof,
         replay,
-        agents: run
-            .agents
-            .iter()
-            .map(|agent| {
-                let declared = wave
-                    .agents
-                    .iter()
-                    .find(|candidate| candidate.id == agent.id);
-                build_agent_panel_item(root, run, agent, declared)
-            })
-            .collect(),
+        agents,
     })
+}
+
+fn build_run_execution_state(run: &WaveRunRecord) -> wave_control_plane::WaveExecutionState {
+    wave_reducer::wave_execution_state_from_records(
+        run.worktree.clone(),
+        run.promotion.clone(),
+        run.scheduling.clone(),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -477,6 +534,7 @@ struct ResolvedEnvelopeProof {
     source: &'static str,
     required_final_markers: Vec<String>,
     observed_final_markers: Vec<String>,
+    runtime: Option<wave_domain::RuntimeExecutionRecord>,
 }
 
 fn resolve_effective_result_envelope(
@@ -495,6 +553,7 @@ fn resolve_effective_result_envelope(
             },
             required_final_markers: result.required_final_markers,
             observed_final_markers: result.observed_final_markers,
+            runtime: result.runtime,
         })
 }
 
@@ -527,6 +586,11 @@ fn build_agent_panel_item(
         .as_ref()
         .map(|result| result.source.to_string())
         .unwrap_or_else(|| "compatibility-run-record".to_string());
+    let runtime = agent
+        .runtime
+        .clone()
+        .or_else(|| effective.as_ref().and_then(|result| result.runtime.clone()))
+        .map(runtime_detail_from_record);
 
     AgentPanelItem {
         id: agent.id.clone(),
@@ -555,6 +619,55 @@ fn build_agent_panel_item(
             .map(|declared| declared.deliverables.clone())
             .unwrap_or_default(),
         error: agent.error.clone(),
+        runtime,
+    }
+}
+
+fn build_runtime_summary(agents: &[AgentPanelItem]) -> RuntimeSummary {
+    let mut selected_runtimes = agents
+        .iter()
+        .filter_map(|agent| agent.runtime.as_ref())
+        .map(|runtime| runtime.selected_runtime.clone())
+        .collect::<Vec<_>>();
+    selected_runtimes.sort();
+    selected_runtimes.dedup();
+
+    RuntimeSummary {
+        selected_runtimes,
+        fallback_count: agents
+            .iter()
+            .filter(|agent| {
+                agent.runtime
+                    .as_ref()
+                    .and_then(|runtime| runtime.fallback.as_ref())
+                    .is_some()
+            })
+            .count(),
+        agents_with_runtime: agents.iter().filter(|agent| agent.runtime.is_some()).count(),
+    }
+}
+
+fn runtime_detail_from_record(record: wave_domain::RuntimeExecutionRecord) -> RuntimeDetail {
+    RuntimeDetail {
+        selected_runtime: record.selected_runtime.to_string(),
+        selection_reason: record.selection_reason,
+        fallback: record.fallback.map(|fallback| RuntimeFallbackDetail {
+            requested_runtime: fallback.requested_runtime.to_string(),
+            selected_runtime: fallback.selected_runtime.to_string(),
+            reason: fallback.reason,
+        }),
+        execution_identity: RuntimeExecutionIdentityDetail {
+            adapter: record.execution_identity.adapter,
+            binary: record.execution_identity.binary,
+            provider: record.execution_identity.provider,
+            artifact_paths: record.execution_identity.artifact_paths,
+        },
+        skill_projection: RuntimeSkillProjectionDetail {
+            declared_skills: record.skill_projection.declared_skills,
+            projected_skills: record.skill_projection.projected_skills,
+            dropped_skills: record.skill_projection.dropped_skills,
+            auto_attached_skills: record.skill_projection.auto_attached_skills,
+        },
     }
 }
 
@@ -723,6 +836,22 @@ mod tests {
             scheduling: None,
             merge_blocked: false,
             closure_blocked_by_promotion: false,
+        }
+    }
+
+    fn runtime_boundary_fixture() -> wave_runtime::RuntimeBoundaryStatus {
+        wave_runtime::RuntimeBoundaryStatus {
+            executor_boundary: "runtime-neutral adapter registry in wave-runtime",
+            selection_policy:
+                "explicit executor runtime selection with default codex and authored fallback order",
+            fallback_policy:
+                "fallback only when the selected runtime is unavailable before meaningful work starts",
+            runtimes: vec![wave_runtime::RuntimeAvailability {
+                runtime: wave_domain::RuntimeId::Codex,
+                binary: "/tmp/fake-codex".to_string(),
+                available: true,
+                detail: "available".to_string(),
+            }],
         }
     }
 
@@ -964,7 +1093,14 @@ mod tests {
         let operator =
             wave_control_plane::build_operator_snapshot_inputs(&planning, &HashMap::new(), false);
         let spine = ProjectionSpine { planning, operator };
-        let snapshot = build_operator_snapshot(&spine, Vec::new(), Vec::new(), Vec::new()).unwrap();
+        let snapshot = build_operator_snapshot(
+            &spine,
+            runtime_boundary_fixture(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
 
         assert_eq!(
             snapshot.control_status,
@@ -993,7 +1129,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.panels.control.unavailable_reasons,
-            vec!["codex binary is missing"]
+            vec!["no supported runtime is ready"]
         );
         assert_eq!(snapshot.panels.control.implemented_actions.len(), 5);
         assert_eq!(snapshot.panels.control.unavailable_actions.len(), 2);
@@ -1205,7 +1341,14 @@ mod tests {
         let operator =
             wave_control_plane::build_operator_snapshot_inputs(&planning, &HashMap::new(), true);
         let spine = ProjectionSpine { planning, operator };
-        let snapshot = build_operator_snapshot(&spine, Vec::new(), Vec::new(), Vec::new()).unwrap();
+        let snapshot = build_operator_snapshot(
+            &spine,
+            runtime_boundary_fixture(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
 
         let queue_states = snapshot
             .panels
@@ -1288,6 +1431,7 @@ mod tests {
                     contradiction_ids: Vec::new(),
                     verdict: wave_trace::ClosureVerdictPayload::None,
                 },
+                runtime: None,
                 created_at_ms: 3,
             },
         )
@@ -1371,10 +1515,12 @@ mod tests {
                 events_path: agent_dir.join("events.jsonl"),
                 stderr_path: agent_dir.join("stderr.txt"),
                 result_envelope_path: Some(envelope_path),
+                runtime_detail_path: None,
                 expected_markers: vec!["[wave-proof]".to_string()],
                 observed_markers: Vec::new(),
                 exit_code: Some(0),
                 error: None,
+                runtime: None,
             }],
             error: None,
         };
@@ -1496,10 +1642,12 @@ mod tests {
                 events_path: agent_dir.join("events.jsonl"),
                 stderr_path: agent_dir.join("stderr.txt"),
                 result_envelope_path: None,
+                runtime_detail_path: None,
                 expected_markers: vec!["[wave-integration]".to_string()],
                 observed_markers: Vec::new(),
                 exit_code: Some(0),
                 error: None,
+                runtime: None,
             }],
             error: None,
         };
@@ -1581,6 +1729,7 @@ mod tests {
                     contradiction_ids: Vec::new(),
                     verdict: wave_trace::ClosureVerdictPayload::None,
                 },
+                runtime: None,
                 created_at_ms: 4,
             },
         )
@@ -1664,10 +1813,12 @@ mod tests {
                 events_path: agent_dir.join("events.jsonl"),
                 stderr_path: agent_dir.join("stderr.txt"),
                 result_envelope_path: Some(envelope_path),
+                runtime_detail_path: None,
                 expected_markers: vec!["[wave-proof]".to_string()],
                 observed_markers: Vec::new(),
                 exit_code: Some(1),
                 error: Some("structured failure".to_string()),
+                runtime: None,
             }],
             error: Some("structured failure".to_string()),
         };
@@ -1681,6 +1832,816 @@ mod tests {
         assert!(!detail.proof.complete);
         assert_eq!(detail.agents[0].proof_source, "structured-envelope");
         assert!(!detail.agents[0].proof_complete);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn build_run_detail_carries_execution_state_for_transport() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-app-server-execution-{}-{}",
+            std::process::id(),
+            wave_trace::now_epoch_ms().expect("timestamp")
+        ));
+        let bundle_dir = root.join(".wave/state/build/specs/wave-14-1");
+        let agent_dir = bundle_dir.join("agents/A1");
+        let trace_path = root.join(".wave/traces/runs/wave-14-1.json");
+        std::fs::create_dir_all(&agent_dir).expect("agent dir");
+        std::fs::create_dir_all(trace_path.parent().expect("trace parent")).expect("trace dir");
+        std::fs::create_dir_all(root.join(".wave/codex")).expect("codex dir");
+        std::fs::write(agent_dir.join("prompt.md"), "# prompt\n").expect("write prompt");
+        std::fs::write(agent_dir.join("last-message.txt"), "[wave-proof]\n")
+            .expect("write message");
+        std::fs::write(agent_dir.join("events.jsonl"), "{}\n").expect("write events");
+        std::fs::write(agent_dir.join("stderr.txt"), "").expect("write stderr");
+
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/14.md"),
+            metadata: WaveMetadata {
+                id: 14,
+                slug: "parallel-wave".to_string(),
+                title: "Parallel Wave".to_string(),
+                mode: wave_config::ExecutionMode::DarkFactory,
+                owners: vec!["A0".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: Vec::new(),
+            },
+            heading_title: Some("Wave 14".to_string()),
+            commit_message: Some("Feat: parallel wave".to_string()),
+            component_promotions: vec![ComponentPromotion {
+                component: "parallel-wave".to_string(),
+                target: "repo-landed".to_string(),
+            }],
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "custom default".to_string(),
+            }],
+            context7_defaults: Some(Context7Defaults {
+                bundle: "rust-control-plane".to_string(),
+                query: Some("Parallel wave execution".to_string()),
+            }),
+            agents: vec![WaveAgent {
+                id: "A1".to_string(),
+                title: "Implementation".to_string(),
+                role_prompts: Vec::new(),
+                executor: std::collections::BTreeMap::new(),
+                context7: Some(Context7Defaults {
+                    bundle: "none".to_string(),
+                    query: Some("noop".to_string()),
+                }),
+                skills: Vec::new(),
+                components: Vec::new(),
+                capabilities: Vec::new(),
+                exit_contract: Some(ExitContract {
+                    completion: CompletionLevel::Contract,
+                    durability: DurabilityLevel::Durable,
+                    proof: ProofLevel::Unit,
+                    doc_impact: DocImpact::Owned,
+                }),
+                deliverables: vec!["src/lib.rs".to_string()],
+                file_ownership: vec!["src/lib.rs".to_string()],
+                final_markers: vec!["[wave-proof]".to_string()],
+                prompt: "Primary goal:\n- noop".to_string(),
+            }],
+        };
+        let worktree = wave_domain::WaveWorktreeRecord {
+            worktree_id: wave_domain::WaveWorktreeId::new("worktree-wave-14".to_string()),
+            wave_id: 14,
+            path: ".wave/state/worktrees/wave-14".to_string(),
+            base_ref: "HEAD".to_string(),
+            snapshot_ref: "refs/wave/snapshot/14".to_string(),
+            branch_ref: Some("wave/14/test".to_string()),
+            shared_scope: wave_domain::WaveWorktreeScope::Wave,
+            state: wave_domain::WaveWorktreeState::Allocated,
+            allocated_at_ms: 10,
+            released_at_ms: None,
+            detail: Some("shared wave worktree".to_string()),
+        };
+        let promotion = wave_domain::WavePromotionRecord {
+            promotion_id: wave_domain::WavePromotionId::new("promotion-wave-14".to_string()),
+            wave_id: 14,
+            worktree_id: Some(worktree.worktree_id.clone()),
+            state: wave_domain::WavePromotionState::Conflicted,
+            target_ref: "HEAD".to_string(),
+            snapshot_ref: "refs/wave/snapshot/14".to_string(),
+            candidate_ref: Some("refs/wave/candidate/14".to_string()),
+            candidate_tree: Some("deadbeef".to_string()),
+            conflict_paths: vec!["src/lib.rs".to_string()],
+            detail: Some("merge validation found a conflict".to_string()),
+            checked_at_ms: 11,
+            completed_at_ms: Some(12),
+        };
+        let scheduling = wave_domain::WaveSchedulingRecord {
+            wave_id: 14,
+            phase: wave_domain::WaveExecutionPhase::Promotion,
+            priority: wave_domain::WaveSchedulerPriority::Closure,
+            state: wave_domain::WaveSchedulingState::Protected,
+            fairness_rank: 2,
+            waiting_since_ms: Some(9),
+            protected_closure_capacity: true,
+            preemptible: false,
+            last_decision: Some("promotion is merge-blocked".to_string()),
+            updated_at_ms: 12,
+        };
+        let run = WaveRunRecord {
+            run_id: "wave-14-1".to_string(),
+            wave_id: 14,
+            slug: "parallel-wave".to_string(),
+            title: "Parallel Wave".to_string(),
+            status: WaveRunStatus::Failed,
+            dry_run: false,
+            bundle_dir: bundle_dir.clone(),
+            trace_path: trace_path.clone(),
+            codex_home: root.join(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            launcher_pid: None,
+            launcher_started_at_ms: None,
+            worktree: Some(worktree.clone()),
+            promotion: Some(promotion.clone()),
+            scheduling: Some(scheduling.clone()),
+            completed_at_ms: Some(12),
+            agents: vec![wave_trace::AgentRunRecord {
+                id: "A1".to_string(),
+                title: "Implementation".to_string(),
+                status: WaveRunStatus::Failed,
+                prompt_path: agent_dir.join("prompt.md"),
+                last_message_path: agent_dir.join("last-message.txt"),
+                events_path: agent_dir.join("events.jsonl"),
+                stderr_path: agent_dir.join("stderr.txt"),
+                result_envelope_path: None,
+                runtime_detail_path: None,
+                expected_markers: vec!["[wave-proof]".to_string()],
+                observed_markers: vec!["[wave-proof]".to_string()],
+                exit_code: Some(1),
+                error: Some("merge validation found a conflict".to_string()),
+                runtime: None,
+            }],
+            error: Some("merge validation found a conflict".to_string()),
+        };
+        wave_trace::write_trace_bundle(&trace_path, &run).expect("write trace");
+
+        let detail = build_run_detail(&root, &[wave], &run).expect("run detail");
+        let expected_execution = wave_reducer::wave_execution_state_from_records(
+            Some(worktree),
+            Some(promotion),
+            Some(scheduling),
+        );
+        assert_eq!(detail.execution, expected_execution);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn build_run_detail_uses_effective_runtime_for_summary_and_agent_transport() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-app-server-runtime-transport-{}-{}",
+            std::process::id(),
+            wave_trace::now_epoch_ms().expect("timestamp")
+        ));
+        let bundle_dir = root.join(".wave/state/build/specs/wave-15-1");
+        let agent_dir = bundle_dir.join("agents/A1");
+        let trace_path = root.join(".wave/traces/runs/wave-15-1.json");
+        let envelope_path =
+            root.join(".wave/state/results/wave-15/attempt-a1/agent_result_envelope.json");
+        std::fs::create_dir_all(&agent_dir).expect("agent dir");
+        std::fs::create_dir_all(trace_path.parent().expect("trace parent")).expect("trace dir");
+        std::fs::create_dir_all(envelope_path.parent().expect("envelope parent"))
+            .expect("envelope dir");
+        std::fs::create_dir_all(root.join(".wave/codex")).expect("codex dir");
+        std::fs::write(agent_dir.join("prompt.md"), "# prompt\n").expect("write prompt");
+        std::fs::write(agent_dir.join("last-message.txt"), "[wave-proof]\n")
+            .expect("write message");
+        std::fs::write(agent_dir.join("events.jsonl"), "{}\n").expect("write events");
+        std::fs::write(agent_dir.join("stderr.txt"), "").expect("write stderr");
+
+        let runtime = wave_domain::RuntimeExecutionRecord {
+            policy: wave_domain::RuntimeSelectionPolicy {
+                requested_runtime: Some(wave_domain::RuntimeId::Codex),
+                allowed_runtimes: vec![
+                    wave_domain::RuntimeId::Codex,
+                    wave_domain::RuntimeId::Claude,
+                ],
+                fallback_runtimes: vec![wave_domain::RuntimeId::Claude],
+                selection_source: Some("executor.id".to_string()),
+            },
+            selected_runtime: wave_domain::RuntimeId::Claude,
+            selection_reason: "selected claude after fallback because codex login status reported unavailable".to_string(),
+            fallback: Some(wave_domain::RuntimeFallbackRecord {
+                requested_runtime: wave_domain::RuntimeId::Codex,
+                selected_runtime: wave_domain::RuntimeId::Claude,
+                reason: "codex login status reported unavailable".to_string(),
+            }),
+            execution_identity: wave_domain::RuntimeExecutionIdentity {
+                runtime: wave_domain::RuntimeId::Claude,
+                adapter: "wave-runtime/claude".to_string(),
+                binary: "/tmp/fake-claude".to_string(),
+                provider: "anthropic-claude-code".to_string(),
+                artifact_paths: BTreeMap::from([
+                    (
+                        "runtime_detail".to_string(),
+                        ".wave/state/build/specs/wave-15-1/agents/A1/runtime-detail.json"
+                            .to_string(),
+                    ),
+                    (
+                        "system_prompt".to_string(),
+                        ".wave/state/build/specs/wave-15-1/agents/A1/claude-system-prompt.txt"
+                            .to_string(),
+                    ),
+                ]),
+            },
+            skill_projection: wave_domain::RuntimeSkillProjection {
+                declared_skills: vec!["wave-core".to_string()],
+                projected_skills: vec!["wave-core".to_string(), "runtime-claude".to_string()],
+                dropped_skills: Vec::new(),
+                auto_attached_skills: vec!["runtime-claude".to_string()],
+            },
+        };
+
+        wave_trace::write_result_envelope(
+            &envelope_path,
+            &wave_trace::ResultEnvelopeRecord {
+                result_envelope_id: "result:wave-15-1:a1".to_string(),
+                wave_id: 15,
+                task_id: "wave-15:agent-a1".to_string(),
+                attempt_id: "attempt-a1".to_string(),
+                agent_id: "A1".to_string(),
+                task_role: "implementation".to_string(),
+                closure_role: None,
+                source: wave_trace::ResultEnvelopeSource::Structured,
+                attempt_state: wave_trace::AttemptState::Succeeded,
+                disposition: wave_trace::ResultDisposition::Completed,
+                summary: Some("runtime detail persisted".to_string()),
+                output_text: Some("[wave-proof]".to_string()),
+                final_markers: wave_trace::FinalMarkerEnvelope::from_contract(
+                    vec!["[wave-proof]".to_string()],
+                    vec!["[wave-proof]".to_string()],
+                ),
+                proof_bundle_ids: Vec::new(),
+                fact_ids: Vec::new(),
+                contradiction_ids: Vec::new(),
+                artifacts: Vec::new(),
+                doc_delta: wave_trace::DocDeltaEnvelope::default(),
+                marker_evidence: Vec::new(),
+                closure: wave_trace::ClosureState {
+                    disposition: wave_trace::ClosureDisposition::Ready,
+                    required_final_markers: vec!["[wave-proof]".to_string()],
+                    observed_final_markers: vec!["[wave-proof]".to_string()],
+                    blocking_reasons: Vec::new(),
+                    satisfied_fact_ids: Vec::new(),
+                    contradiction_ids: Vec::new(),
+                    verdict: wave_trace::ClosureVerdictPayload::None,
+                },
+                runtime: Some(runtime.clone()),
+                created_at_ms: 3,
+            },
+        )
+        .expect("write envelope");
+
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/15.md"),
+            metadata: WaveMetadata {
+                id: 15,
+                slug: "runtime-policy".to_string(),
+                title: "Runtime Policy".to_string(),
+                mode: wave_config::ExecutionMode::DarkFactory,
+                owners: vec!["A0".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: Vec::new(),
+            },
+            heading_title: Some("Wave 15".to_string()),
+            commit_message: Some("Feat: runtime policy".to_string()),
+            component_promotions: vec![ComponentPromotion {
+                component: "runtime-policy".to_string(),
+                target: "repo-landed".to_string(),
+            }],
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "custom default".to_string(),
+            }],
+            context7_defaults: Some(Context7Defaults {
+                bundle: "rust-control-plane".to_string(),
+                query: Some("Runtime detail transport".to_string()),
+            }),
+            agents: vec![WaveAgent {
+                id: "A1".to_string(),
+                title: "Implementation".to_string(),
+                role_prompts: Vec::new(),
+                executor: std::collections::BTreeMap::new(),
+                context7: Some(Context7Defaults {
+                    bundle: "none".to_string(),
+                    query: Some("noop".to_string()),
+                }),
+                skills: vec!["wave-core".to_string()],
+                components: Vec::new(),
+                capabilities: Vec::new(),
+                exit_contract: Some(ExitContract {
+                    completion: CompletionLevel::Contract,
+                    durability: DurabilityLevel::Durable,
+                    proof: ProofLevel::Unit,
+                    doc_impact: DocImpact::Owned,
+                }),
+                deliverables: vec!["README.md".to_string()],
+                file_ownership: vec!["README.md".to_string()],
+                final_markers: vec!["[wave-proof]".to_string()],
+                prompt: "Primary goal:\n- noop".to_string(),
+            }],
+        };
+        let run = WaveRunRecord {
+            run_id: "wave-15-1".to_string(),
+            wave_id: 15,
+            slug: "runtime-policy".to_string(),
+            title: "Runtime Policy".to_string(),
+            status: WaveRunStatus::Succeeded,
+            dry_run: false,
+            bundle_dir: bundle_dir.clone(),
+            trace_path: trace_path.clone(),
+            codex_home: root.join(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            launcher_pid: None,
+            launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
+            completed_at_ms: Some(3),
+            agents: vec![wave_trace::AgentRunRecord {
+                id: "A1".to_string(),
+                title: "Implementation".to_string(),
+                status: WaveRunStatus::Succeeded,
+                prompt_path: agent_dir.join("prompt.md"),
+                last_message_path: agent_dir.join("last-message.txt"),
+                events_path: agent_dir.join("events.jsonl"),
+                stderr_path: agent_dir.join("stderr.txt"),
+                result_envelope_path: Some(envelope_path),
+                runtime_detail_path: None,
+                expected_markers: vec!["[wave-proof]".to_string()],
+                observed_markers: Vec::new(),
+                exit_code: Some(0),
+                error: None,
+                runtime: None,
+            }],
+            error: None,
+        };
+        wave_trace::write_trace_bundle(&trace_path, &run).expect("write trace");
+
+        let detail = build_run_detail(&root, &[wave], &run).expect("run detail");
+
+        assert_eq!(detail.runtime_summary.selected_runtimes, vec!["claude".to_string()]);
+        assert_eq!(detail.runtime_summary.fallback_count, 1);
+        assert_eq!(detail.runtime_summary.agents_with_runtime, 1);
+        let runtime_detail = detail.agents[0].runtime.as_ref().expect("agent runtime");
+        assert_eq!(runtime_detail.selected_runtime, "claude");
+        assert_eq!(runtime_detail.execution_identity.adapter, "wave-runtime/claude");
+        assert_eq!(
+            runtime_detail.skill_projection.projected_skills,
+            vec!["wave-core".to_string(), "runtime-claude".to_string()]
+        );
+        assert_eq!(
+            runtime_detail
+                .fallback
+                .as_ref()
+                .expect("fallback detail")
+                .requested_runtime,
+            "codex"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[ignore = "writes the Wave 14 active-run transport proof artifact"]
+    fn export_phase_2_parallel_wave_active_run_transport_snapshot() {
+        #[derive(Debug, Serialize)]
+        struct ActiveRunTransportBundle {
+            generated_at_ms: u128,
+            latest_run_details: Vec<ActiveRunDetail>,
+            active_run_details: Vec<ActiveRunDetail>,
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "wave-app-server-transport-proof-{}-{}",
+            std::process::id(),
+            wave_trace::now_epoch_ms().expect("timestamp")
+        ));
+        let bundle_dir = root.join(".wave/state/build/specs/wave-14-transport");
+        let agent_dir = bundle_dir.join("agents/A1");
+        let trace_path = root.join(".wave/traces/runs/wave-14-transport.json");
+        std::fs::create_dir_all(&agent_dir).expect("agent dir");
+        std::fs::create_dir_all(trace_path.parent().expect("trace parent")).expect("trace dir");
+        std::fs::create_dir_all(root.join(".wave/codex")).expect("codex dir");
+        std::fs::write(agent_dir.join("prompt.md"), "# prompt\n").expect("write prompt");
+        std::fs::write(agent_dir.join("last-message.txt"), "[wave-proof]\n")
+            .expect("write message");
+        std::fs::write(agent_dir.join("events.jsonl"), "{}\n").expect("write events");
+        std::fs::write(agent_dir.join("stderr.txt"), "").expect("write stderr");
+
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/14.md"),
+            metadata: WaveMetadata {
+                id: 14,
+                slug: "parallel-wave".to_string(),
+                title: "Parallel Wave".to_string(),
+                mode: wave_config::ExecutionMode::DarkFactory,
+                owners: vec!["A0".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: Vec::new(),
+            },
+            heading_title: Some("Wave 14".to_string()),
+            commit_message: Some("Feat: parallel wave".to_string()),
+            component_promotions: vec![ComponentPromotion {
+                component: "parallel-wave".to_string(),
+                target: "repo-landed".to_string(),
+            }],
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "custom default".to_string(),
+            }],
+            context7_defaults: Some(Context7Defaults {
+                bundle: "rust-control-plane".to_string(),
+                query: Some("Parallel wave execution".to_string()),
+            }),
+            agents: vec![WaveAgent {
+                id: "A1".to_string(),
+                title: "Implementation".to_string(),
+                role_prompts: Vec::new(),
+                executor: std::collections::BTreeMap::new(),
+                context7: Some(Context7Defaults {
+                    bundle: "none".to_string(),
+                    query: Some("noop".to_string()),
+                }),
+                skills: Vec::new(),
+                components: Vec::new(),
+                capabilities: Vec::new(),
+                exit_contract: Some(ExitContract {
+                    completion: CompletionLevel::Contract,
+                    durability: DurabilityLevel::Durable,
+                    proof: ProofLevel::Unit,
+                    doc_impact: DocImpact::Owned,
+                }),
+                deliverables: vec!["src/lib.rs".to_string()],
+                file_ownership: vec!["src/lib.rs".to_string()],
+                final_markers: vec!["[wave-proof]".to_string()],
+                prompt: "Primary goal:\n- noop".to_string(),
+            }],
+        };
+        let worktree = wave_domain::WaveWorktreeRecord {
+            worktree_id: wave_domain::WaveWorktreeId::new("worktree-wave-14".to_string()),
+            wave_id: 14,
+            path: ".wave/state/worktrees/wave-14".to_string(),
+            base_ref: "HEAD".to_string(),
+            snapshot_ref: "refs/wave/snapshot/14".to_string(),
+            branch_ref: Some("wave/14/test".to_string()),
+            shared_scope: wave_domain::WaveWorktreeScope::Wave,
+            state: wave_domain::WaveWorktreeState::Allocated,
+            allocated_at_ms: 10,
+            released_at_ms: None,
+            detail: Some("shared wave worktree".to_string()),
+        };
+        let promotion = wave_domain::WavePromotionRecord {
+            promotion_id: wave_domain::WavePromotionId::new("promotion-wave-14".to_string()),
+            wave_id: 14,
+            worktree_id: Some(worktree.worktree_id.clone()),
+            state: wave_domain::WavePromotionState::Ready,
+            target_ref: "HEAD".to_string(),
+            snapshot_ref: "refs/wave/snapshot/14".to_string(),
+            candidate_ref: Some("refs/wave/candidate/14".to_string()),
+            candidate_tree: Some("deadbeef".to_string()),
+            conflict_paths: Vec::new(),
+            detail: Some("candidate passed merge validation".to_string()),
+            checked_at_ms: 11,
+            completed_at_ms: Some(12),
+        };
+        let scheduling = wave_domain::WaveSchedulingRecord {
+            wave_id: 14,
+            phase: wave_domain::WaveExecutionPhase::Closure,
+            priority: wave_domain::WaveSchedulerPriority::Closure,
+            state: wave_domain::WaveSchedulingState::Running,
+            fairness_rank: 1,
+            waiting_since_ms: Some(9),
+            protected_closure_capacity: true,
+            preemptible: false,
+            last_decision: Some("running A8 in shared wave worktree".to_string()),
+            updated_at_ms: 12,
+        };
+        let run = WaveRunRecord {
+            run_id: "wave-14-transport".to_string(),
+            wave_id: 14,
+            slug: "parallel-wave".to_string(),
+            title: "Parallel Wave".to_string(),
+            status: WaveRunStatus::Running,
+            dry_run: false,
+            bundle_dir: bundle_dir.clone(),
+            trace_path: trace_path.clone(),
+            codex_home: root.join(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            launcher_pid: None,
+            launcher_started_at_ms: None,
+            worktree: Some(worktree),
+            promotion: Some(promotion),
+            scheduling: Some(scheduling),
+            completed_at_ms: None,
+            agents: vec![wave_trace::AgentRunRecord {
+                id: "A1".to_string(),
+                title: "Implementation".to_string(),
+                status: WaveRunStatus::Running,
+                prompt_path: agent_dir.join("prompt.md"),
+                last_message_path: agent_dir.join("last-message.txt"),
+                events_path: agent_dir.join("events.jsonl"),
+                stderr_path: agent_dir.join("stderr.txt"),
+                result_envelope_path: None,
+                runtime_detail_path: None,
+                expected_markers: vec!["[wave-proof]".to_string()],
+                observed_markers: Vec::new(),
+                exit_code: None,
+                error: None,
+                runtime: None,
+            }],
+            error: None,
+        };
+        wave_trace::write_trace_bundle(&trace_path, &run).expect("write trace");
+
+        let latest_run_details = latest_relevant_run_details(
+            &root,
+            std::slice::from_ref(&wave),
+            &HashMap::from([(14, run)]),
+        );
+        let active_run_details = latest_run_details
+            .iter()
+            .filter(|detail| {
+                matches!(
+                    detail.status,
+                    WaveRunStatus::Planned | WaveRunStatus::Running
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root");
+        let proof_dir =
+            workspace_root.join("docs/implementation/live-proofs/phase-2-parallel-wave-execution");
+        std::fs::create_dir_all(&proof_dir).expect("create proof dir");
+        std::fs::write(
+            proof_dir.join("active-run-detail-transport.json"),
+            serde_json::to_string_pretty(&ActiveRunTransportBundle {
+                generated_at_ms: wave_trace::now_epoch_ms().expect("transport proof timestamp"),
+                latest_run_details,
+                active_run_details,
+            })
+            .expect("serialize transport proof"),
+        )
+        .expect("write transport proof");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[ignore = "writes the Wave 15 operator runtime transport proof artifact"]
+    fn export_phase_3_runtime_policy_operator_transport_snapshot() {
+        #[derive(Debug, Serialize)]
+        struct RuntimeTransportBundle {
+            generated_at_ms: u128,
+            latest_run_details: Vec<ActiveRunDetail>,
+            active_run_details: Vec<ActiveRunDetail>,
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "wave-app-server-runtime-proof-{}-{}",
+            std::process::id(),
+            wave_trace::now_epoch_ms().expect("timestamp")
+        ));
+        let bundle_dir = root.join(".wave/state/build/specs/wave-15-proof");
+        let agent_dir = bundle_dir.join("agents/A1");
+        let trace_path = root.join(".wave/traces/runs/wave-15-proof.json");
+        let envelope_path = root.join(
+            ".wave/state/results/wave-15/attempt-a1-proof/agent_result_envelope.json",
+        );
+        std::fs::create_dir_all(&agent_dir).expect("agent dir");
+        std::fs::create_dir_all(trace_path.parent().expect("trace parent")).expect("trace dir");
+        std::fs::create_dir_all(envelope_path.parent().expect("envelope parent"))
+            .expect("envelope dir");
+        std::fs::create_dir_all(root.join(".wave/codex")).expect("codex dir");
+        std::fs::write(agent_dir.join("prompt.md"), "# prompt\n").expect("write prompt");
+        std::fs::write(agent_dir.join("last-message.txt"), "[wave-proof]\n")
+            .expect("write message");
+        std::fs::write(agent_dir.join("events.jsonl"), "{}\n").expect("write events");
+        std::fs::write(agent_dir.join("stderr.txt"), "").expect("write stderr");
+
+        let runtime = wave_domain::RuntimeExecutionRecord {
+            policy: wave_domain::RuntimeSelectionPolicy {
+                requested_runtime: Some(wave_domain::RuntimeId::Codex),
+                allowed_runtimes: vec![
+                    wave_domain::RuntimeId::Codex,
+                    wave_domain::RuntimeId::Claude,
+                ],
+                fallback_runtimes: vec![wave_domain::RuntimeId::Claude],
+                selection_source: Some("executor.id".to_string()),
+            },
+            selected_runtime: wave_domain::RuntimeId::Claude,
+            selection_reason: "selected claude after fallback because codex login status reported unavailable".to_string(),
+            fallback: Some(wave_domain::RuntimeFallbackRecord {
+                requested_runtime: wave_domain::RuntimeId::Codex,
+                selected_runtime: wave_domain::RuntimeId::Claude,
+                reason: "codex login status reported unavailable".to_string(),
+            }),
+            execution_identity: wave_domain::RuntimeExecutionIdentity {
+                runtime: wave_domain::RuntimeId::Claude,
+                adapter: "wave-runtime/claude".to_string(),
+                binary: "/tmp/fake-claude".to_string(),
+                provider: "anthropic-claude-code".to_string(),
+                artifact_paths: BTreeMap::from([
+                    (
+                        "runtime_detail".to_string(),
+                        ".wave/state/build/specs/wave-15-proof/agents/A1/runtime-detail.json"
+                            .to_string(),
+                    ),
+                    (
+                        "system_prompt".to_string(),
+                        ".wave/state/build/specs/wave-15-proof/agents/A1/claude-system-prompt.txt"
+                            .to_string(),
+                    ),
+                ]),
+            },
+            skill_projection: wave_domain::RuntimeSkillProjection {
+                declared_skills: vec!["wave-core".to_string()],
+                projected_skills: vec!["wave-core".to_string(), "runtime-claude".to_string()],
+                dropped_skills: Vec::new(),
+                auto_attached_skills: vec!["runtime-claude".to_string()],
+            },
+        };
+
+        wave_trace::write_result_envelope(
+            &envelope_path,
+            &wave_trace::ResultEnvelopeRecord {
+                result_envelope_id: "result:wave-15-proof:a1".to_string(),
+                wave_id: 15,
+                task_id: "wave-15:agent-a1".to_string(),
+                attempt_id: "attempt-a1-proof".to_string(),
+                agent_id: "A1".to_string(),
+                task_role: "implementation".to_string(),
+                closure_role: None,
+                source: wave_trace::ResultEnvelopeSource::Structured,
+                attempt_state: wave_trace::AttemptState::Succeeded,
+                disposition: wave_trace::ResultDisposition::Completed,
+                summary: Some("runtime detail proof".to_string()),
+                output_text: Some("[wave-proof]".to_string()),
+                final_markers: wave_trace::FinalMarkerEnvelope::from_contract(
+                    vec!["[wave-proof]".to_string()],
+                    vec!["[wave-proof]".to_string()],
+                ),
+                proof_bundle_ids: Vec::new(),
+                fact_ids: Vec::new(),
+                contradiction_ids: Vec::new(),
+                artifacts: Vec::new(),
+                doc_delta: wave_trace::DocDeltaEnvelope::default(),
+                marker_evidence: Vec::new(),
+                closure: wave_trace::ClosureState {
+                    disposition: wave_trace::ClosureDisposition::Ready,
+                    required_final_markers: vec!["[wave-proof]".to_string()],
+                    observed_final_markers: vec!["[wave-proof]".to_string()],
+                    blocking_reasons: Vec::new(),
+                    satisfied_fact_ids: Vec::new(),
+                    contradiction_ids: Vec::new(),
+                    verdict: wave_trace::ClosureVerdictPayload::None,
+                },
+                runtime: Some(runtime),
+                created_at_ms: 3,
+            },
+        )
+        .expect("write proof envelope");
+
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/15.md"),
+            metadata: WaveMetadata {
+                id: 15,
+                slug: "runtime-policy".to_string(),
+                title: "Runtime Policy".to_string(),
+                mode: wave_config::ExecutionMode::DarkFactory,
+                owners: vec!["A0".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: Vec::new(),
+            },
+            heading_title: Some("Wave 15".to_string()),
+            commit_message: Some("Feat: runtime policy".to_string()),
+            component_promotions: vec![ComponentPromotion {
+                component: "runtime-policy".to_string(),
+                target: "repo-landed".to_string(),
+            }],
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "custom default".to_string(),
+            }],
+            context7_defaults: Some(Context7Defaults {
+                bundle: "rust-control-plane".to_string(),
+                query: Some("Runtime detail transport".to_string()),
+            }),
+            agents: vec![WaveAgent {
+                id: "A1".to_string(),
+                title: "Implementation".to_string(),
+                role_prompts: Vec::new(),
+                executor: std::collections::BTreeMap::new(),
+                context7: Some(Context7Defaults {
+                    bundle: "none".to_string(),
+                    query: Some("noop".to_string()),
+                }),
+                skills: vec!["wave-core".to_string()],
+                components: Vec::new(),
+                capabilities: Vec::new(),
+                exit_contract: Some(ExitContract {
+                    completion: CompletionLevel::Contract,
+                    durability: DurabilityLevel::Durable,
+                    proof: ProofLevel::Unit,
+                    doc_impact: DocImpact::Owned,
+                }),
+                deliverables: vec!["README.md".to_string()],
+                file_ownership: vec!["README.md".to_string()],
+                final_markers: vec!["[wave-proof]".to_string()],
+                prompt: "Primary goal:\n- noop".to_string(),
+            }],
+        };
+        let run = WaveRunRecord {
+            run_id: "wave-15-proof".to_string(),
+            wave_id: 15,
+            slug: "runtime-policy".to_string(),
+            title: "Runtime Policy".to_string(),
+            status: WaveRunStatus::Running,
+            dry_run: false,
+            bundle_dir: bundle_dir.clone(),
+            trace_path: trace_path.clone(),
+            codex_home: root.join(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            launcher_pid: None,
+            launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
+            completed_at_ms: None,
+            agents: vec![wave_trace::AgentRunRecord {
+                id: "A1".to_string(),
+                title: "Implementation".to_string(),
+                status: WaveRunStatus::Running,
+                prompt_path: agent_dir.join("prompt.md"),
+                last_message_path: agent_dir.join("last-message.txt"),
+                events_path: agent_dir.join("events.jsonl"),
+                stderr_path: agent_dir.join("stderr.txt"),
+                result_envelope_path: Some(envelope_path),
+                runtime_detail_path: None,
+                expected_markers: vec!["[wave-proof]".to_string()],
+                observed_markers: Vec::new(),
+                exit_code: None,
+                error: None,
+                runtime: None,
+            }],
+            error: None,
+        };
+        wave_trace::write_trace_bundle(&trace_path, &run).expect("write trace");
+
+        let latest_run_details = latest_relevant_run_details(
+            &root,
+            std::slice::from_ref(&wave),
+            &HashMap::from([(15, run)]),
+        );
+        let active_run_details = latest_run_details
+            .iter()
+            .filter(|detail| {
+                matches!(
+                    detail.status,
+                    WaveRunStatus::Planned | WaveRunStatus::Running
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root");
+        let proof_dir = workspace_root
+            .join("docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime");
+        std::fs::create_dir_all(&proof_dir).expect("create proof dir");
+        std::fs::write(
+            proof_dir.join("operator-runtime-transport.json"),
+            serde_json::to_string_pretty(&RuntimeTransportBundle {
+                generated_at_ms: wave_trace::now_epoch_ms().expect("transport proof timestamp"),
+                latest_run_details,
+                active_run_details,
+            })
+            .expect("serialize runtime transport proof"),
+        )
+        .expect("write runtime transport proof");
 
         let _ = std::fs::remove_dir_all(&root);
     }

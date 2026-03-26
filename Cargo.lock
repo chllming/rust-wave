@@ -2406,10 +2406,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "serde",
+ "serde_json",
  "wave-config",
  "wave-control-plane",
  "wave-dark-factory",
  "wave-domain",
+ "wave-reducer",
  "wave-results",
  "wave-runtime",
  "wave-spec",

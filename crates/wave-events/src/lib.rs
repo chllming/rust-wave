@@ -32,6 +32,8 @@ pub const SCHEDULER_EVENT_SCHEMA_VERSION: u32 = 1;
 pub const SCHEDULER_LOG_FILE_NAME: &str = "scheduler.jsonl";
 const SCHEDULER_LOCK_RETRY_DELAY_MS: u64 = 50;
 const SCHEDULER_LOCK_TIMEOUT_MS: u64 = 10_000;
+const SCHEDULER_LOAD_RETRY_DELAY_MS: u64 = 10;
+const SCHEDULER_LOAD_RETRY_ATTEMPTS: usize = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct SchedulerMutationLockMetadata {
@@ -673,33 +675,85 @@ pub fn append_scheduler_events(path: &Path, events: &[SchedulerEvent]) -> Result
         .open(path)
         .with_context(|| format!("failed to open {}", path.display()))?;
     for event in events {
-        serde_json::to_writer(&mut file, event)
+        let mut line = serde_json::to_vec(event)
             .with_context(|| format!("failed to serialize event into {}", path.display()))?;
-        file.write_all(b"\n")
-            .with_context(|| format!("failed to append newline to {}", path.display()))?;
+        line.push(b'\n');
+        file.write_all(&line)
+            .with_context(|| format!("failed to append event into {}", path.display()))?;
     }
     Ok(())
 }
 
 pub fn load_scheduler_events(path: &Path) -> Result<Vec<SchedulerEvent>> {
+    let mut attempts = 0;
+    loop {
+        match load_scheduler_events_once(path) {
+            Ok(events) => return Ok(events),
+            Err(error) => {
+                let retryable = error
+                    .downcast_ref::<SchedulerLogParseError>()
+                    .map(|parse| parse.retryable_last_line)
+                    .unwrap_or(false);
+                if retryable && attempts < SCHEDULER_LOAD_RETRY_ATTEMPTS {
+                    attempts += 1;
+                    thread::sleep(Duration::from_millis(SCHEDULER_LOAD_RETRY_DELAY_MS));
+                    continue;
+                }
+                return Err(error);
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SchedulerLogParseError {
+    path: PathBuf,
+    line_number: usize,
+    retryable_last_line: bool,
+    source: serde_json::Error,
+}
+
+impl std::fmt::Display for SchedulerLogParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "failed to parse scheduler event {}:{}",
+            self.path.display(),
+            self.line_number
+        )
+    }
+}
+
+impl std::error::Error for SchedulerLogParseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+fn load_scheduler_events_once(path: &Path) -> Result<Vec<SchedulerEvent>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let file =
-        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let reader = BufReader::new(file);
-    let mut events = Vec::new();
-    for (line_number, line) in reader.lines().enumerate() {
-        let line = line.with_context(|| format!("failed to read {}", path.display()))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let event = serde_json::from_str::<SchedulerEvent>(&line).with_context(|| {
-            format!(
-                "failed to parse scheduler event {}:{}",
-                path.display(),
-                line_number + 1
-            )
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let lines = contents
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let trimmed = line.trim();
+            (!trimmed.is_empty()).then_some((index + 1, trimmed))
+        })
+        .collect::<Vec<_>>();
+    let last_non_empty_line_number = lines.last().map(|(line_number, _)| *line_number);
+    let mut events = Vec::with_capacity(lines.len());
+    for (line_number, line) in lines {
+        let event = serde_json::from_str::<SchedulerEvent>(line).map_err(|source| {
+            SchedulerLogParseError {
+                path: path.to_path_buf(),
+                line_number,
+                retryable_last_line: Some(line_number) == last_non_empty_line_number,
+                source,
+            }
         })?;
         events.push(event);
     }
@@ -1089,6 +1143,112 @@ mod tests {
         let events = log.load_all().expect("load");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, SchedulerEventKind::SchedulerBudgetUpdated);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scheduler_log_retries_partial_last_line_until_append_completes() {
+        let root = temp_root("scheduler-partial-last-line");
+        let path = root.join("scheduler").join(SCHEDULER_LOG_FILE_NAME);
+        fs::create_dir_all(path.parent().expect("scheduler parent")).expect("create scheduler dir");
+
+        let event_one = SchedulerEvent::new("sched-1", SchedulerEventKind::SchedulerBudgetUpdated)
+            .with_created_at_ms(1)
+            .with_payload(SchedulerEventPayload::SchedulerBudgetUpdated {
+                budget: SchedulerBudgetRecord {
+                    budget_id: SchedulerBudgetId::new("budget-a"),
+                    budget: SchedulerBudget::default(),
+                    owner: SchedulerOwner::default(),
+                    updated_at_ms: 1,
+                    detail: Some("budget a".to_string()),
+                },
+            });
+        let event_two = SchedulerEvent::new("sched-2", SchedulerEventKind::WaveClaimAcquired)
+            .with_wave_id(13)
+            .with_created_at_ms(2)
+            .with_payload(SchedulerEventPayload::WaveClaimUpdated {
+                claim: WaveClaimRecord {
+                    claim_id: WaveClaimId::new("claim-wave-13"),
+                    wave_id: 13,
+                    state: WaveClaimState::Held,
+                    owner: SchedulerOwner::default(),
+                    claimed_at_ms: 2,
+                    released_at_ms: None,
+                    detail: Some("claim".to_string()),
+                },
+            });
+
+        let first_line = format!(
+            "{}\n",
+            serde_json::to_string(&event_one).expect("serialize first event")
+        );
+        let second_line = format!(
+            "{}\n",
+            serde_json::to_string(&event_two).expect("serialize second event")
+        );
+        fs::write(&path, &first_line).expect("write first line");
+
+        let path_clone = path.clone();
+        let second_line_clone = second_line.clone();
+        let (partial_written_tx, partial_written_rx) = mpsc::channel();
+        let writer = thread::spawn(move || {
+            let midpoint = second_line_clone.len() / 2;
+            let mut file = OpenOptions::new()
+                .append(true)
+                .open(&path_clone)
+                .expect("open scheduler log for append");
+            file.write_all(&second_line_clone.as_bytes()[..midpoint])
+                .expect("write partial line");
+            file.flush().expect("flush partial line");
+            partial_written_tx
+                .send(())
+                .expect("signal partial line is visible");
+            thread::sleep(Duration::from_millis(
+                SCHEDULER_LOAD_RETRY_DELAY_MS.saturating_mul(2),
+            ));
+            file.write_all(&second_line_clone.as_bytes()[midpoint..])
+                .expect("finish line");
+            file.flush().expect("flush finished line");
+        });
+
+        partial_written_rx
+            .recv()
+            .expect("wait for partial line to be written");
+        let events = load_scheduler_events(&path).expect("load scheduler events");
+        writer.join().expect("join writer");
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_id, "sched-1");
+        assert_eq!(events[1].event_id, "sched-2");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scheduler_log_still_fails_closed_on_malformed_interior_line() {
+        let root = temp_root("scheduler-malformed-interior-line");
+        let path = root.join("scheduler").join(SCHEDULER_LOG_FILE_NAME);
+        fs::create_dir_all(path.parent().expect("scheduler parent")).expect("create scheduler dir");
+
+        let event = SchedulerEvent::new("sched-1", SchedulerEventKind::SchedulerBudgetUpdated)
+            .with_created_at_ms(1)
+            .with_payload(SchedulerEventPayload::SchedulerBudgetUpdated {
+                budget: SchedulerBudgetRecord {
+                    budget_id: SchedulerBudgetId::new("budget-a"),
+                    budget: SchedulerBudget::default(),
+                    owner: SchedulerOwner::default(),
+                    updated_at_ms: 1,
+                    detail: Some("budget a".to_string()),
+                },
+            });
+        let line = serde_json::to_string(&event).expect("serialize event");
+        fs::write(&path, format!("{line}\n{{not-json}}\n{line}\n")).expect("write log");
+
+        let error = load_scheduler_events(&path).expect_err("malformed interior line must fail");
+        let message = error.to_string();
+        assert!(message.contains("failed to parse scheduler event"));
+        assert!(message.contains(":2"));
 
         let _ = fs::remove_dir_all(root);
     }

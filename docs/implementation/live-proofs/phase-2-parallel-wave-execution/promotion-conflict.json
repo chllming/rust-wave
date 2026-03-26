@@ -6,7 +6,7 @@
     "state": "allocated",
     "path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-conflict/.wave/state/worktrees/wave-12-wave-12-proof",
     "base_ref": "main",
-    "snapshot_ref": "0b718f0fd16711fe19c502e932732089b17f9d88",
+    "snapshot_ref": "e4238d12b0264eec81829e640f0bf3f3c215ce11",
     "branch_ref": null,
     "shared_scope": "wave",
     "allocated_at_ms": 1,
@@ -14,12 +14,12 @@
     "detail": "shared wave-local worktree"
   },
   "initial_promotion": {
-    "promotion_id": "promotion-wave-12-0b718f0fd16711fe19c502e932732089b17f9d88",
+    "promotion_id": "promotion-wave-12-e4238d12b0264eec81829e640f0bf3f3c215ce11",
     "wave_id": 12,
     "worktree_id": "worktree-wave-12-wave-12-proof",
     "state": "not_started",
     "target_ref": "main",
-    "snapshot_ref": "0b718f0fd16711fe19c502e932732089b17f9d88",
+    "snapshot_ref": "e4238d12b0264eec81829e640f0bf3f3c215ce11",
     "candidate_ref": null,
     "candidate_tree": null,
     "conflict_paths": [],
@@ -28,19 +28,19 @@
     "detail": "promotion not yet evaluated"
   },
   "evaluated_promotion": {
-    "promotion_id": "promotion-wave-12-0b718f0fd16711fe19c502e932732089b17f9d88",
+    "promotion_id": "promotion-wave-12-e4238d12b0264eec81829e640f0bf3f3c215ce11",
     "wave_id": 12,
     "worktree_id": "worktree-wave-12-wave-12-proof",
     "state": "conflicted",
     "target_ref": "main",
-    "snapshot_ref": "0b718f0fd16711fe19c502e932732089b17f9d88",
-    "candidate_ref": "cdc95243bd079799d10d0ff50305350f70e62c89",
+    "snapshot_ref": "e4238d12b0264eec81829e640f0bf3f3c215ce11",
+    "candidate_ref": "7e35ffe2bc596e1f9d36dc64bec74f8389d1eb0a",
     "candidate_tree": "331e65674264f8a820de59ab13010f79e0baa363",
     "conflict_paths": [
       "README.md"
     ],
-    "checked_at_ms": 1774437299412,
-    "completed_at_ms": 1774437299459,
-    "detail": "promotion blocked by README.md"
+    "checked_at_ms": 1774459043073,
+    "completed_at_ms": 1774459043154,
+    "detail": "promotion blocked by merge conflicts: README.md"
   }
 }

@@ -101,6 +101,7 @@ Repo-specific Rust/Codex bundles:
 - `repo-rust-control-plane`
 - `repo-codex-orchestrator`
 - `repo-ratatui-operator`
+- `app-design`
 - `tui-design`
 
 These are the standard repo-specific attachments for implementation work. Use the narrowest one that matches the subsystem you are changing.

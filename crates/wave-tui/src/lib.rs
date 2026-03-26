@@ -612,23 +612,27 @@ fn format_string_list(values: &[String]) -> String {
     }
 }
 
-fn wave_execution_lines(wave: &wave_control_plane::WaveStatusReadModel) -> Vec<Line<'static>> {
+fn execution_lines(
+    execution: &wave_control_plane::WaveExecutionState,
+    budget: Option<&wave_control_plane::SchedulerBudgetState>,
+) -> Vec<Line<'static>> {
     let mut lines = vec![Line::styled(
         "Execution",
         Style::default()
             .fg(Color::Gray)
             .add_modifier(Modifier::BOLD),
     )];
-    if let Some(worktree) = &wave.execution.worktree {
+    if let Some(worktree) = &execution.worktree {
         lines.push(Line::raw(format!(
-            "worktree: {} ({})",
+            "worktree: {} -> {} ({})",
+            worktree.worktree_id.as_str(),
             worktree.path,
             debug_label(worktree.state)
         )));
     } else {
         lines.push(Line::raw("worktree: none"));
     }
-    if let Some(promotion) = &wave.execution.promotion {
+    if let Some(promotion) = &execution.promotion {
         lines.push(Line::raw(format!(
             "promotion: {}",
             debug_label(promotion.state)
@@ -645,7 +649,7 @@ fn wave_execution_lines(wave: &wave_control_plane::WaveStatusReadModel) -> Vec<L
     } else {
         lines.push(Line::raw("promotion: none"));
     }
-    if let Some(scheduling) = &wave.execution.scheduling {
+    if let Some(scheduling) = &execution.scheduling {
         lines.push(Line::raw(format!(
             "scheduler: {}/{} fairness={} protected={} preemptible={}",
             debug_label(scheduling.phase),
@@ -655,27 +659,71 @@ fn wave_execution_lines(wave: &wave_control_plane::WaveStatusReadModel) -> Vec<L
             yes_no(scheduling.preemptible)
         )));
         if let Some(decision) = scheduling.last_decision.as_deref() {
-            lines.push(Line::raw(format!("decision: {decision}")));
+            let label = match scheduling.state {
+                wave_domain::WaveSchedulingState::Waiting => "wait reason",
+                wave_domain::WaveSchedulingState::Preempted => "preemption",
+                _ if scheduling.protected_closure_capacity => "closure protection",
+                _ => "scheduler detail",
+            };
+            lines.push(Line::raw(format!("{label}: {decision}")));
         }
     } else {
         lines.push(Line::raw("scheduler: none"));
     }
     lines.push(Line::raw(format!(
-        "merge blocked: {}  closure blocked: {}",
-        yes_no(wave.execution.merge_blocked),
-        yes_no(wave.execution.closure_blocked_by_promotion)
+        "merge blocked: {}",
+        yes_no(execution.merge_blocked)
     )));
     lines.push(Line::raw(format!(
-        "budget: reserved_closure={} reserved_now={} preemption={}",
-        wave.ownership
-            .budget
-            .reserved_closure_task_leases
-            .map(|count| count.to_string())
-            .unwrap_or_else(|| "none".to_string()),
-        yes_no(wave.ownership.budget.closure_capacity_reserved),
-        yes_no(wave.ownership.budget.preemption_enabled)
+        "closure blocked: {}",
+        yes_no(execution.closure_blocked_by_promotion)
     )));
+    if let Some(budget) = budget {
+        lines.push(Line::raw(format!(
+            "closure capacity: reserved_slots={} reservation_active={} preemption={}",
+            budget
+                .reserved_closure_task_leases
+                .map(|count| count.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            yes_no(budget.closure_capacity_reserved),
+            yes_no(budget.preemption_enabled)
+        )));
+        if budget.closure_capacity_reserved {
+            lines.push(Line::raw(
+                "closure reservation: waiting closure work is holding protected capacity",
+            ));
+        }
+    }
     lines
+}
+
+fn wave_execution_lines(wave: &wave_control_plane::WaveStatusReadModel) -> Vec<Line<'static>> {
+    execution_lines(&wave.execution, Some(&wave.ownership.budget))
+}
+
+fn selected_execution_for_run_tab(
+    snapshot: &OperatorSnapshot,
+    selected_wave_id: Option<u32>,
+) -> Option<(
+    wave_control_plane::WaveExecutionState,
+    Option<wave_control_plane::SchedulerBudgetState>,
+)> {
+    let selected_wave = selected_wave_id.and_then(|wave_id| {
+        snapshot
+            .planning
+            .waves
+            .iter()
+            .find(|wave| wave.id == wave_id)
+    });
+
+    if let Some(run) = selected_active_run(snapshot, selected_wave_id) {
+        let budget = selected_wave
+            .filter(|wave| wave.id == run.wave_id)
+            .map(|wave| wave.ownership.budget.clone());
+        return Some((run.execution.clone(), budget));
+    }
+
+    selected_wave.map(|wave| (wave.execution.clone(), Some(wave.ownership.budget.clone())))
 }
 
 fn queue_decision_lines(snapshot: &OperatorSnapshot) -> Vec<Line<'static>> {
@@ -743,6 +791,18 @@ fn run_summary_lines(run: &ActiveRunDetail) -> Vec<Line<'static>> {
     }
     if let Some(elapsed_ms) = run.elapsed_ms {
         lines.push(Line::raw(format!("elapsed: {}", HumanDuration(elapsed_ms))));
+    }
+    if !run.runtime_summary.selected_runtimes.is_empty() {
+        lines.push(Line::raw(format!(
+            "runtime: {}",
+            run.runtime_summary.selected_runtimes.join(", ")
+        )));
+    }
+    if run.runtime_summary.fallback_count > 0 {
+        lines.push(Line::raw(format!(
+            "fallbacks: {} agent(s)",
+            run.runtime_summary.fallback_count
+        )));
     }
     if !run.replay.ok {
         lines.push(Line::styled(
@@ -816,13 +876,6 @@ fn draw_run_tab(
     snapshot: &OperatorSnapshot,
     selected_wave_id: Option<u32>,
 ) {
-    let selected_wave = selected_wave_id.and_then(|wave_id| {
-        snapshot
-            .planning
-            .waves
-            .iter()
-            .find(|wave| wave.id == wave_id)
-    });
     let mut lines = Vec::new();
     if let Some(run) = selected_active_run(snapshot, selected_wave_id) {
         lines.extend(run_summary_lines(run));
@@ -853,9 +906,9 @@ fn draw_run_tab(
     } else {
         lines.push(Line::raw("No active runs."));
     }
-    if let Some(wave) = selected_wave {
+    if let Some((execution, budget)) = selected_execution_for_run_tab(snapshot, selected_wave_id) {
         lines.push(Line::raw(""));
-        lines.extend(wave_execution_lines(wave));
+        lines.extend(execution_lines(&execution, budget.as_ref()));
     }
 
     frame.render_widget(
@@ -880,9 +933,21 @@ fn draw_agents_tab(
     };
 
     let rows = run.agents.iter().map(|agent| {
+        let runtime = agent
+            .runtime
+            .as_ref()
+            .map(|runtime| {
+                if runtime.fallback.is_some() {
+                    format!("{} fallback", runtime.selected_runtime)
+                } else {
+                    runtime.selected_runtime.clone()
+                }
+            })
+            .unwrap_or_else(|| "n/a".to_string());
         Row::new(vec![
             Cell::from(agent.id.clone()),
             Cell::from(agent.title.clone()),
+            Cell::from(runtime),
             Cell::from(agent.status.to_string()),
             Cell::from(if agent.proof_complete {
                 "complete".to_string()
@@ -897,13 +962,14 @@ fn draw_agents_tab(
         rows,
         [
             Constraint::Length(4),
-            Constraint::Percentage(35),
+            Constraint::Percentage(28),
+            Constraint::Length(18),
             Constraint::Length(10),
-            Constraint::Percentage(45),
+            Constraint::Percentage(40),
         ],
     )
     .header(
-        Row::new(vec!["Id", "Title", "State", "Proof"]).style(
+        Row::new(vec!["Id", "Title", "Runtime", "State", "Proof"]).style(
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -1068,6 +1134,14 @@ fn control_status_items(snapshot: &OperatorSnapshot, selected_wave_id: Option<u3
             }
         })
         .unwrap_or_else(|| vec!["No active replay state.".to_string()]);
+    items.extend(snapshot.launcher.runtimes.iter().map(|runtime| {
+        format!(
+            "runtime {}: {} ({})",
+            runtime.runtime,
+            if runtime.available { "ready" } else { "blocked" },
+            runtime.detail
+        )
+    }));
     items.extend(
         snapshot
             .control_status
@@ -1199,10 +1273,102 @@ mod tests {
         assert!(rendered.contains("Control"));
         assert!(rendered.contains("ready: 6"));
         assert!(rendered.contains("A1 TUI Shell And Layout Scaffold"));
-        assert!(rendered.contains("worktree: .wave/state/worktrees/wave-05-test (allocated)"));
+        assert!(rendered.contains(
+            "worktree: worktree-wave-05-test -> .wave/state/worktrees/wave-05-test (allocated)"
+        ));
         assert!(rendered.contains("promotion: ready"));
-        assert!(rendered.contains("budget: reserved_closure=1 reserved_now=yes preemption=yes"));
+        assert!(rendered.contains("closure protection: closure capacity reserved before A8"));
+        assert!(rendered.contains("merge blocked: no"));
+        assert!(rendered.contains("closure blocked: no"));
+        assert!(
+            rendered.contains(
+                "closure capacity: reserved_slots=1 reservation_active=yes preemption=yes"
+            )
+        );
         assert!(rendered.contains("actions: rerun=yes clear-rerun=yes launch=yes autonomous=yes"));
+    }
+
+    #[test]
+    fn execution_lines_label_waiting_and_preemption_with_operator_language() {
+        let waiting = wave_control_plane::WaveExecutionState {
+            worktree: None,
+            promotion: None,
+            scheduling: Some(wave_domain::WaveSchedulingRecord {
+                wave_id: 14,
+                phase: wave_domain::WaveExecutionPhase::Implementation,
+                priority: wave_domain::WaveSchedulerPriority::Implementation,
+                state: wave_domain::WaveSchedulingState::Waiting,
+                fairness_rank: 2,
+                waiting_since_ms: Some(9),
+                protected_closure_capacity: false,
+                preemptible: true,
+                last_decision: Some(
+                    "waiting because closure capacity is reserved ahead of new implementation work"
+                        .to_string(),
+                ),
+                updated_at_ms: 10,
+            }),
+            merge_blocked: false,
+            closure_blocked_by_promotion: false,
+        };
+        let preempted = wave_control_plane::WaveExecutionState {
+            worktree: None,
+            promotion: None,
+            scheduling: Some(wave_domain::WaveSchedulingRecord {
+                wave_id: 22,
+                phase: wave_domain::WaveExecutionPhase::Implementation,
+                priority: wave_domain::WaveSchedulerPriority::Implementation,
+                state: wave_domain::WaveSchedulingState::Preempted,
+                fairness_rank: 1,
+                waiting_since_ms: Some(11),
+                protected_closure_capacity: false,
+                preemptible: true,
+                last_decision: Some(
+                    "preempted to free closure capacity for wave 20 agent A8".to_string(),
+                ),
+                updated_at_ms: 12,
+            }),
+            merge_blocked: false,
+            closure_blocked_by_promotion: false,
+        };
+
+        let waiting_rendered = execution_lines(
+            &waiting,
+            Some(&wave_control_plane::SchedulerBudgetState {
+                max_active_wave_claims: Some(2),
+                max_active_task_leases: Some(2),
+                reserved_closure_task_leases: Some(1),
+                active_wave_claims: 1,
+                active_task_leases: 1,
+                active_implementation_task_leases: 1,
+                active_closure_task_leases: 0,
+                closure_capacity_reserved: true,
+                preemption_enabled: true,
+                budget_blocked: false,
+            }),
+        )
+        .into_iter()
+        .flat_map(|line| line.spans.into_iter().map(|span| span.content.into_owned()))
+        .collect::<Vec<_>>()
+        .join("\n");
+        assert!(waiting_rendered.contains(
+            "wait reason: waiting because closure capacity is reserved ahead of new implementation work"
+        ));
+        assert!(
+            waiting_rendered.contains(
+                "closure reservation: waiting closure work is holding protected capacity"
+            )
+        );
+
+        let preempted_rendered = execution_lines(&preempted, None)
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter().map(|span| span.content.into_owned()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            preempted_rendered
+                .contains("preemption: preempted to free closure capacity for wave 20 agent A8")
+        );
     }
 
     #[test]
@@ -1238,6 +1404,12 @@ mod tests {
                 ok: true,
                 issues: Vec::new(),
             },
+            runtime_summary: wave_app_server::RuntimeSummary {
+                selected_runtimes: vec!["codex".to_string()],
+                fallback_count: 0,
+                agents_with_runtime: 1,
+            },
+            execution: empty_execution(),
             agents: Vec::new(),
         };
         snapshot
@@ -1298,6 +1470,37 @@ mod tests {
             selected_active_run(&snapshot, Some(99)).map(|run| run.wave_id),
             Some(5)
         );
+    }
+
+    #[test]
+    fn run_tab_prefers_active_run_execution_transport_over_planning_execution() {
+        let mut snapshot = test_snapshot();
+        let planning_wave = snapshot
+            .planning
+            .waves
+            .iter_mut()
+            .find(|wave| wave.id == 5)
+            .expect("wave 5 in planning snapshot");
+        planning_wave.execution = empty_execution();
+
+        let (execution, budget) =
+            selected_execution_for_run_tab(&snapshot, Some(5)).expect("selected execution");
+
+        assert_eq!(
+            execution
+                .worktree
+                .as_ref()
+                .map(|worktree| worktree.path.as_str()),
+            Some(".wave/state/worktrees/wave-05-test")
+        );
+        assert_eq!(
+            execution
+                .promotion
+                .as_ref()
+                .map(|promotion| promotion.state),
+            Some(wave_domain::WavePromotionState::Ready)
+        );
+        assert!(budget.is_some());
     }
 
     #[test]
@@ -1404,9 +1607,62 @@ mod tests {
         use wave_app_server::ProofSnapshot;
         use wave_app_server::QueuePanelSnapshot;
         use wave_app_server::QueuePanelWaveSnapshot;
+        use wave_app_server::RuntimeDetail;
+        use wave_app_server::RuntimeExecutionIdentityDetail;
+        use wave_app_server::RuntimeFallbackDetail;
+        use wave_app_server::RuntimeSkillProjectionDetail;
+        use wave_app_server::RuntimeSummary;
         use wave_app_server::RunPanelSnapshot;
         use wave_runtime::RerunIntentRecord;
         use wave_runtime::RerunIntentStatus;
+
+        let active_execution = wave_control_plane::WaveExecutionState {
+            worktree: Some(wave_domain::WaveWorktreeRecord {
+                worktree_id: wave_domain::WaveWorktreeId::new("worktree-wave-05-test".to_string()),
+                wave_id: 5,
+                path: ".wave/state/worktrees/wave-05-test".to_string(),
+                base_ref: "HEAD".to_string(),
+                snapshot_ref: "snapshot-wave-05".to_string(),
+                branch_ref: Some("wave/05/test".to_string()),
+                shared_scope: wave_domain::WaveWorktreeScope::Wave,
+                state: wave_domain::WaveWorktreeState::Allocated,
+                allocated_at_ms: 1,
+                released_at_ms: None,
+                detail: Some("shared wave worktree".to_string()),
+            }),
+            promotion: Some(wave_domain::WavePromotionRecord {
+                promotion_id: wave_domain::WavePromotionId::new(
+                    "promotion-wave-05-test".to_string(),
+                ),
+                wave_id: 5,
+                worktree_id: Some(wave_domain::WaveWorktreeId::new(
+                    "worktree-wave-05-test".to_string(),
+                )),
+                state: wave_domain::WavePromotionState::Ready,
+                target_ref: "HEAD".to_string(),
+                snapshot_ref: "snapshot-wave-05".to_string(),
+                candidate_ref: Some("refs/wave/05/test".to_string()),
+                candidate_tree: Some("abc123".to_string()),
+                conflict_paths: Vec::new(),
+                detail: Some("promotion candidate recorded".to_string()),
+                checked_at_ms: 2,
+                completed_at_ms: Some(3),
+            }),
+            scheduling: Some(wave_domain::WaveSchedulingRecord {
+                wave_id: 5,
+                phase: wave_domain::WaveExecutionPhase::Closure,
+                priority: wave_domain::WaveSchedulerPriority::Closure,
+                state: wave_domain::WaveSchedulingState::Protected,
+                fairness_rank: 1,
+                waiting_since_ms: Some(2),
+                protected_closure_capacity: true,
+                preemptible: false,
+                last_decision: Some("closure capacity reserved before A8".to_string()),
+                updated_at_ms: 3,
+            }),
+            merge_blocked: false,
+            closure_blocked_by_promotion: false,
+        };
 
         let active_run = ActiveRunDetail {
             wave_id: 5,
@@ -1438,6 +1694,12 @@ mod tests {
                 ok: true,
                 issues: Vec::new(),
             },
+            execution: active_execution.clone(),
+            runtime_summary: RuntimeSummary {
+                selected_runtimes: vec!["claude".to_string()],
+                fallback_count: 1,
+                agents_with_runtime: 1,
+            },
             agents: vec![
                 AgentPanelItem {
                     id: "A1".to_string(),
@@ -1451,6 +1713,30 @@ mod tests {
                     missing_markers: vec!["[wave-proof]".to_string()],
                     deliverables: vec!["crates/wave-tui/src/lib.rs".to_string()],
                     error: None,
+                    runtime: Some(RuntimeDetail {
+                        selected_runtime: "claude".to_string(),
+                        selection_reason: "selected claude after fallback".to_string(),
+                        fallback: Some(RuntimeFallbackDetail {
+                            requested_runtime: "codex".to_string(),
+                            selected_runtime: "claude".to_string(),
+                            reason: "codex login status reported unavailable".to_string(),
+                        }),
+                        execution_identity: RuntimeExecutionIdentityDetail {
+                            adapter: "wave-runtime/claude".to_string(),
+                            binary: "claude".to_string(),
+                            provider: "anthropic-claude-code".to_string(),
+                            artifact_paths: std::collections::BTreeMap::new(),
+                        },
+                        skill_projection: RuntimeSkillProjectionDetail {
+                            declared_skills: vec!["wave-core".to_string()],
+                            projected_skills: vec![
+                                "wave-core".to_string(),
+                                "runtime-claude".to_string(),
+                            ],
+                            dropped_skills: Vec::new(),
+                            auto_attached_skills: vec!["runtime-claude".to_string()],
+                        },
+                    }),
                 },
                 AgentPanelItem {
                     id: "A8".to_string(),
@@ -1464,6 +1750,7 @@ mod tests {
                     missing_markers: vec!["[wave-integration]".to_string()],
                     deliverables: Vec::new(),
                     error: None,
+                    runtime: None,
                 },
             ],
         };
@@ -1535,57 +1822,7 @@ mod tests {
                         },
                         ..empty_ownership()
                     },
-                    execution: wave_control_plane::WaveExecutionState {
-                        worktree: Some(wave_domain::WaveWorktreeRecord {
-                            worktree_id: wave_domain::WaveWorktreeId::new(
-                                "worktree-wave-05-test".to_string(),
-                            ),
-                            wave_id: 5,
-                            path: ".wave/state/worktrees/wave-05-test".to_string(),
-                            base_ref: "HEAD".to_string(),
-                            snapshot_ref: "snapshot-wave-05".to_string(),
-                            branch_ref: Some("wave/05/test".to_string()),
-                            shared_scope: wave_domain::WaveWorktreeScope::Wave,
-                            state: wave_domain::WaveWorktreeState::Allocated,
-                            allocated_at_ms: 1,
-                            released_at_ms: None,
-                            detail: Some("shared wave worktree".to_string()),
-                        }),
-                        promotion: Some(wave_domain::WavePromotionRecord {
-                            promotion_id: wave_domain::WavePromotionId::new(
-                                "promotion-wave-05-test".to_string(),
-                            ),
-                            wave_id: 5,
-                            worktree_id: Some(wave_domain::WaveWorktreeId::new(
-                                "worktree-wave-05-test".to_string(),
-                            )),
-                            state: wave_domain::WavePromotionState::Ready,
-                            target_ref: "HEAD".to_string(),
-                            snapshot_ref: "snapshot-wave-05".to_string(),
-                            candidate_ref: Some("refs/wave/05/test".to_string()),
-                            candidate_tree: Some("abc123".to_string()),
-                            conflict_paths: Vec::new(),
-                            detail: Some("promotion candidate recorded".to_string()),
-                            checked_at_ms: 2,
-                            completed_at_ms: Some(3),
-                        }),
-                        scheduling: Some(wave_domain::WaveSchedulingRecord {
-                            wave_id: 5,
-                            phase: wave_domain::WaveExecutionPhase::Closure,
-                            priority: wave_domain::WaveSchedulerPriority::Closure,
-                            state: wave_domain::WaveSchedulingState::Protected,
-                            fairness_rank: 1,
-                            waiting_since_ms: Some(2),
-                            protected_closure_capacity: true,
-                            preemptible: false,
-                            last_decision: Some(
-                                "closure capacity reserved before A8".to_string(),
-                            ),
-                            updated_at_ms: 3,
-                        }),
-                        merge_blocked: false,
-                        closure_blocked_by_promotion: false,
-                    },
+                    execution: active_execution,
                     agent_count: 6,
                     implementation_agent_count: 3,
                     closure_agent_count: 3,
@@ -1754,7 +1991,20 @@ mod tests {
                 },
             },
             launcher: LauncherStatus {
-                codex_binary_available: false,
+                runtimes: vec![
+                    wave_runtime::RuntimeAvailability {
+                        runtime: wave_domain::RuntimeId::Codex,
+                        binary: "codex".to_string(),
+                        available: false,
+                        detail: "codex login status reported unavailable".to_string(),
+                    },
+                    wave_runtime::RuntimeAvailability {
+                        runtime: wave_domain::RuntimeId::Claude,
+                        binary: "claude".to_string(),
+                        available: false,
+                        detail: "claude auth status --json reported unavailable".to_string(),
+                    },
+                ],
                 ready: false,
             },
             active_run_details: vec![active_run],

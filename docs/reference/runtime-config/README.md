@@ -1,134 +1,132 @@
 # Runtime Configuration Reference
 
-This directory documents the runtime surface for the Rust rewrite in this repo.
+This directory documents the live Wave 15 runtime boundary in the Rust workspace.
 
 Important scope rule:
 
-- [README.md](./README.md)
-  is the canonical statement of live Rust runtime behavior
-- `codex.md`
-  describes the live Codex launcher substrate
-- `claude.md`
-  is target-state/reference material for the Rust rewrite until a Rust executor adapter actually ships Claude support
+- [README.md](./README.md) is the canonical statement of live Rust runtime behavior
+- [codex.md](./codex.md) describes the live Codex adapter
+- [claude.md](./claude.md) describes the live Claude adapter
 
 ## Current Scope
 
-The live Rust runtime is intentionally narrow:
+The live runtime is now a runtime-neutral adapter boundary in `wave-runtime`:
 
 - project config comes from `wave.toml`
-- per-agent runtime settings come from the authored wave `### Executor` block
-- the only live runtime today is Codex
-- Wave 0.2 authority roots are typed in `wave.toml`, and planning, queue, and control projections now read through reducer-backed models over canonical scheduler authority plus compatibility run inputs
-- `wave adhoc` and `wave dep` are still pending
+- per-agent runtime policy comes from the authored wave `### Executor` block
+- Codex and Claude are sibling adapters behind one runtime-neutral execution plan
+- runtime selection, fallback, execution identity, and projected skills are persisted as runtime-neutral records
+- scheduler and reducer remain the owners of queue semantics above that boundary
 
-The active runtime paths are repo-local. The canonical Wave 0.2 authority-root set under `.wave/state/` is:
+Wave 14 and Wave 15 together mean the live repo-local runtime now has:
 
-- control events: `.wave/state/events/control/`
-- coordination records: `.wave/state/events/coordination/`
-- scheduler authority events: `.wave/state/events/scheduler/`
-- structured results: `.wave/state/results/`
-- derived state roots: `.wave/state/derived/`
-- projection roots: `.wave/state/projections/`
-- canonical trace roots: `.wave/state/traces/`
+- parallel admission for non-conflicting waves
+- one wave-local execution worktree per active wave under `.wave/state/worktrees/`
+- one shared wave-local filesystem view for every agent inside the same wave
+- late-bound runtime-aware skill projection derived from that wave-local execution root after final runtime selection and fallback
+- operator-facing runtime identity and fallback visibility in run detail transport
 
-Supporting repo-local roots in the same tree are:
-
-- compiled bundles: `.wave/state/build/specs/`
-- rerun intents: `.wave/state/control/reruns/`
-
-The remaining repo-local compatibility outputs are:
-
-- compatibility run state: `.wave/state/runs/`
-- compatibility trace bundles: `.wave/traces/runs/`
-- project-scoped Codex home: `.wave/codex/`
-
-## Live Versus Target-State
+## Live Versus Proof Classification
 
 Read the runtime docs in this directory using these truth levels:
 
 - `live`
-  The current Rust workspace actually implements it.
-- `target-state`
-  The Rust architecture intends to implement it, but the code in this repo does not yet do so.
+  The Rust workspace implements the boundary and will execute it when the local runtime binary and auth are ready.
+- `dry-run-backed`
+  The repo can produce the boundary artifacts without a live external execution.
+- `fixture-backed`
+  The repo proves the boundary with deterministic fake binaries or synthetic transport fixtures.
 - `reference-upstream`
-  The broader package or upstream Wave surface supports it, but this repo may only use it as design input.
+  Broader Wave or upstream package material that this repo uses only as design input.
 
 Today:
 
-- Codex runtime behavior is `live`
-- Claude runtime behavior is `target-state` for the Rust rewrite
-- broader multi-runtime package surfaces are `reference-upstream` unless a Rust-specific doc says otherwise
+- the Codex adapter is `live`
+- the Claude adapter is `live`
+- the captured Wave 15 proof bundle may still classify individual artifacts as `live`, `dry-run-backed`, or `fixture-backed`
+
+The current proof classification for the checked-in Wave 15 bundle is recorded in:
+
+- [docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/README.md](../../implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/README.md)
 
 ## Resolution Rules
 
-- `wave.toml` chooses the project defaults such as `default_mode`, canonical authority roots, role-prompt paths, and shared catalog locations.
-- Each agent's `### Executor` block is authoritative for that agent within the limits of the live Rust runtime.
-- The current launcher only consumes the fields it actually implements. Unsupported keys are inert documentation until the runtime grows to honor them.
-- Skills are not auto-attached from config yet. The live contract is explicit per-agent `### Skills` in `waves/*.md`.
-- `wave doctor` now verifies the configured role-prompt files and that the canonical authority roots stay under `.wave/state/`.
-- `wave project show --json` and `wave doctor --json` expose and validate the typed authority-root contract; planning, queue, and operator projections are reducer-backed over canonical scheduler authority plus compatibility run inputs, while proof and closure surfaces are now envelope-first and replay still depends on compatibility run and trace artifacts.
+- `wave.toml` chooses project defaults such as canonical authority roots and shared catalog locations.
+- Each agent's `### Executor` block is authoritative for runtime choice and runtime-specific fields.
+- `id` and `fallbacks` define explicit runtime policy for the agent.
+- If no explicit runtime is authored, the runtime policy defaults to `codex`.
+- The selected runtime is the first available runtime in the authored order; fallback is recorded before work starts.
+- Runtime-aware skill projection happens after final runtime selection and uses the wave-local execution root or worktree, not the repo root.
+- A declared skill that is absent from the execution root is dropped from the projected runtime skill set and recorded as dropped.
+- If `skills/runtime-<selected-runtime>/` exists in the execution root, Wave auto-attaches it and records that auto-attachment.
 
-## Active Codex Fields
+This keeps the runtime overlay, projected skill directories, and actual execution filesystem in one coherent view.
 
-The current Rust launcher uses these fields from `### Executor`:
+## Active Executor Fields
+
+The live Rust runtime currently honors these cross-runtime `### Executor` keys:
 
 | Wave `### Executor` key | Launch effect |
 | --- | --- |
-| `profile` | Stored as authored metadata today; not used to synthesize a separate runtime layer |
-| `model` | Adds `--model <name>` to `codex exec` |
-| `codex.config` | Adds repeated `-c key=value` overrides |
+| `id` | Selects the requested runtime explicitly |
+| `fallbacks` | Declares ordered fallback runtimes |
+| `model` | Passes the model flag for the selected runtime when supported |
+| `profile` | Still participates in runtime inference and authored metadata |
 
-Two operator env vars can override authored settings at launch time without rewriting the wave files:
+Runtime-specific keys are documented in [codex.md](./codex.md) and [claude.md](./claude.md).
 
-| Env var | Effect |
-| --- | --- |
-| `WAVE_CODEX_MODEL_OVERRIDE` | Overrides every agent's resolved `model` |
-| `WAVE_CODEX_CONFIG_OVERRIDE` | Overrides every agent's resolved `codex.config` entries |
+## Generated Runtime Artifacts
 
-This is primarily for operator control of latency and reasoning effort during long queue runs.
+For each launched agent, the runtime now writes runtime-neutral artifacts in the agent bundle directory under `.wave/state/build/specs/<run-id>/agents/<agent-id>/`:
 
-## Generated Artifacts
+- `prompt.md`
+- `runtime-prompt.md`
+- `runtime-skill-overlay.md`
+- `runtime-detail.json`
+- `last-message.txt`
+- `events.jsonl`
+- `stderr.txt`
 
-For each launched wave, the runtime writes:
+The Claude adapter also writes:
 
-- `preflight.json` in the compiled bundle directory
-- one `prompt.md` per agent under `.wave/state/build/specs/<run-id>/agents/<agent-id>/`
-- one `last-message.txt`, `events.jsonl`, and `stderr.txt` per completed agent in the same directory
-- one structured result envelope per completed agent attempt under `.wave/state/results/wave-<id>/<attempt-id>/agent_result_envelope.json`, written through `wave-results`
-- a compatibility run-state record in `.wave/state/runs/<run-id>.json`
-- a compatibility trace bundle in `.wave/traces/runs/<run-id>.json`
+- `claude-system-prompt.txt`
+- `claude-settings.json` when an inline settings overlay is generated
 
-Wave 0.2 also reserves canonical authority roots for control events, coordination records, scheduler events, results, derived state, projections, and traces under `.wave/state/`. Those roots are now typed, resolved, and doctor-checked. Planning, queue, and control surfaces are already reducer-backed over scheduler claims, leases, and budgets plus compatibility run inputs in this stage. Proof snapshots, `wave control proof show`, and closure-gate reads now recompute from the current stored result envelopes first, with the `wave-results` legacy adapter as the only remaining marker-scan path. For closure agents, the result layer also re-reads the owned integration and cont-QA artifacts so the machine-readable closure verdict survives an incomplete terminal summary. Replay still has an explicit compatibility dependency on `.wave/state/runs/` and `.wave/traces/runs/`, although the replay checks now compare normalized run, trace, and result-envelope references instead of raw path formatting.
+The runtime detail snapshot records:
 
-The TUI and `wave control ...` now consume reducer-backed projections plus envelope-first proof state over the artifacts above. Proof views and app-server snapshots resolve the latest relevant run for a wave, not only an active run. `wave trace ...` remains compatibility-backed in this wave. Wave 13 is already landed as the scheduler-authority checkpoint, so the live runtime now enforces exclusive local claims and heartbeat-backed lease renewal and expiry while still stopping short of true parallel execution.
+- selected runtime
+- runtime selection reason
+- fallback metadata, when fallback happened
+- execution identity
+- runtime artifact paths
+- declared, projected, dropped, and auto-attached skills
 
-This file does not claim that the Rust runtime already supports:
+The structured result envelope under `.wave/state/results/` carries the same runtime record so transport and proof surfaces can read durable runtime identity without depending only on compatibility run state.
 
-- live Claude execution
-- runtime fallback across providers
-- runtime-aware skill projection
-- true parallel-wave scheduling
-- per-wave worktree isolation
+## Operator Surfaces
 
-Those remain architecture targets described elsewhere in the docs.
+The live operator/runtime surface exposes runtime state through:
 
-The repo-local parity checks for this boundary are:
+- `wave doctor --json`
+- `wave project show --json`
+- `wave control show --wave <id> --json`
+- app-server `latest_run_details` and `active_run_details`
+- the TUI `Run`, `Agents`, and `Control` tabs
 
-- `cargo test -p wave-runtime persist_agent_result_envelope_writes_canonical_result_path`
-- `cargo test -p wave-gates compatibility_run_input_prefers_structured_result_envelope_markers`
-- `cargo test -p wave-app-server build_run_detail_prefers_structured_result_envelope_for_proof`
-- `cargo test -p wave-cli proof_report_falls_back_to_latest_completed_run`
-- `cargo test -p wave-results`
+Those surfaces are runtime-neutral. They show selected runtime, fallback count, and runtime detail without leaking runtime-specific fields into reducer queue truth.
 
-## Recommended Validation Path
+## Validation Path
 
-Use the Rust CLI directly:
+Use:
 
 ```bash
 cargo run -p wave-cli -- project show --json
 cargo run -p wave-cli -- doctor --json
-cargo run -p wave-cli -- lint --json
-cargo run -p wave-cli -- launch --wave 0 --dry-run --json
+cargo run -p wave-cli -- control show --wave 15 --json
 ```
 
-Then inspect the compiled bundle and preflight report under `.wave/state/build/specs/`.
+Then inspect the Wave 15 proof bundle under:
+
+```text
+docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/
+```

@@ -1026,7 +1026,7 @@ pub fn build_control_panel_read_model(
     let actions = build_control_action_read_models(control, launcher_ready);
     let mut unavailable_reasons = control.unavailable_reasons.clone();
     if control.launcher_required && !launcher_ready {
-        unavailable_reasons.push("codex binary is missing".to_string());
+        unavailable_reasons.push("no supported runtime is ready".to_string());
     }
 
     ControlPanelReadModel {
@@ -1093,9 +1093,9 @@ pub fn build_control_action_read_models(
             label: "Launch wave".to_string(),
             description: if control.launch_supported {
                 if launcher_ready {
-                    "Start the selected ready wave through the Codex launcher.".to_string()
+                    "Start the selected ready wave through the runtime launcher.".to_string()
                 } else {
-                    "Launch is unavailable because the Codex binary is missing.".to_string()
+                    "Launch is unavailable because no supported runtime is ready.".to_string()
                 }
             } else {
                 "Launch is not supported by the control plane yet.".to_string()
@@ -1107,9 +1107,9 @@ pub fn build_control_action_read_models(
             label: "Launch queue".to_string(),
             description: if control.autonomous_supported {
                 if launcher_ready {
-                    "Run the ready queue through the Codex launcher.".to_string()
+                    "Run the ready queue through the runtime launcher.".to_string()
                 } else {
-                    "Autonomous launch is unavailable because the Codex binary is missing."
+                    "Autonomous launch is unavailable because no supported runtime is ready."
                         .to_string()
                 }
             } else {
@@ -1809,7 +1809,7 @@ mod tests {
         assert!(!spine.operator.control.launcher_ready);
         assert_eq!(
             spine.operator.control.unavailable_reasons,
-            vec!["codex binary is missing"]
+            vec!["no supported runtime is ready"]
         );
         assert_eq!(spine.operator.control.unavailable_actions[0].key, "launch");
         assert_eq!(spine.operator.control.actions.len(), 7);
@@ -2165,6 +2165,20 @@ mod tests {
                 .map(|record| record.protected_closure_capacity)
                 .unwrap_or(false)
         );
+        assert_eq!(
+            wave.execution
+                .scheduling
+                .as_ref()
+                .map(|record| record.fairness_rank),
+            Some(1)
+        );
+        assert_eq!(
+            wave.execution
+                .scheduling
+                .as_ref()
+                .and_then(|record| record.last_decision.as_deref()),
+            Some("closure lane protected")
+        );
         assert_eq!(wave.ownership.budget.reserved_closure_task_leases, Some(1));
         assert!(wave.ownership.budget.preemption_enabled);
     }
@@ -2368,7 +2382,7 @@ mod tests {
                 phase: wave_domain::WaveExecutionPhase::Closure,
                 priority: wave_domain::WaveSchedulerPriority::Closure,
                 state: wave_domain::WaveSchedulingState::Protected,
-                fairness_rank: 0,
+                fairness_rank: 1,
                 waiting_since_ms: Some(created_at_ms),
                 protected_closure_capacity: true,
                 preemptible: false,

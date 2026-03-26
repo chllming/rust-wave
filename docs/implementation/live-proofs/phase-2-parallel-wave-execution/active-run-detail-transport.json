@@ -1,0 +1,191 @@
+{
+  "generated_at_ms": 1774459042915,
+  "latest_run_details": [
+    {
+      "wave_id": 14,
+      "wave_slug": "parallel-wave",
+      "wave_title": "Parallel Wave",
+      "run_id": "wave-14-transport",
+      "status": "running",
+      "created_at_ms": 1,
+      "started_at_ms": 2,
+      "elapsed_ms": 1774459042912,
+      "current_agent_id": "A1",
+      "current_agent_title": "Implementation",
+      "activity_excerpt": "[wave-proof]",
+      "execution": {
+        "worktree": {
+          "worktree_id": "worktree-wave-14",
+          "wave_id": 14,
+          "state": "allocated",
+          "path": ".wave/state/worktrees/wave-14",
+          "base_ref": "HEAD",
+          "snapshot_ref": "refs/wave/snapshot/14",
+          "branch_ref": "wave/14/test",
+          "shared_scope": "wave",
+          "allocated_at_ms": 10,
+          "released_at_ms": null,
+          "detail": "shared wave worktree"
+        },
+        "promotion": {
+          "promotion_id": "promotion-wave-14",
+          "wave_id": 14,
+          "worktree_id": "worktree-wave-14",
+          "state": "ready",
+          "target_ref": "HEAD",
+          "snapshot_ref": "refs/wave/snapshot/14",
+          "candidate_ref": "refs/wave/candidate/14",
+          "candidate_tree": "deadbeef",
+          "conflict_paths": [],
+          "checked_at_ms": 11,
+          "completed_at_ms": 12,
+          "detail": "candidate passed merge validation"
+        },
+        "scheduling": {
+          "wave_id": 14,
+          "phase": "closure",
+          "priority": "closure",
+          "state": "running",
+          "fairness_rank": 1,
+          "waiting_since_ms": 9,
+          "protected_closure_capacity": true,
+          "preemptible": false,
+          "last_decision": "running A8 in shared wave worktree",
+          "updated_at_ms": 12
+        },
+        "merge_blocked": false,
+        "closure_blocked_by_promotion": false
+      },
+      "proof": {
+        "declared_artifacts": [],
+        "complete": false,
+        "proof_source": "compatibility-adapter",
+        "completed_agents": 0,
+        "envelope_backed_agents": 0,
+        "compatibility_backed_agents": 1,
+        "total_agents": 1
+      },
+      "replay": {
+        "run_id": "wave-14-transport",
+        "wave_id": 14,
+        "ok": true,
+        "issues": []
+      },
+      "agents": [
+        {
+          "id": "A1",
+          "title": "Implementation",
+          "status": "running",
+          "current_task": "Implementation",
+          "proof_complete": false,
+          "proof_source": "compatibility-adapter",
+          "expected_markers": [
+            "[wave-proof]"
+          ],
+          "observed_markers": [
+            "[wave-proof]"
+          ],
+          "missing_markers": [],
+          "deliverables": [
+            "src/lib.rs"
+          ],
+          "error": null
+        }
+      ]
+    }
+  ],
+  "active_run_details": [
+    {
+      "wave_id": 14,
+      "wave_slug": "parallel-wave",
+      "wave_title": "Parallel Wave",
+      "run_id": "wave-14-transport",
+      "status": "running",
+      "created_at_ms": 1,
+      "started_at_ms": 2,
+      "elapsed_ms": 1774459042912,
+      "current_agent_id": "A1",
+      "current_agent_title": "Implementation",
+      "activity_excerpt": "[wave-proof]",
+      "execution": {
+        "worktree": {
+          "worktree_id": "worktree-wave-14",
+          "wave_id": 14,
+          "state": "allocated",
+          "path": ".wave/state/worktrees/wave-14",
+          "base_ref": "HEAD",
+          "snapshot_ref": "refs/wave/snapshot/14",
+          "branch_ref": "wave/14/test",
+          "shared_scope": "wave",
+          "allocated_at_ms": 10,
+          "released_at_ms": null,
+          "detail": "shared wave worktree"
+        },
+        "promotion": {
+          "promotion_id": "promotion-wave-14",
+          "wave_id": 14,
+          "worktree_id": "worktree-wave-14",
+          "state": "ready",
+          "target_ref": "HEAD",
+          "snapshot_ref": "refs/wave/snapshot/14",
+          "candidate_ref": "refs/wave/candidate/14",
+          "candidate_tree": "deadbeef",
+          "conflict_paths": [],
+          "checked_at_ms": 11,
+          "completed_at_ms": 12,
+          "detail": "candidate passed merge validation"
+        },
+        "scheduling": {
+          "wave_id": 14,
+          "phase": "closure",
+          "priority": "closure",
+          "state": "running",
+          "fairness_rank": 1,
+          "waiting_since_ms": 9,
+          "protected_closure_capacity": true,
+          "preemptible": false,
+          "last_decision": "running A8 in shared wave worktree",
+          "updated_at_ms": 12
+        },
+        "merge_blocked": false,
+        "closure_blocked_by_promotion": false
+      },
+      "proof": {
+        "declared_artifacts": [],
+        "complete": false,
+        "proof_source": "compatibility-adapter",
+        "completed_agents": 0,
+        "envelope_backed_agents": 0,
+        "compatibility_backed_agents": 1,
+        "total_agents": 1
+      },
+      "replay": {
+        "run_id": "wave-14-transport",
+        "wave_id": 14,
+        "ok": true,
+        "issues": []
+      },
+      "agents": [
+        {
+          "id": "A1",
+          "title": "Implementation",
+          "status": "running",
+          "current_task": "Implementation",
+          "proof_complete": false,
+          "proof_source": "compatibility-adapter",
+          "expected_markers": [
+            "[wave-proof]"
+          ],
+          "observed_markers": [
+            "[wave-proof]"
+          ],
+          "missing_markers": [],
+          "deliverables": [
+            "src/lib.rs"
+          ],
+          "error": null
+        }
+      ]
+    }
+  ]
+}

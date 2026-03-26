@@ -1,0 +1,27 @@
+{
+  "generated_at_ms": 1774459042993,
+  "closure_wave_id": 20,
+  "preempted_wave_id": 22,
+  "revoked_lease_id": "lease-wave-22-a1",
+  "closure_lease_id": "lease-wave-20-a8",
+  "wait_outcome": {
+    "kind": "lease_revoked",
+    "wave_id": 22,
+    "lease_id": "lease-wave-22-a1",
+    "detail": "preempted to free closure capacity for wave 20 agent A8"
+  },
+  "scheduling_events": [
+    {
+      "wave_id": 22,
+      "phase": "implementation",
+      "priority": "implementation",
+      "state": "preempted",
+      "fairness_rank": 1,
+      "waiting_since_ms": 1774459042992,
+      "protected_closure_capacity": false,
+      "preemptible": true,
+      "last_decision": "preempted to free closure capacity for wave 20 agent A8",
+      "updated_at_ms": 1774459042992
+    }
+  ]
+}

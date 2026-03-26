@@ -1,0 +1,28 @@
+{
+  "generated_at_ms": 1774459042822,
+  "claimable_wave_ids": [
+    5,
+    6
+  ],
+  "fairness_ordered_wave_ids": [
+    6,
+    5
+  ],
+  "selected_wave_ids": [
+    6
+  ],
+  "waiting_wave_scheduling": [
+    {
+      "wave_id": 5,
+      "phase": "implementation",
+      "priority": "implementation",
+      "state": "waiting",
+      "fairness_rank": 2,
+      "waiting_since_ms": 1774459042821,
+      "protected_closure_capacity": false,
+      "preemptible": true,
+      "last_decision": "waiting for fairness turn behind older claimable waves",
+      "updated_at_ms": 1774459042821
+    }
+  ]
+}

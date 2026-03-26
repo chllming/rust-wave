@@ -291,6 +291,8 @@ pub struct ResultEnvelopeRecord {
     #[serde(default)]
     pub marker_evidence: Vec<MarkerEvidence>,
     pub closure: ClosureState,
+    #[serde(default)]
+    pub runtime: Option<wave_domain::RuntimeExecutionRecord>,
     pub created_at_ms: u128,
 }
 
@@ -348,10 +350,14 @@ pub struct AgentRunRecord {
     pub stderr_path: PathBuf,
     #[serde(default)]
     pub result_envelope_path: Option<PathBuf>,
+    #[serde(default)]
+    pub runtime_detail_path: Option<PathBuf>,
     pub expected_markers: Vec<String>,
     pub observed_markers: Vec<String>,
     pub exit_code: Option<i32>,
     pub error: Option<String>,
+    #[serde(default)]
+    pub runtime: Option<wave_domain::RuntimeExecutionRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -710,6 +716,13 @@ pub fn self_host_evidence(record: &WaveRunRecord) -> SelfHostEvidenceReport {
                 detail: format!("result envelope {}", result_envelope_path.display()),
             });
         }
+        if let Some(runtime_detail_path) = &agent.runtime_detail_path {
+            help_items.push(SelfHostEvidenceItem {
+                name: format!("agent-{}-runtime-detail", agent.id),
+                ok: runtime_detail_path.exists(),
+                detail: format!("runtime detail {}", runtime_detail_path.display()),
+            });
+        }
     }
 
     if !record.completed_successfully() {
@@ -797,6 +810,12 @@ fn normalize_run_record_paths_for_storage(record: &mut WaveRunRecord, repo_root:
         if let Some(path) = &mut agent.result_envelope_path {
             normalize_repo_path_for_storage(path, repo_root);
         }
+        if let Some(path) = &mut agent.runtime_detail_path {
+            normalize_repo_path_for_storage(path, repo_root);
+        }
+        if let Some(runtime) = &mut agent.runtime {
+            normalize_runtime_record_paths_for_storage(runtime, repo_root);
+        }
     }
 }
 
@@ -814,6 +833,12 @@ fn normalize_run_record_paths(record: &mut WaveRunRecord, repo_root: &Path) {
         normalize_repo_relative_path(&mut agent.stderr_path, repo_root);
         if let Some(path) = &mut agent.result_envelope_path {
             normalize_repo_relative_path(path, repo_root);
+        }
+        if let Some(path) = &mut agent.runtime_detail_path {
+            normalize_repo_relative_path(path, repo_root);
+        }
+        if let Some(runtime) = &mut agent.runtime {
+            normalize_runtime_record_paths(runtime, repo_root);
         }
     }
 }
@@ -847,6 +872,9 @@ fn normalize_result_envelope_for_storage(envelope: &mut ResultEnvelopeRecord, re
             normalize_string_path_for_storage(source, repo_root);
         }
     }
+    if let Some(runtime) = &mut envelope.runtime {
+        normalize_runtime_record_paths_for_storage(runtime, repo_root);
+    }
 }
 
 fn normalize_result_envelope_paths(envelope: &mut ResultEnvelopeRecord, repo_root: &Path) {
@@ -860,6 +888,27 @@ fn normalize_result_envelope_paths(envelope: &mut ResultEnvelopeRecord, repo_roo
         if let Some(source) = &mut evidence.source {
             normalize_string_path_to_absolute(source, repo_root);
         }
+    }
+    if let Some(runtime) = &mut envelope.runtime {
+        normalize_runtime_record_paths(runtime, repo_root);
+    }
+}
+
+fn normalize_runtime_record_paths_for_storage(
+    runtime: &mut wave_domain::RuntimeExecutionRecord,
+    repo_root: &Path,
+) {
+    for path in runtime.execution_identity.artifact_paths.values_mut() {
+        normalize_string_path_for_storage(path, repo_root);
+    }
+}
+
+fn normalize_runtime_record_paths(
+    runtime: &mut wave_domain::RuntimeExecutionRecord,
+    repo_root: &Path,
+) {
+    for path in runtime.execution_identity.artifact_paths.values_mut() {
+        normalize_string_path_to_absolute(path, repo_root);
     }
 }
 
@@ -960,6 +1009,9 @@ fn snapshot_agent_artifacts(agent: &AgentRunRecord) -> TraceAgentArtifactRecord 
     ];
     if let Some(result_envelope_path) = &agent.result_envelope_path {
         artifacts.push(snapshot_artifact("result_envelope", result_envelope_path));
+    }
+    if let Some(runtime_detail_path) = &agent.runtime_detail_path {
+        artifacts.push(snapshot_artifact("runtime_detail", runtime_detail_path));
     }
 
     TraceAgentArtifactRecord {
@@ -1066,6 +1118,20 @@ fn compare_run_records(
             issues.push(ReplayIssue {
                 kind: "trace_agent_result_envelope_mismatch".to_string(),
                 detail: format!("agent={} result envelope path diverged", current_agent.id),
+            });
+        }
+        if path_reference_key(current_agent.runtime_detail_path.as_deref())
+            != path_reference_key(stored_agent.runtime_detail_path.as_deref())
+        {
+            issues.push(ReplayIssue {
+                kind: "trace_agent_runtime_detail_mismatch".to_string(),
+                detail: format!("agent={} runtime detail path diverged", current_agent.id),
+            });
+        }
+        if current_agent.runtime != stored_agent.runtime {
+            issues.push(ReplayIssue {
+                kind: "trace_agent_runtime_mismatch".to_string(),
+                detail: format!("agent={} runtime metadata diverged", current_agent.id),
             });
         }
     }
@@ -1268,6 +1334,7 @@ fn result_envelope_from_domain(envelope: wave_domain::ResultEnvelope) -> ResultE
         doc_delta,
         closure_input,
         closure,
+        runtime,
         created_at_ms,
     } = envelope;
 
@@ -1320,6 +1387,7 @@ fn result_envelope_from_domain(envelope: wave_domain::ResultEnvelope) -> ResultE
             .map(trace_marker_evidence)
             .collect(),
         closure: trace_closure_state(closure),
+        runtime,
         created_at_ms,
     }
 }
@@ -1497,10 +1565,12 @@ mod tests {
             events_path: agent_dir.join("events.jsonl"),
             stderr_path: agent_dir.join("stderr.txt"),
             result_envelope_path: None,
+            runtime_detail_path: None,
             expected_markers: vec!["[wave-proof]".to_string()],
             observed_markers: vec!["[wave-proof]".to_string()],
             exit_code: Some(0),
             error: None,
+            runtime: None,
         }
     }
 
@@ -1519,6 +1589,9 @@ mod tests {
             started_at_ms: Some(2),
             launcher_pid: Some(1234),
             launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
             completed_at_ms: Some(3),
             agents: vec![sample_agent(root, status)],
             error: None,
@@ -1756,6 +1829,7 @@ mod tests {
                 contradiction_ids: Vec::new(),
                 verdict: ClosureVerdictPayload::None,
             },
+            runtime: None,
             created_at_ms: 3,
         };
         write_result_envelope(&envelope_path, &envelope).expect("write result envelope");
@@ -1886,6 +1960,7 @@ mod tests {
                 contradiction_ids: Vec::new(),
                 verdict: ClosureVerdictPayload::None,
             },
+            runtime: None,
             created_at_ms: 3,
         };
         write_result_envelope(&envelope_path, &envelope).expect("write result envelope");

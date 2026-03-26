@@ -1,12 +1,12 @@
 # Codex Runtime Configuration
 
-This wave documents the launcher substrate only: project-scoped Codex state, runtime paths, and the invocation shape used by `wave launch` and `wave autonomous`.
+This page documents the live Codex adapter behind the Wave 15 runtime-neutral boundary.
 
-The current Rust launcher runs Codex with `codex exec`, pipes the compiled agent prompt through stdin, and writes the final assistant message to the per-agent `last-message.txt`.
+Codex is no longer a special-case launcher substrate. It is one sibling adapter behind the same runtime plan that also feeds Claude.
 
 ## Live Invocation Shape
 
-Today the launcher always invokes Codex roughly like this:
+Today the launcher invokes Codex roughly like this:
 
 ```bash
 codex exec \
@@ -14,10 +14,11 @@ codex exec \
   --skip-git-repo-check \
   --dangerously-bypass-approvals-and-sandbox \
   --color never \
-  -C <repo-root> \
+  -C <wave-execution-root> \
   -o <bundle-dir>/agents/<agent-id>/last-message.txt \
   --model <resolved-model> \
-  -c <resolved-config-entry> ...
+  -c <resolved-config-entry> ... \
+  --add-dir <wave-execution-root>/skills/<projected-skill> ...
 ```
 
 It also sets:
@@ -25,31 +26,43 @@ It also sets:
 - `CODEX_HOME=.wave/codex`
 - `CODEX_SQLITE_HOME=.wave/codex`
 
-This keeps auth, sqlite state, and session logs project-scoped instead of mutating the operator's global Codex home.
-
-The launcher also assumes the compiled wave bundle already exists under `.wave/state/build/specs/<run-id>/`, so the runtime reads prompts from the build artifact and does not invent alternate paths at launch time.
+The important Wave 15 change is that Codex now executes from the selected wave-local execution root, and runtime skill projection is derived from that same execution root.
 
 ## Supported `### Executor` Keys
 
-The live launcher currently honors:
+The live Codex adapter currently honors:
 
 | Wave `### Executor` key | Launch effect |
 | --- | --- |
+| `id: codex` | Explicitly requests the Codex runtime |
+| `fallbacks` | Records ordered fallback runtimes if Codex is unavailable |
 | `model` | Adds `--model <name>` |
 | `codex.config` | Adds repeated `-c key=value` overrides |
 
-The `profile` field is still valuable as authored metadata, but the current Rust launcher does not yet synthesize a separate runtime profile layer from it.
+`profile` still matters for runtime inference and authored metadata, but the runtime boundary is now driven by explicit runtime policy records rather than by profile folklore.
 
-Launcher behavior is intentionally narrow in this wave:
+## Runtime Skill Projection
 
-- it consumes compiled prompts from the build bundle
-- it respects the repo-local Codex home from `wave.toml`
-- it records the final assistant message to `last-message.txt`
-- it does not imply a TUI, queue manager, or autonomous scheduler beyond the launch entrypoint itself
+For Codex, the runtime:
+
+1. starts from the agent's declared `### Skills`
+2. resolves the selected runtime and any fallback first
+3. reads `skills/*` from the wave-local execution root or worktree
+4. drops declared skills that are absent from that execution root
+5. filters by `activation.runtimes`
+6. auto-attaches `runtime-codex` when that bundle exists in the execution root
+7. passes the resulting directories through repeated `--add-dir`
+
+The runtime detail snapshot records:
+
+- declared skills
+- projected skills
+- dropped skills
+- auto-attached runtime skills
 
 ## Operator Overrides
 
-Two env vars override authored Codex settings for a launch:
+Two env vars still override authored Codex settings for a launch:
 
 | Env var | Launch effect |
 | --- | --- |
@@ -61,53 +74,30 @@ Example:
 ```bash
 WAVE_CODEX_MODEL_OVERRIDE=gpt-5.4-mini \
 WAVE_CODEX_CONFIG_OVERRIDE=model_reasoning_effort=low,model_verbosity=low \
-cargo run -p wave-cli -- launch --wave 1 --json
+cargo run -p wave-cli -- launch --wave 15 --json
 ```
 
-Use that path when you need to speed up long queue execution without rewriting every wave file.
+## Recorded Artifacts
 
-## Current Limits
+For Codex executions, the runtime records these Codex-relevant artifacts in `runtime-detail.json`:
 
-These Codex-era knobs from the older package launcher are not live in the Rust rewrite yet:
+- `prompt`
+- `skill_overlay`
+- `runtime_detail`
 
-- `codex.command`
-- `codex.sandbox`
-- `codex.profile_name`
-- `codex.search`
-- `codex.images`
-- `codex.add_dirs`
-- `codex.json`
-- `codex.ephemeral`
-
-Do not treat those as implemented until the runtime explicitly starts consuming them.
-
-## Runtime Paths
-
-The launcher substrate expects these repo-local paths:
-
-- `.wave/codex/`
-  project-scoped Codex auth and sqlite state
-- `.wave/state/build/specs/<run-id>/`
-  compiled wave bundle and per-agent prompts
-- `.wave/state/build/specs/<run-id>/agents/<agent-id>/last-message.txt`
-  final assistant message written by the launcher
-- `.wave/state/runs/`
-  recorded run state for launch and dry-run execution
-- `.wave/traces/runs/`
-  replay bundles and trace artifacts
-
-If any of those paths move, update `wave.toml`, the launcher, and the docs together.
+The overlay and projected skill paths are rooted in the wave execution root, not the repo root.
 
 ## Validation Path
 
 Use:
 
 ```bash
+cargo run -p wave-cli -- project show --json
 cargo run -p wave-cli -- doctor --json
-cargo run -p wave-cli -- launch --wave 0 --dry-run --json
 ```
 
-Then inspect:
+Then inspect the Wave 15 proof bundle:
 
-- `.wave/state/build/specs/<run-id>/preflight.json`
-- `.wave/state/build/specs/<run-id>/agents/<agent-id>/prompt.md`
+```text
+docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/
+```

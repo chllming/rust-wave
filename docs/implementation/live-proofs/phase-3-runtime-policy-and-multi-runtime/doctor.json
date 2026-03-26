@@ -1,0 +1,4148 @@
+{
+  "ok": true,
+  "status": {
+    "project_name": "Codex Wave Mode",
+    "default_mode": "dark-factory",
+    "summary": {
+      "total_waves": 18,
+      "ready_waves": 2,
+      "blocked_waves": 3,
+      "active_waves": 0,
+      "completed_waves": 13,
+      "total_agents": 107,
+      "implementation_agents": 49,
+      "closure_agents": 58,
+      "waves_with_complete_closure": 18,
+      "waves_missing_closure": 0,
+      "total_missing_closure_agents": 0,
+      "lint_error_waves": 0,
+      "skill_catalog_issue_count": 0
+    },
+    "skill_catalog": {
+      "ok": true,
+      "issue_count": 0,
+      "issues": []
+    },
+    "queue": {
+      "next_ready_wave_ids": [
+        13,
+        15
+      ],
+      "next_ready_wave_id": 13,
+      "claimable_wave_ids": [
+        13,
+        15
+      ],
+      "claimed_wave_ids": [],
+      "ready_wave_count": 2,
+      "claimed_wave_count": 0,
+      "blocked_wave_count": 3,
+      "active_wave_count": 0,
+      "completed_wave_count": 13,
+      "queue_ready": true,
+      "queue_ready_reason": "ready waves are available to claim"
+    },
+    "next_ready_wave_ids": [
+      13,
+      15
+    ],
+    "waves": [
+      {
+        "id": 0,
+        "slug": "architecture-baseline",
+        "title": "Freeze the authored-wave architecture baseline",
+        "depends_on": [],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 6,
+        "implementation_agent_count": 3,
+        "closure_agent_count": 3,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded"
+      },
+      {
+        "id": 1,
+        "slug": "workspace-bootstrap",
+        "title": "Bootstrap the Rust workspace and operator command surface",
+        "depends_on": [
+          0
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 6,
+        "implementation_agent_count": 3,
+        "closure_agent_count": 3,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded"
+      },
+      {
+        "id": 2,
+        "slug": "config-spec-lint",
+        "title": "Implement typed config, authored-wave parsing, and dark-factory lint",
+        "depends_on": [
+          1
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 6,
+        "implementation_agent_count": 3,
+        "closure_agent_count": 3,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded"
+      },
+      {
+        "id": 3,
+        "slug": "control-plane-bootstrap",
+        "title": "Build planning status and control-plane bootstrap",
+        "depends_on": [
+          2
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 6,
+        "implementation_agent_count": 3,
+        "closure_agent_count": 3,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded"
+      },
+      {
+        "id": 4,
+        "slug": "codex-launcher",
+        "title": "Implement the Codex-backed launcher and agent lifecycle manager",
+        "depends_on": [
+          3
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 6,
+        "implementation_agent_count": 3,
+        "closure_agent_count": 3,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded"
+      },
+      {
+        "id": 5,
+        "slug": "tui-right-panel",
+        "title": "Build the right-side operator panel in the TUI",
+        "depends_on": [
+          3,
+          4
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 6,
+        "implementation_agent_count": 3,
+        "closure_agent_count": 3,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded"
+      },
+      {
+        "id": 6,
+        "slug": "dark-factory-enforcement",
+        "title": "Make dark-factory an enforced execution profile",
+        "depends_on": [
+          2,
+          3,
+          4
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 6,
+        "implementation_agent_count": 3,
+        "closure_agent_count": 3,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded"
+      },
+      {
+        "id": 7,
+        "slug": "autonomous-queue",
+        "title": "Implement autonomous next-wave scheduling and dependency gating",
+        "depends_on": [
+          3,
+          4,
+          6
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 6,
+        "implementation_agent_count": 3,
+        "closure_agent_count": 3,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded"
+      },
+      {
+        "id": 8,
+        "slug": "trace-replay",
+        "title": "Capture traces and validate replay semantics",
+        "depends_on": [
+          3,
+          4,
+          6
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 6,
+        "implementation_agent_count": 3,
+        "closure_agent_count": 3,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded"
+      },
+      {
+        "id": 9,
+        "slug": "dogfood",
+        "title": "Dogfood the Rust system on this repository",
+        "depends_on": [
+          5,
+          7,
+          8
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 6,
+        "implementation_agent_count": 3,
+        "closure_agent_count": 3,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded"
+      },
+      {
+        "id": 10,
+        "slug": "authority-core",
+        "title": "Land the Wave 0.2 authority core",
+        "depends_on": [
+          9
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 6,
+        "implementation_agent_count": 3,
+        "closure_agent_count": 3,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded"
+      },
+      {
+        "id": 11,
+        "slug": "reducer-projection-spine",
+        "title": "Land the reducer-backed planning and projection spine",
+        "depends_on": [
+          10
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 5,
+        "implementation_agent_count": 2,
+        "closure_agent_count": 3,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded"
+      },
+      {
+        "id": 12,
+        "slug": "result-envelope-proof-lifecycle",
+        "title": "Land result envelopes and proof lifecycle",
+        "depends_on": [
+          11
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 5,
+        "implementation_agent_count": 2,
+        "closure_agent_count": 3,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded"
+      },
+      {
+        "id": 13,
+        "slug": "scheduler-authority-and-worktree-contract",
+        "title": "Land scheduler authority and the wave worktree contract",
+        "depends_on": [
+          12
+        ],
+        "blocked_by": [],
+        "blocker_state": [],
+        "lint_errors": 0,
+        "ready": true,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 6,
+        "implementation_agent_count": 3,
+        "closure_agent_count": 3,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "ready",
+          "planning_ready": true,
+          "claimable": true,
+          "reasons": [],
+          "primary_reason": null
+        },
+        "rerun_requested": false,
+        "completed": false,
+        "last_run_status": null
+      },
+      {
+        "id": 14,
+        "slug": "parallel-wave-execution-and-merge-discipline",
+        "title": "Land true parallel-wave execution and merge discipline",
+        "depends_on": [
+          13
+        ],
+        "blocked_by": [
+          "wave:13:pending"
+        ],
+        "blocker_state": [
+          {
+            "kind": "dependency",
+            "raw": "wave:13:pending",
+            "detail": "13:pending"
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 6,
+        "implementation_agent_count": 2,
+        "closure_agent_count": 4,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9",
+          "A6"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9",
+          "A6"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "blocked",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "dependency",
+              "raw": "wave:13:pending",
+              "detail": "13:pending"
+            }
+          ],
+          "primary_reason": {
+            "kind": "dependency",
+            "raw": "wave:13:pending",
+            "detail": "13:pending"
+          }
+        },
+        "rerun_requested": false,
+        "completed": false,
+        "last_run_status": "dry_run"
+      },
+      {
+        "id": 15,
+        "slug": "runtime-policy-and-multi-runtime-adapters",
+        "title": "Land runtime policy and multi-runtime adapters",
+        "depends_on": [
+          14
+        ],
+        "blocked_by": [],
+        "blocker_state": [],
+        "lint_errors": 0,
+        "ready": true,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 7,
+        "implementation_agent_count": 3,
+        "closure_agent_count": 4,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9",
+          "A6"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9",
+          "A6"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "ready",
+          "planning_ready": true,
+          "claimable": true,
+          "reasons": [],
+          "primary_reason": null
+        },
+        "rerun_requested": false,
+        "completed": false,
+        "last_run_status": null
+      },
+      {
+        "id": 16,
+        "slug": "decision-lineage-invalidation-and-human-input",
+        "title": "Land decision lineage, invalidation, and human input",
+        "depends_on": [
+          15
+        ],
+        "blocked_by": [
+          "wave:15:pending"
+        ],
+        "blocker_state": [
+          {
+            "kind": "dependency",
+            "raw": "wave:15:pending",
+            "detail": "15:pending"
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 6,
+        "implementation_agent_count": 2,
+        "closure_agent_count": 4,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9",
+          "A6"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9",
+          "A6"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "blocked",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "dependency",
+              "raw": "wave:15:pending",
+              "detail": "15:pending"
+            }
+          ],
+          "primary_reason": {
+            "kind": "dependency",
+            "raw": "wave:15:pending",
+            "detail": "15:pending"
+          }
+        },
+        "rerun_requested": false,
+        "completed": false,
+        "last_run_status": null
+      },
+      {
+        "id": 17,
+        "slug": "portfolio-release-and-acceptance-packages",
+        "title": "Land portfolio, release, and acceptance packages",
+        "depends_on": [
+          16
+        ],
+        "blocked_by": [
+          "wave:16:pending"
+        ],
+        "blocker_state": [
+          {
+            "kind": "dependency",
+            "raw": "wave:16:pending",
+            "detail": "16:pending"
+          }
+        ],
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "agent_count": 6,
+        "implementation_agent_count": 2,
+        "closure_agent_count": 4,
+        "closure_complete": true,
+        "required_closure_agents": [
+          "A0",
+          "A8",
+          "A9",
+          "A6"
+        ],
+        "present_closure_agents": [
+          "A0",
+          "A8",
+          "A9",
+          "A6"
+        ],
+        "missing_closure_agents": [],
+        "readiness": {
+          "state": "blocked",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "dependency",
+              "raw": "wave:16:pending",
+              "detail": "16:pending"
+            }
+          ],
+          "primary_reason": {
+            "kind": "dependency",
+            "raw": "wave:16:pending",
+            "detail": "16:pending"
+          }
+        },
+        "rerun_requested": false,
+        "completed": false,
+        "last_run_status": null
+      }
+    ],
+    "has_errors": false
+  },
+  "projection": {
+    "agent_counts": {
+      "total": 107,
+      "implementation": 49,
+      "closure": 58
+    },
+    "closure_coverage": {
+      "complete_wave_ids": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17
+      ],
+      "missing_wave_ids": [],
+      "required_agents": 58,
+      "present_agents": 58,
+      "missing_required_agents": 0,
+      "waves": []
+    },
+    "queue": {
+      "ready": [
+        {
+          "id": 13,
+          "slug": "scheduler-authority-and-worktree-contract",
+          "title": "Land scheduler authority and the wave worktree contract"
+        },
+        {
+          "id": 15,
+          "slug": "runtime-policy-and-multi-runtime-adapters",
+          "title": "Land runtime policy and multi-runtime adapters"
+        }
+      ],
+      "claimed": [],
+      "active": [],
+      "completed": [
+        {
+          "id": 0,
+          "slug": "architecture-baseline",
+          "title": "Freeze the authored-wave architecture baseline"
+        },
+        {
+          "id": 1,
+          "slug": "workspace-bootstrap",
+          "title": "Bootstrap the Rust workspace and operator command surface"
+        },
+        {
+          "id": 2,
+          "slug": "config-spec-lint",
+          "title": "Implement typed config, authored-wave parsing, and dark-factory lint"
+        },
+        {
+          "id": 3,
+          "slug": "control-plane-bootstrap",
+          "title": "Build planning status and control-plane bootstrap"
+        },
+        {
+          "id": 4,
+          "slug": "codex-launcher",
+          "title": "Implement the Codex-backed launcher and agent lifecycle manager"
+        },
+        {
+          "id": 5,
+          "slug": "tui-right-panel",
+          "title": "Build the right-side operator panel in the TUI"
+        },
+        {
+          "id": 6,
+          "slug": "dark-factory-enforcement",
+          "title": "Make dark-factory an enforced execution profile"
+        },
+        {
+          "id": 7,
+          "slug": "autonomous-queue",
+          "title": "Implement autonomous next-wave scheduling and dependency gating"
+        },
+        {
+          "id": 8,
+          "slug": "trace-replay",
+          "title": "Capture traces and validate replay semantics"
+        },
+        {
+          "id": 9,
+          "slug": "dogfood",
+          "title": "Dogfood the Rust system on this repository"
+        },
+        {
+          "id": 10,
+          "slug": "authority-core",
+          "title": "Land the Wave 0.2 authority core"
+        },
+        {
+          "id": 11,
+          "slug": "reducer-projection-spine",
+          "title": "Land the reducer-backed planning and projection spine"
+        },
+        {
+          "id": 12,
+          "slug": "result-envelope-proof-lifecycle",
+          "title": "Land result envelopes and proof lifecycle"
+        }
+      ],
+      "blocked": [
+        {
+          "id": 14,
+          "slug": "parallel-wave-execution-and-merge-discipline",
+          "title": "Land true parallel-wave execution and merge discipline",
+          "depends_on": [
+            13
+          ],
+          "blocked_by": [
+            "wave:13:pending"
+          ],
+          "blocker_state": [
+            {
+              "kind": "dependency",
+              "raw": "wave:13:pending",
+              "detail": "13:pending"
+            }
+          ],
+          "lint_errors": 0,
+          "missing_closure_agents": [],
+          "rerun_requested": false,
+          "last_run_status": "dry_run"
+        },
+        {
+          "id": 16,
+          "slug": "decision-lineage-invalidation-and-human-input",
+          "title": "Land decision lineage, invalidation, and human input",
+          "depends_on": [
+            15
+          ],
+          "blocked_by": [
+            "wave:15:pending"
+          ],
+          "blocker_state": [
+            {
+              "kind": "dependency",
+              "raw": "wave:15:pending",
+              "detail": "15:pending"
+            }
+          ],
+          "lint_errors": 0,
+          "missing_closure_agents": [],
+          "rerun_requested": false,
+          "last_run_status": null
+        },
+        {
+          "id": 17,
+          "slug": "portfolio-release-and-acceptance-packages",
+          "title": "Land portfolio, release, and acceptance packages",
+          "depends_on": [
+            16
+          ],
+          "blocked_by": [
+            "wave:16:pending"
+          ],
+          "blocker_state": [
+            {
+              "kind": "dependency",
+              "raw": "wave:16:pending",
+              "detail": "16:pending"
+            }
+          ],
+          "lint_errors": 0,
+          "missing_closure_agents": [],
+          "rerun_requested": false,
+          "last_run_status": null
+        }
+      ],
+      "blocker_summary": {
+        "dependency": 3,
+        "lint": 0,
+        "closure": 0,
+        "ownership": 0,
+        "lease_expired": 0,
+        "budget": 0,
+        "active_run": 0,
+        "already_completed": 13,
+        "other": 0
+      },
+      "blocker_waves": {
+        "dependency": [
+          {
+            "id": 14,
+            "slug": "parallel-wave-execution-and-merge-discipline",
+            "title": "Land true parallel-wave execution and merge discipline"
+          },
+          {
+            "id": 16,
+            "slug": "decision-lineage-invalidation-and-human-input",
+            "title": "Land decision lineage, invalidation, and human input"
+          },
+          {
+            "id": 17,
+            "slug": "portfolio-release-and-acceptance-packages",
+            "title": "Land portfolio, release, and acceptance packages"
+          }
+        ],
+        "lint": [],
+        "closure": [],
+        "ownership": [],
+        "lease_expired": [],
+        "budget": [],
+        "active_run": [],
+        "already_completed": [
+          {
+            "id": 0,
+            "slug": "architecture-baseline",
+            "title": "Freeze the authored-wave architecture baseline"
+          },
+          {
+            "id": 1,
+            "slug": "workspace-bootstrap",
+            "title": "Bootstrap the Rust workspace and operator command surface"
+          },
+          {
+            "id": 2,
+            "slug": "config-spec-lint",
+            "title": "Implement typed config, authored-wave parsing, and dark-factory lint"
+          },
+          {
+            "id": 3,
+            "slug": "control-plane-bootstrap",
+            "title": "Build planning status and control-plane bootstrap"
+          },
+          {
+            "id": 4,
+            "slug": "codex-launcher",
+            "title": "Implement the Codex-backed launcher and agent lifecycle manager"
+          },
+          {
+            "id": 5,
+            "slug": "tui-right-panel",
+            "title": "Build the right-side operator panel in the TUI"
+          },
+          {
+            "id": 6,
+            "slug": "dark-factory-enforcement",
+            "title": "Make dark-factory an enforced execution profile"
+          },
+          {
+            "id": 7,
+            "slug": "autonomous-queue",
+            "title": "Implement autonomous next-wave scheduling and dependency gating"
+          },
+          {
+            "id": 8,
+            "slug": "trace-replay",
+            "title": "Capture traces and validate replay semantics"
+          },
+          {
+            "id": 9,
+            "slug": "dogfood",
+            "title": "Dogfood the Rust system on this repository"
+          },
+          {
+            "id": 10,
+            "slug": "authority-core",
+            "title": "Land the Wave 0.2 authority core"
+          },
+          {
+            "id": 11,
+            "slug": "reducer-projection-spine",
+            "title": "Land the reducer-backed planning and projection spine"
+          },
+          {
+            "id": 12,
+            "slug": "result-envelope-proof-lifecycle",
+            "title": "Land result envelopes and proof lifecycle"
+          }
+        ],
+        "other": []
+      },
+      "readiness": {
+        "next_ready_wave_ids": [
+          13,
+          15
+        ],
+        "next_ready_wave_id": 13,
+        "claimable_wave_ids": [
+          13,
+          15
+        ],
+        "claimed_wave_ids": [],
+        "ready_wave_count": 2,
+        "claimed_wave_count": 0,
+        "blocked_wave_count": 3,
+        "active_wave_count": 0,
+        "completed_wave_count": 13,
+        "queue_ready": true,
+        "queue_ready_reason": "ready waves are available to claim"
+      }
+    },
+    "skill_catalog": {
+      "ok": true,
+      "issue_count": 0,
+      "issue_paths": [],
+      "issues": []
+    },
+    "run": {
+      "active_wave_ids": [],
+      "active_run_ids": [],
+      "active_run_count": 0,
+      "completed_run_count": 13
+    },
+    "agents": {
+      "total_agents": 107,
+      "implementation_agents": 49,
+      "closure_agents": 58,
+      "required_closure_agents": [
+        "A0",
+        "A8",
+        "A9"
+      ],
+      "present_closure_agents": [
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A6",
+        "A0",
+        "A8",
+        "A9",
+        "A6",
+        "A0",
+        "A8",
+        "A9",
+        "A6",
+        "A0",
+        "A8",
+        "A9",
+        "A6"
+      ],
+      "missing_closure_agents": []
+    },
+    "control": {
+      "rerun_supported": true,
+      "clear_rerun_supported": true,
+      "launch_supported": true,
+      "autonomous_supported": true,
+      "launcher_required": true,
+      "launcher_ready": true,
+      "unavailable_actions": [],
+      "unavailable_reasons": []
+    },
+    "waves": [
+      {
+        "id": 0,
+        "slug": "architecture-baseline",
+        "title": "Freeze the authored-wave architecture baseline",
+        "depends_on": [],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded",
+        "agents": {
+          "total": 6,
+          "implementation": 3,
+          "closure": 3
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": false,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": true,
+          "other": false
+        }
+      },
+      {
+        "id": 1,
+        "slug": "workspace-bootstrap",
+        "title": "Bootstrap the Rust workspace and operator command surface",
+        "depends_on": [
+          0
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded",
+        "agents": {
+          "total": 6,
+          "implementation": 3,
+          "closure": 3
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": false,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": true,
+          "other": false
+        }
+      },
+      {
+        "id": 2,
+        "slug": "config-spec-lint",
+        "title": "Implement typed config, authored-wave parsing, and dark-factory lint",
+        "depends_on": [
+          1
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded",
+        "agents": {
+          "total": 6,
+          "implementation": 3,
+          "closure": 3
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": false,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": true,
+          "other": false
+        }
+      },
+      {
+        "id": 3,
+        "slug": "control-plane-bootstrap",
+        "title": "Build planning status and control-plane bootstrap",
+        "depends_on": [
+          2
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded",
+        "agents": {
+          "total": 6,
+          "implementation": 3,
+          "closure": 3
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": false,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": true,
+          "other": false
+        }
+      },
+      {
+        "id": 4,
+        "slug": "codex-launcher",
+        "title": "Implement the Codex-backed launcher and agent lifecycle manager",
+        "depends_on": [
+          3
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded",
+        "agents": {
+          "total": 6,
+          "implementation": 3,
+          "closure": 3
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": false,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": true,
+          "other": false
+        }
+      },
+      {
+        "id": 5,
+        "slug": "tui-right-panel",
+        "title": "Build the right-side operator panel in the TUI",
+        "depends_on": [
+          3,
+          4
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded",
+        "agents": {
+          "total": 6,
+          "implementation": 3,
+          "closure": 3
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": false,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": true,
+          "other": false
+        }
+      },
+      {
+        "id": 6,
+        "slug": "dark-factory-enforcement",
+        "title": "Make dark-factory an enforced execution profile",
+        "depends_on": [
+          2,
+          3,
+          4
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded",
+        "agents": {
+          "total": 6,
+          "implementation": 3,
+          "closure": 3
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": false,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": true,
+          "other": false
+        }
+      },
+      {
+        "id": 7,
+        "slug": "autonomous-queue",
+        "title": "Implement autonomous next-wave scheduling and dependency gating",
+        "depends_on": [
+          3,
+          4,
+          6
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded",
+        "agents": {
+          "total": 6,
+          "implementation": 3,
+          "closure": 3
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": false,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": true,
+          "other": false
+        }
+      },
+      {
+        "id": 8,
+        "slug": "trace-replay",
+        "title": "Capture traces and validate replay semantics",
+        "depends_on": [
+          3,
+          4,
+          6
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded",
+        "agents": {
+          "total": 6,
+          "implementation": 3,
+          "closure": 3
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": false,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": true,
+          "other": false
+        }
+      },
+      {
+        "id": 9,
+        "slug": "dogfood",
+        "title": "Dogfood the Rust system on this repository",
+        "depends_on": [
+          5,
+          7,
+          8
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded",
+        "agents": {
+          "total": 6,
+          "implementation": 3,
+          "closure": 3
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": false,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": true,
+          "other": false
+        }
+      },
+      {
+        "id": 10,
+        "slug": "authority-core",
+        "title": "Land the Wave 0.2 authority core",
+        "depends_on": [
+          9
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded",
+        "agents": {
+          "total": 6,
+          "implementation": 3,
+          "closure": 3
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": false,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": true,
+          "other": false
+        }
+      },
+      {
+        "id": 11,
+        "slug": "reducer-projection-spine",
+        "title": "Land the reducer-backed planning and projection spine",
+        "depends_on": [
+          10
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded",
+        "agents": {
+          "total": 5,
+          "implementation": 2,
+          "closure": 3
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": false,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": true,
+          "other": false
+        }
+      },
+      {
+        "id": 12,
+        "slug": "result-envelope-proof-lifecycle",
+        "title": "Land result envelopes and proof lifecycle",
+        "depends_on": [
+          11
+        ],
+        "blocked_by": [
+          "already-completed"
+        ],
+        "blocker_state": [
+          {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        ],
+        "readiness": {
+          "state": "completed",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "already_completed",
+              "raw": "already-completed",
+              "detail": null
+            }
+          ],
+          "primary_reason": {
+            "kind": "already_completed",
+            "raw": "already-completed",
+            "detail": null
+          }
+        },
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": true,
+        "last_run_status": "succeeded",
+        "agents": {
+          "total": 5,
+          "implementation": 2,
+          "closure": 3
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": false,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": true,
+          "other": false
+        }
+      },
+      {
+        "id": 13,
+        "slug": "scheduler-authority-and-worktree-contract",
+        "title": "Land scheduler authority and the wave worktree contract",
+        "depends_on": [
+          12
+        ],
+        "blocked_by": [],
+        "blocker_state": [],
+        "readiness": {
+          "state": "ready",
+          "planning_ready": true,
+          "claimable": true,
+          "reasons": [],
+          "primary_reason": null
+        },
+        "lint_errors": 0,
+        "ready": true,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": false,
+        "last_run_status": null,
+        "agents": {
+          "total": 6,
+          "implementation": 3,
+          "closure": 3
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": false,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": false,
+          "other": false
+        }
+      },
+      {
+        "id": 14,
+        "slug": "parallel-wave-execution-and-merge-discipline",
+        "title": "Land true parallel-wave execution and merge discipline",
+        "depends_on": [
+          13
+        ],
+        "blocked_by": [
+          "wave:13:pending"
+        ],
+        "blocker_state": [
+          {
+            "kind": "dependency",
+            "raw": "wave:13:pending",
+            "detail": "13:pending"
+          }
+        ],
+        "readiness": {
+          "state": "blocked",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "dependency",
+              "raw": "wave:13:pending",
+              "detail": "13:pending"
+            }
+          ],
+          "primary_reason": {
+            "kind": "dependency",
+            "raw": "wave:13:pending",
+            "detail": "13:pending"
+          }
+        },
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": false,
+        "last_run_status": "dry_run",
+        "agents": {
+          "total": 6,
+          "implementation": 2,
+          "closure": 4
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9",
+            "A6"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9",
+            "A6"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": true,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": false,
+          "other": false
+        }
+      },
+      {
+        "id": 15,
+        "slug": "runtime-policy-and-multi-runtime-adapters",
+        "title": "Land runtime policy and multi-runtime adapters",
+        "depends_on": [
+          14
+        ],
+        "blocked_by": [],
+        "blocker_state": [],
+        "readiness": {
+          "state": "ready",
+          "planning_ready": true,
+          "claimable": true,
+          "reasons": [],
+          "primary_reason": null
+        },
+        "lint_errors": 0,
+        "ready": true,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": false,
+        "last_run_status": null,
+        "agents": {
+          "total": 7,
+          "implementation": 3,
+          "closure": 4
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9",
+            "A6"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9",
+            "A6"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": false,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": false,
+          "other": false
+        }
+      },
+      {
+        "id": 16,
+        "slug": "decision-lineage-invalidation-and-human-input",
+        "title": "Land decision lineage, invalidation, and human input",
+        "depends_on": [
+          15
+        ],
+        "blocked_by": [
+          "wave:15:pending"
+        ],
+        "blocker_state": [
+          {
+            "kind": "dependency",
+            "raw": "wave:15:pending",
+            "detail": "15:pending"
+          }
+        ],
+        "readiness": {
+          "state": "blocked",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "dependency",
+              "raw": "wave:15:pending",
+              "detail": "15:pending"
+            }
+          ],
+          "primary_reason": {
+            "kind": "dependency",
+            "raw": "wave:15:pending",
+            "detail": "15:pending"
+          }
+        },
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": false,
+        "last_run_status": null,
+        "agents": {
+          "total": 6,
+          "implementation": 2,
+          "closure": 4
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9",
+            "A6"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9",
+            "A6"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": true,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": false,
+          "other": false
+        }
+      },
+      {
+        "id": 17,
+        "slug": "portfolio-release-and-acceptance-packages",
+        "title": "Land portfolio, release, and acceptance packages",
+        "depends_on": [
+          16
+        ],
+        "blocked_by": [
+          "wave:16:pending"
+        ],
+        "blocker_state": [
+          {
+            "kind": "dependency",
+            "raw": "wave:16:pending",
+            "detail": "16:pending"
+          }
+        ],
+        "readiness": {
+          "state": "blocked",
+          "planning_ready": false,
+          "claimable": false,
+          "reasons": [
+            {
+              "kind": "dependency",
+              "raw": "wave:16:pending",
+              "detail": "16:pending"
+            }
+          ],
+          "primary_reason": {
+            "kind": "dependency",
+            "raw": "wave:16:pending",
+            "detail": "16:pending"
+          }
+        },
+        "lint_errors": 0,
+        "ready": false,
+        "ownership": {
+          "claim": null,
+          "active_leases": [],
+          "stale_leases": [],
+          "contention_reasons": [],
+          "blocked_by_owner": null,
+          "budget": {
+            "max_active_wave_claims": null,
+            "max_active_task_leases": null,
+            "reserved_closure_task_leases": null,
+            "active_wave_claims": 0,
+            "active_task_leases": 0,
+            "active_implementation_task_leases": 0,
+            "active_closure_task_leases": 0,
+            "closure_capacity_reserved": false,
+            "preemption_enabled": false,
+            "budget_blocked": false
+          }
+        },
+        "execution": {
+          "worktree": null,
+          "promotion": null,
+          "scheduling": null,
+          "merge_blocked": false,
+          "closure_blocked_by_promotion": false
+        },
+        "rerun_requested": false,
+        "completed": false,
+        "last_run_status": null,
+        "agents": {
+          "total": 6,
+          "implementation": 2,
+          "closure": 4
+        },
+        "closure": {
+          "complete": true,
+          "required_agents": [
+            "A0",
+            "A8",
+            "A9",
+            "A6"
+          ],
+          "present_agents": [
+            "A0",
+            "A8",
+            "A9",
+            "A6"
+          ],
+          "missing_agents": []
+        },
+        "blockers": {
+          "dependency": true,
+          "lint": false,
+          "closure": false,
+          "ownership": false,
+          "lease_expired": false,
+          "budget": false,
+          "active_run": false,
+          "already_completed": false,
+          "other": false
+        }
+      }
+    ]
+  },
+  "operator": {
+    "dashboard": {
+      "project_name": "Codex Wave Mode",
+      "next_ready_wave_ids": [
+        13,
+        15
+      ],
+      "active_runs": [],
+      "total_waves": 18,
+      "completed_waves": 13
+    },
+    "run": {
+      "active_wave_ids": [],
+      "active_run_ids": [],
+      "active_run_count": 0,
+      "completed_run_count": 13
+    },
+    "agents": {
+      "total_agents": 107,
+      "implementation_agents": 49,
+      "closure_agents": 58,
+      "required_closure_agents": [
+        "A0",
+        "A8",
+        "A9"
+      ],
+      "present_closure_agents": [
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A0",
+        "A8",
+        "A9",
+        "A6",
+        "A0",
+        "A8",
+        "A9",
+        "A6",
+        "A0",
+        "A8",
+        "A9",
+        "A6",
+        "A0",
+        "A8",
+        "A9",
+        "A6"
+      ],
+      "missing_closure_agents": []
+    },
+    "queue": {
+      "ready_wave_count": 2,
+      "claimed_wave_count": 0,
+      "blocked_wave_count": 3,
+      "active_wave_count": 0,
+      "completed_wave_count": 13,
+      "ready_wave_ids": [
+        13,
+        15
+      ],
+      "claimed_wave_ids": [],
+      "blocked_wave_ids": [
+        14,
+        16,
+        17
+      ],
+      "active_wave_ids": [],
+      "blocker_summary": {
+        "dependency": 3,
+        "lint": 0,
+        "closure": 0,
+        "ownership": 0,
+        "lease_expired": 0,
+        "budget": 0,
+        "active_run": 0,
+        "already_completed": 13,
+        "other": 0
+      },
+      "next_ready_wave_ids": [
+        13,
+        15
+      ],
+      "claimable_wave_ids": [
+        13,
+        15
+      ],
+      "queue_ready": true,
+      "queue_ready_reason": "ready waves are available to claim",
+      "waves": [
+        {
+          "id": 0,
+          "slug": "architecture-baseline",
+          "title": "Freeze the authored-wave architecture baseline",
+          "queue_state": "completed",
+          "blocked": false
+        },
+        {
+          "id": 1,
+          "slug": "workspace-bootstrap",
+          "title": "Bootstrap the Rust workspace and operator command surface",
+          "queue_state": "completed",
+          "blocked": false
+        },
+        {
+          "id": 2,
+          "slug": "config-spec-lint",
+          "title": "Implement typed config, authored-wave parsing, and dark-factory lint",
+          "queue_state": "completed",
+          "blocked": false
+        },
+        {
+          "id": 3,
+          "slug": "control-plane-bootstrap",
+          "title": "Build planning status and control-plane bootstrap",
+          "queue_state": "completed",
+          "blocked": false
+        },
+        {
+          "id": 4,
+          "slug": "codex-launcher",
+          "title": "Implement the Codex-backed launcher and agent lifecycle manager",
+          "queue_state": "completed",
+          "blocked": false
+        },
+        {
+          "id": 5,
+          "slug": "tui-right-panel",
+          "title": "Build the right-side operator panel in the TUI",
+          "queue_state": "completed",
+          "blocked": false
+        },
+        {
+          "id": 6,
+          "slug": "dark-factory-enforcement",
+          "title": "Make dark-factory an enforced execution profile",
+          "queue_state": "completed",
+          "blocked": false
+        },
+        {
+          "id": 7,
+          "slug": "autonomous-queue",
+          "title": "Implement autonomous next-wave scheduling and dependency gating",
+          "queue_state": "completed",
+          "blocked": false
+        },
+        {
+          "id": 8,
+          "slug": "trace-replay",
+          "title": "Capture traces and validate replay semantics",
+          "queue_state": "completed",
+          "blocked": false
+        },
+        {
+          "id": 9,
+          "slug": "dogfood",
+          "title": "Dogfood the Rust system on this repository",
+          "queue_state": "completed",
+          "blocked": false
+        },
+        {
+          "id": 10,
+          "slug": "authority-core",
+          "title": "Land the Wave 0.2 authority core",
+          "queue_state": "completed",
+          "blocked": false
+        },
+        {
+          "id": 11,
+          "slug": "reducer-projection-spine",
+          "title": "Land the reducer-backed planning and projection spine",
+          "queue_state": "completed",
+          "blocked": false
+        },
+        {
+          "id": 12,
+          "slug": "result-envelope-proof-lifecycle",
+          "title": "Land result envelopes and proof lifecycle",
+          "queue_state": "completed",
+          "blocked": false
+        },
+        {
+          "id": 13,
+          "slug": "scheduler-authority-and-worktree-contract",
+          "title": "Land scheduler authority and the wave worktree contract",
+          "queue_state": "ready",
+          "blocked": false
+        },
+        {
+          "id": 14,
+          "slug": "parallel-wave-execution-and-merge-discipline",
+          "title": "Land true parallel-wave execution and merge discipline",
+          "queue_state": "blocked: wave:13:pending",
+          "blocked": true
+        },
+        {
+          "id": 15,
+          "slug": "runtime-policy-and-multi-runtime-adapters",
+          "title": "Land runtime policy and multi-runtime adapters",
+          "queue_state": "ready",
+          "blocked": false
+        },
+        {
+          "id": 16,
+          "slug": "decision-lineage-invalidation-and-human-input",
+          "title": "Land decision lineage, invalidation, and human input",
+          "queue_state": "blocked: wave:15:pending",
+          "blocked": true
+        },
+        {
+          "id": 17,
+          "slug": "portfolio-release-and-acceptance-packages",
+          "title": "Land portfolio, release, and acceptance packages",
+          "queue_state": "blocked: wave:16:pending",
+          "blocked": true
+        }
+      ]
+    },
+    "control": {
+      "rerun_supported": true,
+      "clear_rerun_supported": true,
+      "launch_supported": true,
+      "autonomous_supported": true,
+      "launcher_required": true,
+      "launcher_ready": true,
+      "actions": [
+        {
+          "key": "Tab",
+          "label": "Next panel",
+          "description": "Cycle the right-side panel tabs.",
+          "implemented": true
+        },
+        {
+          "key": "j/k",
+          "label": "Select wave",
+          "description": "Move the queue selection in the operator shell.",
+          "implemented": true
+        },
+        {
+          "key": "r",
+          "label": "Request rerun",
+          "description": "Write a rerun intent for the selected wave.",
+          "implemented": true
+        },
+        {
+          "key": "c",
+          "label": "Clear rerun",
+          "description": "Clear the selected wave's rerun intent.",
+          "implemented": true
+        },
+        {
+          "key": "launch",
+          "label": "Launch wave",
+          "description": "Start the selected ready wave through the runtime launcher.",
+          "implemented": true
+        },
+        {
+          "key": "autonomous",
+          "label": "Launch queue",
+          "description": "Run the ready queue through the runtime launcher.",
+          "implemented": true
+        },
+        {
+          "key": "q",
+          "label": "Quit",
+          "description": "Leave the operator shell.",
+          "implemented": true
+        }
+      ],
+      "implemented_actions": [
+        {
+          "key": "Tab",
+          "label": "Next panel",
+          "description": "Cycle the right-side panel tabs.",
+          "implemented": true
+        },
+        {
+          "key": "j/k",
+          "label": "Select wave",
+          "description": "Move the queue selection in the operator shell.",
+          "implemented": true
+        },
+        {
+          "key": "r",
+          "label": "Request rerun",
+          "description": "Write a rerun intent for the selected wave.",
+          "implemented": true
+        },
+        {
+          "key": "c",
+          "label": "Clear rerun",
+          "description": "Clear the selected wave's rerun intent.",
+          "implemented": true
+        },
+        {
+          "key": "launch",
+          "label": "Launch wave",
+          "description": "Start the selected ready wave through the runtime launcher.",
+          "implemented": true
+        },
+        {
+          "key": "autonomous",
+          "label": "Launch queue",
+          "description": "Run the ready queue through the runtime launcher.",
+          "implemented": true
+        },
+        {
+          "key": "q",
+          "label": "Quit",
+          "description": "Leave the operator shell.",
+          "implemented": true
+        }
+      ],
+      "unavailable_actions": [],
+      "unavailable_reasons": []
+    }
+  },
+  "control_status": {
+    "queue_decision": {
+      "next_claimable_wave_id": 13,
+      "claimable_wave_ids": [
+        13,
+        15
+      ],
+      "claimed_wave_ids": [],
+      "queue_ready_reason": "ready waves are available to claim",
+      "blocker_summary": {
+        "dependency": 3,
+        "lint": 0,
+        "closure": 0,
+        "ownership": 0,
+        "lease_expired": 0,
+        "budget": 0,
+        "active_run": 0,
+        "already_completed": 13,
+        "other": 0
+      },
+      "closure_blocked": [],
+      "lines": [
+        "queue decision: next claimable wave=13",
+        "queue decision: claimable waves=13, 15",
+        "queue decision: claimed waves=none",
+        "queue decision: queue ready reason=ready waves are available to claim",
+        "queue decision: blocker story dependency=3 lint=0 closure=0 ownership=0 lease_expired=0 budget=0 active_run=0",
+        "queue decision: closure-blocked=none"
+      ]
+    },
+    "closure_attention_lines": [],
+    "skill_issue_paths": [],
+    "skill_issue_lines": []
+  },
+  "checks": [
+    {
+      "name": "config",
+      "ok": true,
+      "detail": "loaded wave.toml"
+    },
+    {
+      "name": "authored-waves",
+      "ok": true,
+      "detail": "18 waves, 107 agents (49 implementation, 58 closure)"
+    },
+    {
+      "name": "codex-upstream",
+      "ok": true,
+      "detail": "checked ./third_party/codex-rs/UPSTREAM.toml"
+    },
+    {
+      "name": "wave-upstream",
+      "ok": true,
+      "detail": "checked ./third_party/agent-wave-orchestrator/UPSTREAM.toml"
+    },
+    {
+      "name": "lint",
+      "ok": true,
+      "detail": "0 findings, 0 waves with lint errors"
+    },
+    {
+      "name": "closure-coverage",
+      "ok": true,
+      "detail": "18 complete, 0 missing, required agents present 58/58, 0 absent"
+    },
+    {
+      "name": "skill-catalog",
+      "ok": true,
+      "detail": "0 issues (none)"
+    },
+    {
+      "name": "context7-catalog",
+      "ok": true,
+      "detail": "0 issues (none)"
+    },
+    {
+      "name": "typed-role-prompts",
+      "ok": true,
+      "detail": "dir=./docs/agents | cont_qa=./docs/agents/wave-cont-qa-role.md cont_eval=./docs/agents/wave-cont-eval-role.md integration=./docs/agents/wave-integration-role.md documentation=./docs/agents/wave-documentation-role.md design=./docs/agents/wave-design-role.md security=./docs/agents/wave-security-role.md"
+    },
+    {
+      "name": "typed-authority-roots",
+      "ok": true,
+      "detail": "state_root=./.wave/state | build_specs=./.wave/state/build/specs control_events=./.wave/state/events/control coordination=./.wave/state/events/coordination scheduler_events=./.wave/state/events/scheduler results=./.wave/state/results derived=./.wave/state/derived projections=./.wave/state/projections state_traces=./.wave/state/traces | compatibility truth remains state_runs=./.wave/state/runs trace_runs=./.wave/traces/runs"
+    },
+    {
+      "name": "materialized-authority-roots",
+      "ok": true,
+      "detail": "9 of 9 canonical roots materialized | build_specs=./.wave/state/build/specs [present] events=./.wave/state/events [present] control_events=./.wave/state/events/control [present] coordination=./.wave/state/events/coordination [present] scheduler_events=./.wave/state/events/scheduler [present] results=./.wave/state/results [present] derived=./.wave/state/derived [present] projections=./.wave/state/projections [present] state_traces=./.wave/state/traces [present]"
+    },
+    {
+      "name": "runtime-boundary",
+      "ok": true,
+      "detail": "codex=ready (available), claude=ready (available)"
+    },
+    {
+      "name": "run-state",
+      "ok": true,
+      "detail": "loaded 14 recorded runs, 0 active waves"
+    },
+    {
+      "name": "planning-queue",
+      "ok": true,
+      "detail": "ready=2, blocked=3, active=0, completed=13 | blockers dependency=3 (3) lint=0 (0) closure=0 (0) active_run=0 (0)"
+    }
+  ],
+  "role_prompts": {
+    "dir": "./docs/agents",
+    "cont_qa": "./docs/agents/wave-cont-qa-role.md",
+    "cont_eval": "./docs/agents/wave-cont-eval-role.md",
+    "integration": "./docs/agents/wave-integration-role.md",
+    "documentation": "./docs/agents/wave-documentation-role.md",
+    "design": "./docs/agents/wave-design-role.md",
+    "security": "./docs/agents/wave-security-role.md"
+  },
+  "authority": {
+    "project_codex_home": "./.wave/codex",
+    "state_dir": "./.wave/state",
+    "configured_canonical": {
+      "build_specs": "./.wave/state/build/specs",
+      "events": "./.wave/state/events",
+      "control_events": "./.wave/state/events/control",
+      "coordination": "./.wave/state/events/coordination",
+      "scheduler_events": "./.wave/state/events/scheduler",
+      "results": "./.wave/state/results",
+      "derived": "./.wave/state/derived",
+      "projections": "./.wave/state/projections",
+      "state_traces": "./.wave/state/traces"
+    },
+    "materialized_canonical": {
+      "build_specs": {
+        "path": "./.wave/state/build/specs",
+        "exists": true
+      },
+      "events": {
+        "path": "./.wave/state/events",
+        "exists": true
+      },
+      "control_events": {
+        "path": "./.wave/state/events/control",
+        "exists": true
+      },
+      "coordination": {
+        "path": "./.wave/state/events/coordination",
+        "exists": true
+      },
+      "scheduler_events": {
+        "path": "./.wave/state/events/scheduler",
+        "exists": true
+      },
+      "results": {
+        "path": "./.wave/state/results",
+        "exists": true
+      },
+      "derived": {
+        "path": "./.wave/state/derived",
+        "exists": true
+      },
+      "projections": {
+        "path": "./.wave/state/projections",
+        "exists": true
+      },
+      "state_traces": {
+        "path": "./.wave/state/traces",
+        "exists": true
+      }
+    },
+    "compatibility": {
+      "state_control": "./.wave/state/control",
+      "state_runs": "./.wave/state/runs",
+      "trace_root": "./.wave/traces",
+      "trace_runs": "./.wave/traces/runs"
+    },
+    "projection_source": "planning status, queue/control JSON, and operator-facing status surfaces are reducer-backed projections over canonical scheduler authority plus compatibility run records; proof and closure surfaces are envelope-first, and replay remains compatibility-backed"
+  },
+  "runtime_boundary": {
+    "executor_boundary": "runtime-neutral adapter registry in wave-runtime",
+    "selection_policy": "explicit executor runtime selection with default codex and authored fallback order",
+    "fallback_policy": "fallback only when the selected runtime is unavailable before meaningful work starts",
+    "runtimes": [
+      {
+        "runtime": "codex",
+        "binary": "codex",
+        "available": true,
+        "detail": "available"
+      },
+      {
+        "runtime": "claude",
+        "binary": "claude",
+        "available": true,
+        "detail": "available"
+      }
+    ]
+  }
+}

@@ -146,6 +146,34 @@ pub struct WaveExecutionState {
     pub closure_blocked_by_promotion: bool,
 }
 
+pub fn wave_execution_state_from_records(
+    worktree: Option<WaveWorktreeRecord>,
+    promotion: Option<WavePromotionRecord>,
+    scheduling: Option<WaveSchedulingRecord>,
+) -> WaveExecutionState {
+    let closure_blocked_by_promotion = promotion
+        .as_ref()
+        .map(|record| record.state.blocks_closure())
+        .unwrap_or(false);
+    let merge_blocked = promotion
+        .as_ref()
+        .map(|record| {
+            matches!(
+                record.state,
+                WavePromotionState::Conflicted | WavePromotionState::Failed
+            )
+        })
+        .unwrap_or(false);
+
+    WaveExecutionState {
+        worktree,
+        promotion,
+        scheduling,
+        merge_blocked,
+        closure_blocked_by_promotion,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct QueueReadinessProjection {
     pub next_ready_wave_ids: Vec<u32>,
@@ -1063,28 +1091,11 @@ fn build_wave_execution_state(
     wave_id: u32,
 ) -> WaveExecutionState {
     let wave_state = scheduler_state.waves.get(&wave_id);
-    let promotion = wave_state.and_then(|state| state.promotion.clone());
-    let closure_blocked_by_promotion = promotion
-        .as_ref()
-        .map(|promotion| promotion.state.blocks_closure())
-        .unwrap_or(false);
-    let merge_blocked = promotion
-        .as_ref()
-        .map(|promotion| {
-            matches!(
-                promotion.state,
-                WavePromotionState::Conflicted | WavePromotionState::Failed
-            )
-        })
-        .unwrap_or(false);
-
-    WaveExecutionState {
-        worktree: wave_state.and_then(|state| state.worktree.clone()),
-        promotion,
-        scheduling: wave_state.and_then(|state| state.scheduling.clone()),
-        merge_blocked,
-        closure_blocked_by_promotion,
-    }
+    wave_execution_state_from_records(
+        wave_state.and_then(|state| state.worktree.clone()),
+        wave_state.and_then(|state| state.promotion.clone()),
+        wave_state.and_then(|state| state.scheduling.clone()),
+    )
 }
 
 fn build_budget_state(
@@ -1887,6 +1898,22 @@ mod tests {
                 .unwrap_or(false)
         );
         assert_eq!(
+            conflicted
+                .execution
+                .scheduling
+                .as_ref()
+                .map(|record| record.fairness_rank),
+            Some(1)
+        );
+        assert_eq!(
+            conflicted
+                .execution
+                .scheduling
+                .as_ref()
+                .map(|record| record.state),
+            Some(WaveSchedulingState::Protected)
+        );
+        assert_eq!(
             conflicted.ownership.budget.reserved_closure_task_leases,
             Some(1)
         );
@@ -2296,7 +2323,7 @@ mod tests {
                 phase,
                 priority,
                 state,
-                fairness_rank: 0,
+                fairness_rank: 1,
                 waiting_since_ms: Some(created_at_ms),
                 protected_closure_capacity,
                 preemptible,

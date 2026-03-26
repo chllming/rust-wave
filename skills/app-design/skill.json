@@ -1,0 +1,36 @@
+{
+  "id": "app-design",
+  "title": "App and Web App Design",
+  "description": "Designs and reviews modern apps, web apps, dashboards, flows, and operator surfaces using distinct guidance for general app UX, browser-based web apps, and terminal-native interfaces. Use when the user asks about app design, UX, information architecture, product surfaces, web application design, or modern interface rules.",
+  "activation": {
+    "when": "Attach when the work involves product UX, app design, web app design, dashboard design, information architecture, modern interface rules, or design review of interactive software.",
+    "roles": [
+      "design"
+    ],
+    "runtimes": [],
+    "deployKinds": []
+  },
+  "termination": "Stop when the design proposal or review clearly identifies the correct surface type and applies the right guidance for app UX, web app UX, or terminal UX.",
+  "permissions": {
+    "network": [],
+    "shell": [],
+    "mcpServers": []
+  },
+  "trust": {
+    "tier": "repo-owned"
+  },
+  "evalCases": [
+    {
+      "id": "app-design-review",
+      "role": "design",
+      "runtime": "codex",
+      "expectActive": true
+    },
+    {
+      "id": "general-implementation",
+      "role": "implementation",
+      "runtime": "codex",
+      "expectActive": false
+    }
+  ]
+}

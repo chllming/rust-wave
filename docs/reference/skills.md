@@ -1,20 +1,22 @@
 # Skills Reference
 
-Skills are repo-owned instruction bundles used by authored waves. In this Rust/Codex rewrite, the active surface is simple and explicit:
+Skills are repo-owned instruction bundles used by authored waves.
 
-- every agent can declare `### Skills`
-- `wave lint` validates the referenced ids
+Wave 15 keeps authored `### Skills` as the semantic source of truth, but the runtime projection model is now live:
+
+- every agent declares `### Skills`
+- `wave lint` validates the referenced ids from the repo root
 - `wave doctor` validates the local skill catalog
-- `wave draft` compiles the resolved wave plus skill guidance into per-agent prompts under `.wave/state/build/specs/`
+- `wave draft` still compiles the authored assignment into the per-agent prompt bundle
+- the runtime projects the final executable skill set after runtime selection and fallback
+- that runtime projection resolves from the wave-local execution root or worktree, not the repo root
 
-The runtime-side projection model is still planned. The authoring and validation model is live now.
+For current repo work, read skills as:
 
-For current repo work, read skills as enforced authoring inputs:
-
-- the wave names exact skill ids per agent
-- lint rejects unknown ids inside `waves/*.md`
-- doctor checks that the local catalog is well-formed enough for future waves to rely on
-- repo guidance should mention the bundles future agents are expected to attach for common work
+- explicit authored-wave intent
+- validated from the repo root before launch
+- projected at execution time from the selected wave-local filesystem view
+- recorded in runtime detail as declared, projected, dropped, and auto-attached skills
 
 ## Canonical Bundle Layout
 
@@ -75,7 +77,7 @@ If a detail is specific to one wave, it belongs in the wave prompt instead.
 
 ## Current Attachment Model
 
-Today, this repo attaches skills directly from the authored wave:
+Today, this repo attaches skills semantically from the authored wave:
 
 ```md
 ### Skills
@@ -86,7 +88,18 @@ Today, this repo attaches skills directly from the authored wave:
 - repo-wave-closure-markers
 ```
 
-This is the current source of truth. There is no separate `wave.config.json` routing layer in the active Rust implementation yet.
+This remains the source of semantic intent. There is still no separate `wave.config.json` routing layer.
+
+At execution time, the runtime then derives the executable skill set from the selected wave-local execution root:
+
+1. start with the agent's declared skills
+2. resolve the selected runtime and any fallback
+3. read `skill.json` manifests from the execution root
+4. drop declared skills that are absent from that execution root
+5. filter by `activation.runtimes`
+6. auto-attach `runtime-<selected-runtime>` when that bundle exists
+
+That runtime projection is recorded in `runtime-detail.json` and surfaced through operator transport.
 
 ## Skills In The Wave Lifecycle
 
@@ -98,6 +111,8 @@ Skills are one layer of the authored-wave contract, not a parallel system:
 4. `wave draft` compiles the same wave and skill set into the prompt bundle the runtime will execute
 
 Because the toolchain reads the same declarations end to end, a valid skill list is never enough by itself.
+
+Wave 15 adds one more rule: the runtime is not allowed to read one skill filesystem for selection and a different filesystem for execution. The runtime overlay, projected skill directories, and actual execution root must agree.
 
 ## Current Validation
 
@@ -157,6 +172,10 @@ The Rust/Codex rewrite adds repo-specific bundles so waves do not have to restat
 - `repo-ratatui-operator`
   For the right-side operator panel, status tabs, and narrow-terminal fallback behavior.
   Attach this for `ratatui` operator surfaces and status rendering behavior.
+
+- `app-design`
+  For modern app, web app, and terminal interface design guidance split across `app-design.md`, `web-app-design.md`, and `tui-design.md`.
+  Attach this when the work involves product UX, app-shell decisions, web application design, or broad interface review beyond one framework.
 
 - `tui-design`
   For world-class terminal UX heuristics, operator-surface trust, keyboard flow, information architecture, and recovery-first TUI review.

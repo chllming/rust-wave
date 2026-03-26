@@ -1,0 +1,69 @@
+{
+  "wave": {
+    "id": 15,
+    "slug": "runtime-policy-and-multi-runtime-adapters",
+    "title": "Land runtime policy and multi-runtime adapters",
+    "depends_on": [
+      14
+    ],
+    "blocked_by": [],
+    "blocker_state": [],
+    "lint_errors": 0,
+    "ready": true,
+    "ownership": {
+      "claim": null,
+      "active_leases": [],
+      "stale_leases": [],
+      "contention_reasons": [],
+      "blocked_by_owner": null,
+      "budget": {
+        "max_active_wave_claims": null,
+        "max_active_task_leases": null,
+        "reserved_closure_task_leases": null,
+        "active_wave_claims": 0,
+        "active_task_leases": 0,
+        "active_implementation_task_leases": 0,
+        "active_closure_task_leases": 0,
+        "closure_capacity_reserved": false,
+        "preemption_enabled": false,
+        "budget_blocked": false
+      }
+    },
+    "execution": {
+      "worktree": null,
+      "promotion": null,
+      "scheduling": null,
+      "merge_blocked": false,
+      "closure_blocked_by_promotion": false
+    },
+    "agent_count": 7,
+    "implementation_agent_count": 3,
+    "closure_agent_count": 4,
+    "closure_complete": true,
+    "required_closure_agents": [
+      "A0",
+      "A8",
+      "A9",
+      "A6"
+    ],
+    "present_closure_agents": [
+      "A0",
+      "A8",
+      "A9",
+      "A6"
+    ],
+    "missing_closure_agents": [],
+    "readiness": {
+      "state": "ready",
+      "planning_ready": true,
+      "claimable": true,
+      "reasons": [],
+      "primary_reason": null
+    },
+    "rerun_requested": false,
+    "completed": false,
+    "last_run_status": null
+  },
+  "latest_run": null,
+  "rerun_intent": null
+}

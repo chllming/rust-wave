@@ -1,137 +1,120 @@
 # Claude Runtime Configuration
 
-This page is a target-state/reference description for the Rust rewrite.
+This page documents the live Claude adapter behind the Wave 15 runtime-neutral boundary.
 
-It does **not** mean the current Rust workspace already ships Claude execution. The live Rust runtime is still Codex-only, as documented in [README.md](./README.md).
+Claude is no longer target-state in the Rust runtime. The adapter is implemented in `wave-runtime`, selected through the same runtime policy record as Codex, and persists the same runtime-neutral identity and fallback metadata.
 
-Use this page as:
+The proof classification for a specific checked-in Wave 15 bundle may still be `live`, `dry-run-backed`, or `fixture-backed`. See:
 
-- a design target for a future Rust `wave-executor-claude` adapter
-- a reference surface from the broader Wave architecture
+- [docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/README.md](../../implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/README.md)
 
-Do not read it as proof that `wave launch` in this repo currently invokes Claude.
+## Live Invocation Shape
 
-If or when a Rust Claude adapter lands, update this page together with:
+Today the launcher invokes Claude roughly like this:
 
-- `docs/reference/runtime-config/README.md`
-- `docs/plans/current-state.md`
-- `docs/implementation/rust-codex-refactor.md`
+```bash
+claude -p \
+  --no-session-persistence \
+  --append-system-prompt-file <bundle-dir>/agents/<agent-id>/claude-system-prompt.txt \
+  --settings <resolved-settings-path> \
+  --model <resolved-model> \
+  --agent <resolved-agent> \
+  --permission-mode <mode> \
+  --permission-prompt-tool <tool> \
+  --effort <level> \
+  --max-turns <n> \
+  --mcp-config <resolved-path> ... \
+  --strict-mcp-config \
+  --output-format <format> \
+  --allowedTools <tool> ... \
+  --disallowedTools <tool> ... \
+  --add-dir <wave-execution-root>/skills/<projected-skill> ... \
+  "<runtime prompt text>"
+```
 
-Wave would launch Claude headlessly with `claude -p --no-session-persistence`.
+The command runs with `current_dir=<wave-execution-root>`.
 
-## Target Configuration
+## Supported `### Executor` Keys
 
-| Behavior | `wave.config.json` / profile key | Wave `### Executor` key | Launch effect |
-| --- | --- | --- | --- |
-| Command | `executors.claude.command`, `executors.profiles.<name>.claude.command` | `claude.command` | Selects the executable |
-| Default model | `executors.claude.model`, `executors.profiles.<name>.model` | `model` | Adds `--model <name>` |
-| Agent | `executors.claude.agent`, `executors.profiles.<name>.claude.agent` | `claude.agent` | Adds `--agent <name>` |
-| Prompt mode | `executors.claude.appendSystemPromptMode` | n/a | Uses `--append-system-prompt-file` or `--system-prompt-file` |
-| Permission mode | `executors.claude.permissionMode`, `executors.profiles.<name>.claude.permissionMode` | `claude.permission_mode` | Adds `--permission-mode <mode>` |
-| Permission prompt tool | `executors.claude.permissionPromptTool`, `executors.profiles.<name>.claude.permissionPromptTool` | `claude.permission_prompt_tool` | Adds `--permission-prompt-tool <tool>` |
-| Effort | `executors.claude.effort`, `executors.profiles.<name>.claude.effort` | `claude.effort` | Adds `--effort low|medium|high|max` |
-| Max turns | `executors.claude.maxTurns`, `executors.profiles.<name>.claude.maxTurns` | `claude.max_turns` | Adds `--max-turns <n>` |
-| MCP config | `executors.claude.mcpConfig`, `executors.profiles.<name>.claude.mcpConfig` | `claude.mcp_config` | Adds repeated `--mcp-config <path>` |
-| Strict MCP mode | `executors.claude.strictMcpConfig`, `executors.profiles.<name>.claude.strictMcpConfig` | n/a | Adds `--strict-mcp-config` |
-| Base settings file | `executors.claude.settings`, `executors.profiles.<name>.claude.settings` | `claude.settings` | Passed through `--settings` when no inline overlay is generated, or used as the base for the generated overlay |
-| Inline settings JSON | `executors.claude.settingsJson`, `executors.profiles.<name>.claude.settingsJson` | `claude.settings_json` | Merged into generated settings overlay |
-| Inline hooks JSON | `executors.claude.hooksJson`, `executors.profiles.<name>.claude.hooksJson` | `claude.hooks_json` | Written under top-level `hooks` in the generated settings overlay |
-| Allowed HTTP hook URLs | `executors.claude.allowedHttpHookUrls`, `executors.profiles.<name>.claude.allowedHttpHookUrls` | `claude.allowed_http_hook_urls` | Written under top-level `allowedHttpHookUrls` in the generated settings overlay |
-| Output format | `executors.claude.outputFormat`, `executors.profiles.<name>.claude.outputFormat` | `claude.output_format` | Adds `--output-format text|json|stream-json` |
-| Allowed tools | `executors.claude.allowedTools`, `executors.profiles.<name>.claude.allowedTools` | `claude.allowed_tools` | Adds repeated `--allowedTools <tool>` |
-| Disallowed tools | `executors.claude.disallowedTools`, `executors.profiles.<name>.claude.disallowedTools` | `claude.disallowed_tools` | Adds repeated `--disallowedTools <tool>` |
+The live Claude adapter currently honors:
 
-## Target Overlay Behavior
+| Wave `### Executor` key | Launch effect |
+| --- | --- |
+| `id: claude` | Explicitly requests the Claude runtime |
+| `fallbacks` | Records ordered fallback runtimes if Claude is unavailable |
+| `model` | Adds `--model <name>` |
+| `claude.agent` | Adds `--agent <name>` |
+| `claude.permission_mode` | Adds `--permission-mode <mode>` |
+| `claude.permission_prompt_tool` | Adds `--permission-prompt-tool <tool>` |
+| `claude.effort` | Adds `--effort <level>` |
+| `claude.max_turns` | Adds `--max-turns <n>` |
+| `claude.mcp_config` | Adds repeated `--mcp-config <path>` after execution-root resolution |
+| `claude.strict_mcp_config` | Adds `--strict-mcp-config` when truthy |
+| `claude.settings` | Resolves a base settings file against the execution root |
+| `claude.settings_json` | Merges inline JSON into the generated settings overlay |
+| `claude.hooks_json` | Writes top-level `hooks` into the generated settings overlay |
+| `claude.allowed_http_hook_urls` | Writes top-level `allowedHttpHookUrls` into the generated settings overlay |
+| `claude.output_format` | Adds `--output-format <format>` |
+| `claude.allowed_tools` | Adds repeated `--allowedTools <tool>` |
+| `claude.disallowed_tools` | Adds repeated `--disallowedTools <tool>` |
 
-Wave always writes `claude-system-prompt.txt` for the harness runtime instructions.
+## Settings Overlay Behavior
 
-Wave validates the effort enum only. Model-specific compatibility for values such as `max` remains enforced by Claude Code itself.
+Wave always writes `claude-system-prompt.txt` for the Claude harness instructions.
+
+Wave resolves `claude.settings` relative to the selected wave-local execution root.
 
 Wave writes `claude-settings.json` only when at least one inline overlay input is present:
 
-- `settingsJson`
-- `hooksJson`
-- `allowedHttpHookUrls`
+- `claude.settings_json`
+- `claude.hooks_json`
+- `claude.allowed_http_hook_urls`
 
 Merge order:
 
 1. base `claude.settings` JSON file, if provided
-2. inline `settingsJson`
-3. inline `hooksJson` under top-level `hooks`
-4. inline `allowedHttpHookUrls` under top-level `allowedHttpHookUrls`
+2. inline `claude.settings_json`
+3. inline `claude.hooks_json` under top-level `hooks`
+4. inline `claude.allowed_http_hook_urls` under top-level `allowedHttpHookUrls`
 
-If no inline overlay data is present, Wave passes the base `claude.settings` file directly through `--settings` without generating `claude-settings.json`.
+If no inline overlay data is present, Wave passes the resolved base settings file directly through `--settings` and records that path in runtime detail.
 
-## Example: `wave.config.json`
+## Runtime Skill Projection
 
-```json
-{
-  "executors": {
-    "profiles": {
-      "deep-review": {
-        "id": "claude",
-        "model": "claude-sonnet-4-6",
-        "budget": {
-          "turns": 10,
-          "minutes": 30
-        },
-        "claude": {
-          "agent": "reviewer",
-          "effort": "high",
-          "permissionMode": "plan",
-          "allowedTools": ["Read"],
-          "disallowedTools": ["Edit"]
-        }
-      }
-    },
-    "claude": {
-      "command": "claude",
-      "appendSystemPromptMode": "append",
-      "outputFormat": "text",
-      "settingsJson": {
-        "permissions": {
-          "allow": ["Read"]
-        }
-      }
-    }
-  }
-}
+Claude uses the same runtime skill projection rules as Codex:
+
+1. resolve the selected runtime and fallback first
+2. read manifests from the wave-local execution root or worktree
+3. filter by `activation.runtimes`
+4. drop declared skills absent from the execution root
+5. auto-attach `runtime-claude` when that bundle exists in the execution root
+6. pass the resulting directories through repeated `--add-dir`
+
+This keeps the runtime overlay, the Claude system prompt, the settings overlay, and the actual Claude working directory rooted in one filesystem view.
+
+## Recorded Artifacts
+
+For Claude executions, `runtime-detail.json` records:
+
+- `prompt`
+- `skill_overlay`
+- `runtime_detail`
+- `system_prompt`
+- `settings` when a base settings file or generated overlay is used
+
+The runtime detail snapshot also records selected runtime, selection reason, fallback metadata, and projected skills in the same runtime-neutral schema used by Codex.
+
+## Validation Path
+
+Use:
+
+```bash
+cargo run -p wave-cli -- project show --json
+cargo run -p wave-cli -- doctor --json
 ```
 
-## Example: Wave `### Executor`
+Then inspect the Wave 15 proof bundle:
 
-````md
-### Executor
-
-- id: claude
-- model: claude-sonnet-4-6
-- claude.effort: high
-- claude.permission_mode: plan
-- claude.max_turns: 4
-- claude.settings_json: {"permissions":{"allow":["Read"]}}
-- claude.hooks_json: {"Stop":[{"command":"echo stop"}]}
-- claude.allowed_http_hook_urls: https://example.com/hooks
-- claude.output_format: json
-- claude.allowed_tools: Read
-- claude.disallowed_tools: Edit
-````
-
-## Target Dry-Run Output
-
-For a dry run, inspect:
-
-- `claude-system-prompt.txt`
-- `claude-settings.json`, when generated
-- `launch-preview.json`
-
-`launch-preview.json` would show the final `claude -p` invocation, whether `--effort`, `--settings`, `--allowedTools`, `--disallowedTools`, `--mcp-config`, or `--system-prompt-file` were included, and the resolved `limits` block for attempt timeout plus known turn ceiling.
-
-## Rust Rewrite Status
-
-Today, in this repository:
-
-- authored waves may describe a future multi-runtime contract
-- architecture docs may target Codex plus Claude under a shared executor abstraction
-- the live Rust launcher still only executes Codex
-
-Treat this file as future-facing until the Rust runtime grows a real Claude adapter.
+```text
+docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/
+```

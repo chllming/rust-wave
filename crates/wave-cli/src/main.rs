@@ -37,7 +37,6 @@ use wave_runtime::LaunchPreflightReport;
 use wave_runtime::RerunIntentRecord;
 use wave_runtime::autonomous_launch;
 use wave_runtime::clear_rerun;
-use wave_runtime::codex_binary_available;
 use wave_runtime::dogfood_evidence_report;
 use wave_runtime::draft_wave;
 use wave_runtime::launch_wave;
@@ -45,6 +44,7 @@ use wave_runtime::load_latest_runs;
 use wave_runtime::pending_rerun_wave_ids;
 use wave_runtime::repair_orphaned_runs;
 use wave_runtime::request_rerun;
+use wave_runtime::runtime_boundary_status;
 use wave_runtime::trace_inspection_report;
 use wave_spec::WaveDocument;
 use wave_spec::load_wave_documents;
@@ -222,6 +222,7 @@ struct DoctorReport {
     checks: Vec<DoctorCheck>,
     role_prompts: RolePromptSurface,
     authority: AuthoritySurface,
+    runtime_boundary: wave_runtime::RuntimeBoundaryStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -279,6 +280,7 @@ struct ProjectShowReport {
     codex_vendor_dir: PathBuf,
     role_prompts: RolePromptSurface,
     authority: AuthoritySurface,
+    runtime_boundary: wave_runtime::RuntimeBoundaryStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -375,6 +377,7 @@ fn main() -> Result<()> {
     let skill_catalog_issues = validate_skill_catalog(&root);
     let latest_runs = load_latest_runs(&root, &config)?;
     let rerun_wave_ids = pending_rerun_wave_ids(&root, &config)?;
+    let runtime_boundary = runtime_boundary_status();
     let spine = build_projection_spine_from_authority(
         &root,
         &config,
@@ -383,7 +386,7 @@ fn main() -> Result<()> {
         &skill_catalog_issues,
         &latest_runs,
         &rerun_wave_ids,
-        codex_binary_available(),
+        runtime_boundary.runtimes.iter().any(|runtime| runtime.available),
     )?;
 
     match cli.command {
@@ -550,9 +553,18 @@ fn render_summary(config: &ProjectConfig, spine: &ProjectionSpine) -> Result<()>
         format_string_list(&control_status.skill_issue_paths)
     );
     println!(
-        "launcher: codex={} ready={}",
-        operator.control.launcher_ready,
-        operator.control.launcher_ready && !status.next_ready_wave_ids.is_empty()
+        "launcher: ready={} runtimes={}",
+        operator.control.launcher_ready && !status.next_ready_wave_ids.is_empty(),
+        runtime_boundary_status()
+            .runtimes
+            .iter()
+            .map(|runtime| format!(
+                "{}={}",
+                runtime.runtime,
+                if runtime.available { "ready" } else { "blocked" }
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     println!("active runs: {}", operator.dashboard.active_runs.len());
     Ok(())
@@ -639,6 +651,7 @@ fn render_project(config: &ProjectConfig, root: &Path, json: bool) -> Result<()>
         codex_vendor_dir: resolved.codex_vendor_dir,
         role_prompts: role_prompt_surface(config, root),
         authority: authority_surface(config, root),
+        runtime_boundary: runtime_boundary_status(),
     };
     if json {
         print_json(&report)
@@ -650,6 +663,27 @@ fn render_project(config: &ProjectConfig, root: &Path, json: bool) -> Result<()>
         println!("docs dir: {}", report.docs_dir.display());
         println!("skills dir: {}", report.skills_dir.display());
         println!("codex vendor dir: {}", report.codex_vendor_dir.display());
+        println!(
+            "runtime boundary: {} | {} | {}",
+            report.runtime_boundary.executor_boundary,
+            report.runtime_boundary.selection_policy,
+            report.runtime_boundary.fallback_policy
+        );
+        println!(
+            "runtime availability: {}",
+            report
+                .runtime_boundary
+                .runtimes
+                .iter()
+                .map(|runtime| format!(
+                    "{}={} ({})",
+                    runtime.runtime,
+                    if runtime.available { "ready" } else { "blocked" },
+                    runtime.detail
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         println!(
             "role prompts: dir={} | cont_qa={} cont_eval={} integration={} documentation={} design={} security={}",
             report.role_prompts.dir.display(),
@@ -787,6 +821,25 @@ fn render_doctor(
         report.authority.state_dir.display()
     );
     println!(
+        "runtime boundary: {}",
+        report.runtime_boundary.executor_boundary
+    );
+    println!(
+        "runtime availability: {}",
+        report
+            .runtime_boundary
+            .runtimes
+            .iter()
+            .map(|runtime| format!(
+                "{}={} ({})",
+                runtime.runtime,
+                if runtime.available { "ready" } else { "blocked" },
+                runtime.detail
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!(
         "configured canonical roots: build_specs={} events={} control_events={} coordination={} scheduler_events={} results={} derived={} projections={} state_traces={}",
         report.authority.configured_canonical.build_specs.display(),
         report.authority.configured_canonical.events.display(),
@@ -860,6 +913,7 @@ fn build_doctor_report(
     let resolved_paths = config.resolved_paths(root);
     let role_prompts = role_prompt_surface(config, root);
     let authority = authority_surface(config, root);
+    let runtime_boundary = runtime_boundary_status();
     let role_prompt_checks = resolved_paths
         .role_prompts
         .all_files()
@@ -1014,9 +1068,19 @@ fn build_doctor_report(
             detail: authority_materialization_detail,
         },
         DoctorCheck {
-            name: "codex-binary",
-            ok: codex_binary_available(),
-            detail: "checked `codex --version`".to_string(),
+            name: "runtime-boundary",
+            ok: runtime_boundary.runtimes.iter().any(|runtime| runtime.available),
+            detail: runtime_boundary
+                .runtimes
+                .iter()
+                .map(|runtime| format!(
+                    "{}={} ({})",
+                    runtime.runtime,
+                    if runtime.available { "ready" } else { "blocked" },
+                    runtime.detail
+                ))
+                .collect::<Vec<_>>()
+                .join(", "),
         },
         DoctorCheck {
             name: "run-state",
@@ -1056,6 +1120,7 @@ fn build_doctor_report(
         checks,
         role_prompts,
         authority,
+        runtime_boundary,
     })
 }
 
@@ -1519,7 +1584,6 @@ fn render_launch(
     options: LaunchOptions,
     json: bool,
 ) -> Result<()> {
-    ensure_codex_available(options.dry_run)?;
     match launch_wave(root, config, waves, status, options) {
         Ok(report) => {
             if json {
@@ -1552,7 +1616,6 @@ fn render_autonomous(
     options: AutonomousOptions,
     json: bool,
 ) -> Result<()> {
-    ensure_codex_available(options.dry_run)?;
     let reports = autonomous_launch(root, config, waves, status, options)?;
     if json {
         print_json(&reports)
@@ -1571,16 +1634,6 @@ fn render_autonomous(
             );
         }
         Ok(())
-    }
-}
-
-fn ensure_codex_available(dry_run: bool) -> Result<()> {
-    if dry_run || codex_binary_available() {
-        Ok(())
-    } else {
-        anyhow::bail!(
-            "codex binary is required for non-dry-run launch actions; install codex or use --dry-run"
-        )
     }
 }
 
@@ -2090,6 +2143,7 @@ mod tests {
                     contradiction_ids: Vec::new(),
                     verdict: wave_trace::ClosureVerdictPayload::None,
                 },
+                runtime: None,
                 created_at_ms: 3,
             },
         )
@@ -2123,10 +2177,12 @@ mod tests {
                 events_path: agent_dir.join("events.jsonl"),
                 stderr_path: agent_dir.join("stderr.txt"),
                 result_envelope_path: Some(envelope_path),
+                runtime_detail_path: None,
                 expected_markers: vec!["[wave-proof]".to_string()],
                 observed_markers: Vec::new(),
                 exit_code: Some(0),
                 error: None,
+                runtime: None,
             }],
             error: None,
         };

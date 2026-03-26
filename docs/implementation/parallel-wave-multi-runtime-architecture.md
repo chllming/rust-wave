@@ -19,22 +19,28 @@ For the broader 0.2 cutover architecture that this document extends, read:
 - [rust-wave-0.3-notes.md](./rust-wave-0.3-notes.md)
 - [../plans/full-cycle-waves.md](../plans/full-cycle-waves.md)
 
-## Wave 14 Live Boundary
+## Wave 14 And Wave 15 Live Boundary
 
-Wave 14 has now landed the first honest repo-local parallel-wave execution slice.
+Wave 14 and Wave 15 now define the honest repo-local execution boundary.
 
 What is live now:
 
 - repo-local parallel admission and execution for two non-conflicting waves at a time
 - one isolated worktree per active wave under `.wave/state/worktrees/`
 - one shared wave-local filesystem view for every agent inside the same wave
-- explicit promotion state before closure, with conflict or failure blocking closure
-- reducer-backed projection visibility for worktree identity, promotion state, scheduler phase, fairness rank, and protected closure capacity
+- a runtime-neutral adapter registry in `wave-runtime`
+- explicit runtime selection and fallback records persisted in run state, structured results, and operator transport
+- Codex and Claude as sibling adapters behind that shared runtime boundary
+- runtime-aware skill projection resolved from the selected wave-local execution root after final runtime selection and fallback
+- app-server run-detail transport now carries the same execution state surfaced in reducer-backed wave projections
+- explicit promotion state before closure, with `promotion.ready` gated by a scratch merge validation against the current target snapshot and conflict or failure blocking closure
+- released worktrees are actually removed before the runtime records `state=released`
+- reducer-backed projection visibility for worktree identity, promotion state, merge blocking, scheduler wait reasons, reserved closure capacity, and preemption evidence
 
 What is still later work:
 
-- Claude runtime adapters
 - a richer runtime policy engine and operator policy controls
+- more runtimes beyond Codex and Claude
 - portfolio or release-layer delivery state
 - decision, contradiction, and invalidation lineage
 - per-agent worktrees
@@ -54,12 +60,12 @@ The current Rust repo is a stronger architectural base than the older launcher-c
 
 That is the right direction.
 
-The main remaining gap is runtime breadth. The live runtime is now:
+The main remaining gap is richer runtime policy breadth above the landed adapter seam. The live runtime is now:
 
 - parallel for up to two non-conflicting repo-local waves at a time
 - one agent at a time inside each wave, sharing that wave's worktree
-- Codex-only
-- scheduler-enforced and lease-aware, but still not yet a multi-runtime policy engine
+- runtime-neutral at the boundary with Codex and Claude adapters
+- scheduler-enforced and lease-aware, with FIFO fairness inside claimable implementation admission plus reserved closure capacity and lease-level preemption above that lane, but still not yet a multi-runtime policy engine
 
 So the target architecture should not be “make the current launcher slightly smarter.”
 
@@ -124,6 +130,7 @@ The live repo already treats skills as explicit authored-wave inputs. The target
 
 - skills are declared at the wave/role/subsystem level first
 - runtime-specific overlays are applied only after executor resolution
+- the projected runtime skill set must be read from the same wave-local execution root that the selected runtime actually executes
 
 That gives one shared abstraction for skills across Codex and Claude:
 

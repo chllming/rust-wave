@@ -24,42 +24,42 @@
     {
       "name": "agent-A1-artifacts",
       "ok": true,
-      "detail": "prompt=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A1/prompt.md last_message=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A1/last-message.txt events=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A1/events.jsonl stderr=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A1/stderr.txt"
+      "detail": "prompt=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774459040994/agents/A1/prompt.md last_message=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774459040994/agents/A1/last-message.txt events=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774459040994/agents/A1/events.jsonl stderr=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774459040994/agents/A1/stderr.txt"
     },
     {
       "name": "agent-A1-result-envelope",
       "ok": true,
-      "detail": "result envelope /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/results/wave-05/wave-05-1774437297548-a1/agent_result_envelope.json"
+      "detail": "result envelope /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/results/wave-05/wave-05-1774459040994-a1/agent_result_envelope.json"
     },
     {
       "name": "agent-A8-artifacts",
       "ok": true,
-      "detail": "prompt=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A8/prompt.md last_message=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A8/last-message.txt events=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A8/events.jsonl stderr=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A8/stderr.txt"
+      "detail": "prompt=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774459040994/agents/A8/prompt.md last_message=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774459040994/agents/A8/last-message.txt events=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774459040994/agents/A8/events.jsonl stderr=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774459040994/agents/A8/stderr.txt"
     },
     {
       "name": "agent-A8-result-envelope",
       "ok": true,
-      "detail": "result envelope /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/results/wave-05/wave-05-1774437297548-a8/agent_result_envelope.json"
+      "detail": "result envelope /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/results/wave-05/wave-05-1774459040994-a8/agent_result_envelope.json"
     },
     {
       "name": "agent-A9-artifacts",
       "ok": true,
-      "detail": "prompt=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A9/prompt.md last_message=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A9/last-message.txt events=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A9/events.jsonl stderr=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A9/stderr.txt"
+      "detail": "prompt=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774459040994/agents/A9/prompt.md last_message=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774459040994/agents/A9/last-message.txt events=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774459040994/agents/A9/events.jsonl stderr=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774459040994/agents/A9/stderr.txt"
     },
     {
       "name": "agent-A9-result-envelope",
       "ok": true,
-      "detail": "result envelope /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/results/wave-05/wave-05-1774437297548-a9/agent_result_envelope.json"
+      "detail": "result envelope /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/results/wave-05/wave-05-1774459040994-a9/agent_result_envelope.json"
     },
     {
       "name": "agent-A0-artifacts",
       "ok": true,
-      "detail": "prompt=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A0/prompt.md last_message=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A0/last-message.txt events=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A0/events.jsonl stderr=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774437297548/agents/A0/stderr.txt"
+      "detail": "prompt=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774459040994/agents/A0/prompt.md last_message=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774459040994/agents/A0/last-message.txt events=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774459040994/agents/A0/events.jsonl stderr=/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/build/specs/wave-05-1774459040994/agents/A0/stderr.txt"
     },
     {
       "name": "agent-A0-result-envelope",
       "ok": true,
-      "detail": "result envelope /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/results/wave-05/wave-05-1774437297548-a0/agent_result_envelope.json"
+      "detail": "result envelope /home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/results/wave-05/wave-05-1774459040994-a0/agent_result_envelope.json"
     },
     {
       "name": "operator-help",
@@ -71,13 +71,13 @@
     "worktree_id": "worktree-wave-14-live-proof",
     "wave_id": 14,
     "state": "released",
-    "path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/worktrees/wave-05-wave-05-1774437297548",
+    "path": "/home/coder/codex-wave-mode/.wave/state/live-proofs/phase-2-parallel-wave-execution-fixture/.wave/state/worktrees/wave-05-wave-05-1774459040994",
     "base_ref": "main",
-    "snapshot_ref": "6f7e753886dbed1a61d1d90bffb9ea30b3e45868",
+    "snapshot_ref": "97157ccb35eab2ad3d3c8531b6600c82aff51e10",
     "branch_ref": null,
     "shared_scope": "wave",
-    "allocated_at_ms": 1774437297558,
-    "released_at_ms": 1774437299286,
+    "allocated_at_ms": 1774459041003,
+    "released_at_ms": 1774459042713,
     "detail": "wave completed; worktree released"
   },
   "promotion": {
@@ -86,24 +86,24 @@
     "worktree_id": "worktree-wave-14-live-proof",
     "state": "ready",
     "target_ref": "main",
-    "snapshot_ref": "6f7e753886dbed1a61d1d90bffb9ea30b3e45868",
-    "candidate_ref": "cccb284f1002b6d8bd6aff2d608351d9fbd6306b",
-    "candidate_tree": "36ed4c3606add4b97e27a21e74a38930bd2d44b2",
+    "snapshot_ref": "97157ccb35eab2ad3d3c8531b6600c82aff51e10",
+    "candidate_ref": "a5f282992ec5b47551984ba2f28058723cf512e4",
+    "candidate_tree": "bc8996c36f60feb5311aada4ccd02060edb3543c",
     "conflict_paths": [],
-    "checked_at_ms": 1774437298431,
-    "completed_at_ms": 1774437298507,
-    "detail": "promotion candidate is ready"
+    "checked_at_ms": 1774459041817,
+    "completed_at_ms": 1774459041901,
+    "detail": "promotion candidate passed scratch merge validation"
   },
   "scheduling": {
     "wave_id": 14,
     "phase": "closure",
     "priority": "closure",
     "state": "released",
-    "fairness_rank": 0,
+    "fairness_rank": 1,
     "waiting_since_ms": null,
     "protected_closure_capacity": true,
     "preemptible": false,
     "last_decision": "wave completed and released",
-    "updated_at_ms": 1774437299287
+    "updated_at_ms": 1774459042713
   }
 }
