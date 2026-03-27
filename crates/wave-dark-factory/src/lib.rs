@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use wave_spec::WaveClass;
 use wave_spec::WaveAgent;
 use wave_spec::WaveDocument;
 
@@ -145,6 +146,50 @@ pub fn lint_project(root: &Path, waves: &[WaveDocument]) -> Vec<LintFinding> {
                 rule: "wave-owners-required",
                 message: "wave front matter must declare at least one non-empty owner".to_string(),
             });
+        }
+
+        if wave.metadata.wave_class != WaveClass::Implementation
+            && wave.metadata.intent.is_none()
+        {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "wave-intent-required",
+                message: "non-implementation waves must declare an intent".to_string(),
+            });
+        }
+
+        if wave.metadata.delivery.is_some()
+            && wave
+                .metadata
+                .intent
+                .is_none()
+        {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "delivery-intent-required",
+                message: "delivery-aware waves must declare an intent".to_string(),
+            });
+        }
+
+        if let Some(delivery) = wave.metadata.delivery.as_ref() {
+            if delivery.initiative_id.as_deref().unwrap_or("").trim().is_empty()
+                && delivery.release_id.as_deref().unwrap_or("").trim().is_empty()
+                && delivery
+                    .acceptance_package_id
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
+            {
+                findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "delivery-link-required",
+                    message: "delivery-aware waves must link at least one initiative, release, or acceptance package id".to_string(),
+                });
+            }
         }
 
         if wave
@@ -336,6 +381,17 @@ pub fn lint_project(root: &Path, waves: &[WaveDocument]) -> Vec<LintFinding> {
             });
         }
 
+        if wave.metadata.wave_class == WaveClass::Implementation
+            && wave.code_implementation_agents().next().is_none()
+        {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "code-implementation-agent-required",
+                message: "implementation waves must declare at least one non-design code agent".to_string(),
+            });
+        }
+
         if wave.agents.is_empty() {
             findings.push(LintFinding {
                 wave_id: wave.metadata.id,
@@ -374,6 +430,8 @@ pub fn lint_project(root: &Path, waves: &[WaveDocument]) -> Vec<LintFinding> {
                 });
             }
         }
+
+        lint_design_gate(wave, &mut findings);
 
         for left in 0..owned_paths.len() {
             for right in left + 1..owned_paths.len() {
@@ -1079,6 +1137,97 @@ fn normalized_owned_path_set(paths: &[String]) -> BTreeSet<String> {
         .collect()
 }
 
+fn lint_design_gate(wave: &WaveDocument, findings: &mut Vec<LintFinding>) {
+    let Some(design_gate) = wave.metadata.design_gate.as_ref() else {
+        return;
+    };
+
+    if wave.metadata.wave_class != WaveClass::Implementation {
+        findings.push(LintFinding {
+            wave_id: wave.metadata.id,
+            severity: FindingSeverity::Error,
+            rule: "design-gate-wave-class",
+            message: "design gates are only supported on implementation waves".to_string(),
+        });
+    }
+
+    if design_gate.agent_ids.is_empty() {
+        findings.push(LintFinding {
+            wave_id: wave.metadata.id,
+            severity: FindingSeverity::Error,
+            rule: "design-gate-agents-required",
+            message: "design gates must list at least one non-closure design worker".to_string(),
+        });
+    }
+
+    if design_gate.ready_marker.trim().is_empty() {
+        findings.push(LintFinding {
+            wave_id: wave.metadata.id,
+            severity: FindingSeverity::Error,
+            rule: "design-gate-ready-marker-required",
+            message: "design gates must declare a non-empty ready marker".to_string(),
+        });
+    }
+
+    let mut seen_agent_ids = HashSet::new();
+    for agent_id in &design_gate.agent_ids {
+        let normalized = agent_id.trim();
+        if normalized.is_empty() {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "design-gate-agent-id-required",
+                message: "design gate agent ids must not be empty".to_string(),
+            });
+            continue;
+        }
+
+        if !seen_agent_ids.insert(normalized.to_string()) {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "design-gate-agent-id-duplicate",
+                message: format!("design gate agent {} is listed more than once", normalized),
+            });
+            continue;
+        }
+
+        let Some(agent) = wave.agents.iter().find(|agent| agent.id == normalized) else {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "design-gate-agent-known",
+                message: format!("design gate references unknown agent {}", normalized),
+            });
+            continue;
+        };
+
+        if agent.id == "A6" || agent.is_closure_agent() {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "design-gate-agent-closure",
+                message: format!(
+                    "design gate agent {} must be a pre-implementation design worker, not a closure reviewer",
+                    normalized
+                ),
+            });
+        }
+
+        if !agent.is_design_worker() {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "design-gate-agent-role",
+                message: format!(
+                    "design gate agent {} must declare the role-design skill",
+                    normalized
+                ),
+            });
+        }
+    }
+}
+
 fn load_skill_catalog(root: &Path) -> (Vec<SkillCatalogIssue>, HashSet<String>) {
     let skills_dir = root.join("skills");
     let mut issues = Vec::new();
@@ -1497,6 +1646,24 @@ mod tests {
     use wave_spec::ProofLevel;
     use wave_spec::WaveMetadata;
 
+    fn default_wave_metadata() -> WaveMetadata {
+        WaveMetadata {
+            id: 0,
+            slug: String::new(),
+            title: String::new(),
+            mode: ExecutionMode::DarkFactory,
+            owners: Vec::new(),
+            depends_on: Vec::new(),
+            validation: Vec::new(),
+            rollback: Vec::new(),
+            proof: Vec::new(),
+            wave_class: wave_spec::WaveClass::Implementation,
+            intent: None,
+            delivery: None,
+            design_gate: None,
+        }
+    }
+
     #[test]
     fn flags_missing_rich_wave_sections() {
         let wave = WaveDocument {
@@ -1511,6 +1678,7 @@ mod tests {
                 validation: Vec::new(),
                 rollback: Vec::new(),
                 proof: Vec::new(),
+                ..default_wave_metadata()
             },
             heading_title: None,
             commit_message: None,
@@ -1553,6 +1721,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 1 - Example".to_string()),
             commit_message: Some("Feat: example".to_string()),
@@ -1650,6 +1819,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 1 - Closure Skills".to_string()),
             commit_message: Some("Feat: closure skills".to_string()),
@@ -1735,6 +1905,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 2 - Example".to_string()),
             commit_message: Some("Feat: overlap".to_string()),
@@ -1860,6 +2031,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 2 - Closure Only".to_string()),
             commit_message: Some("Feat: closure only".to_string()),
@@ -1968,6 +2140,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 6 - Weak Context7".to_string()),
             commit_message: Some("Feat: weak context7".to_string()),
@@ -2060,6 +2233,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 6 - None Context7".to_string()),
             commit_message: Some("Feat: none context7".to_string()),
@@ -2152,6 +2326,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 3 - Example".to_string()),
             commit_message: Some("Feat: prompt contract".to_string()),
@@ -2290,6 +2465,7 @@ mod tests {
                 validation: vec!["cargo test".to_string(), "  ".to_string()],
                 rollback: vec!["git revert".to_string(), "git revert".to_string()],
                 proof: vec!["proof.json".to_string(), "".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 7 - Contract Entries".to_string()),
             commit_message: Some("Feat: contract entries".to_string()),
@@ -2390,6 +2566,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 3 - Prompt Order".to_string()),
             commit_message: Some("Feat: prompt order".to_string()),
@@ -2496,6 +2673,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 4 - Ownership".to_string()),
             commit_message: Some("Feat: ownership contract".to_string()),
@@ -2589,6 +2767,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 4 - Context7".to_string()),
             commit_message: Some("Feat: context7 contract".to_string()),
@@ -2702,6 +2881,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 5 - Closure Contract".to_string()),
             commit_message: Some("Feat: closure contract".to_string()),
@@ -2804,6 +2984,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 6 - Marker Format".to_string()),
             commit_message: Some("Feat: marker format".to_string()),

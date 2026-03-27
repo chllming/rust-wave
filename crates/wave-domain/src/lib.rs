@@ -1,13 +1,16 @@
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fmt;
 use wave_spec::WaveAgent;
 use wave_spec::WaveDocument;
 
 macro_rules! string_id {
     ($name:ident) => {
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[derive(
+            Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+        )]
         #[serde(transparent)]
         pub struct $name(String);
 
@@ -34,6 +37,10 @@ string_id!(AttemptId);
 string_id!(GateId);
 string_id!(FactId);
 string_id!(ContradictionId);
+string_id!(QuestionId);
+string_id!(AssumptionId);
+string_id!(DecisionId);
+string_id!(LineageRecordId);
 string_id!(ProofBundleId);
 string_id!(RerunRequestId);
 string_id!(HumanInputRequestId);
@@ -43,6 +50,14 @@ string_id!(TaskLeaseId);
 string_id!(SchedulerBudgetId);
 string_id!(WaveWorktreeId);
 string_id!(WavePromotionId);
+string_id!(InitiativeId);
+string_id!(ReleaseId);
+string_id!(AcceptancePackageId);
+string_id!(DeliveryRiskId);
+string_id!(DeliveryDebtId);
+string_id!(MilestoneId);
+string_id!(ReleaseTrainId);
+string_id!(OutcomeContractId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -117,6 +132,39 @@ pub enum HumanInputState {
     TimedOut,
 }
 
+impl HumanInputState {
+    pub fn is_resolved(self) -> bool {
+        matches!(self, Self::Answered | Self::Resolved)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanInputWorkflowKind {
+    #[default]
+    Unspecified,
+    OperatorApproval,
+    DependencyHandshake,
+}
+
+impl HumanInputWorkflowKind {
+    pub fn effective(self, route: &str) -> Self {
+        if !matches!(self, Self::Unspecified) {
+            return self;
+        }
+        let normalized = route.to_ascii_lowercase();
+        if normalized.contains("dependency") || normalized.contains("handshake") {
+            Self::DependencyHandshake
+        } else {
+            Self::OperatorApproval
+        }
+    }
+
+    pub fn is_dependency_handshake(self, route: &str) -> bool {
+        matches!(self.effective(route), Self::DependencyHandshake)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContradictionState {
@@ -127,12 +175,54 @@ pub enum ContradictionState {
     Waived,
 }
 
+impl ContradictionState {
+    pub fn is_active(self) -> bool {
+        matches!(
+            self,
+            Self::Detected | Self::Acknowledged | Self::RepairInProgress
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FactState {
     Active,
     Superseded,
     Retracted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesignAuthority {
+    Agent,
+    Dependency,
+    Human,
+    Operator,
+    Review,
+    Runtime,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineageState {
+    Open,
+    PendingHuman,
+    Resolved,
+    Accepted,
+    Decided,
+    Superseded,
+    Invalidated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesignCompletenessState {
+    Underspecified,
+    Fragmented,
+    StructurallyComplete,
+    ImplementationReady,
+    Verified,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -385,10 +475,302 @@ pub struct WaveSchedulingRecord {
     pub updated_at_ms: u128,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SoftState {
+    #[default]
+    Clear,
+    Advisory,
+    Degraded,
+    Stale,
+}
+
+impl SoftState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Clear => "clear",
+            Self::Advisory => "advisory",
+            Self::Degraded => "degraded",
+            Self::Stale => "stale",
+        }
+    }
+
+    pub fn merge(self, other: Self) -> Self {
+        self.max(other)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InitiativeState {
+    Planned,
+    InProgress,
+    Blocked,
+    Completed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReleaseState {
+    Planned,
+    Assembling,
+    Candidate,
+    Ready,
+    Shipped,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AcceptancePackageState {
+    Draft,
+    CollectingEvidence,
+    ReviewReady,
+    Accepted,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeliverySeverity {
+    Advisory,
+    Blocking,
+}
+
+impl DeliverySeverity {
+    pub fn is_blocking(self) -> bool {
+        matches!(self, Self::Blocking)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct InitiativeRecord {
+    pub id: InitiativeId,
+    pub title: String,
+    pub summary: String,
+    pub state: Option<InitiativeState>,
+    #[serde(default)]
+    pub soft_state: SoftState,
+    #[serde(default)]
+    pub owners: Vec<String>,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub release_ids: Vec<ReleaseId>,
+    pub outcome: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ReleaseRecord {
+    pub id: ReleaseId,
+    pub title: String,
+    pub summary: String,
+    pub initiative_id: Option<InitiativeId>,
+    pub state: Option<ReleaseState>,
+    #[serde(default)]
+    pub soft_state: SoftState,
+    #[serde(default)]
+    pub owners: Vec<String>,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub acceptance_package_ids: Vec<AcceptancePackageId>,
+    pub milestone_id: Option<String>,
+    pub release_train_id: Option<String>,
+    #[serde(default)]
+    pub blocking_risk_ids: Vec<DeliveryRiskId>,
+    #[serde(default)]
+    pub blocking_debt_ids: Vec<DeliveryDebtId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AcceptancePackageRecord {
+    pub id: AcceptancePackageId,
+    pub title: String,
+    pub summary: String,
+    pub release_id: Option<ReleaseId>,
+    pub state: Option<AcceptancePackageState>,
+    #[serde(default)]
+    pub soft_state: SoftState,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub proof_artifacts: Vec<String>,
+    #[serde(default)]
+    pub design_evidence: Vec<String>,
+    #[serde(default)]
+    pub documentation_evidence: Vec<String>,
+    #[serde(default)]
+    pub signoffs: Vec<String>,
+    #[serde(default)]
+    pub blocking_risk_ids: Vec<DeliveryRiskId>,
+    #[serde(default)]
+    pub blocking_debt_ids: Vec<DeliveryDebtId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DeliveryRiskRecord {
+    pub id: DeliveryRiskId,
+    pub title: String,
+    pub summary: String,
+    pub severity: Option<DeliverySeverity>,
+    #[serde(default)]
+    pub soft_state: SoftState,
+    pub release_id: Option<ReleaseId>,
+    pub acceptance_package_id: Option<AcceptancePackageId>,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub owners: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DeliveryDebtRecord {
+    pub id: DeliveryDebtId,
+    pub title: String,
+    pub summary: String,
+    pub severity: Option<DeliverySeverity>,
+    #[serde(default)]
+    pub soft_state: SoftState,
+    pub release_id: Option<ReleaseId>,
+    pub acceptance_package_id: Option<AcceptancePackageId>,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub owners: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryCatalog {
+    #[serde(default = "default_delivery_catalog_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub initiatives: Vec<InitiativeRecord>,
+    #[serde(default)]
+    pub releases: Vec<ReleaseRecord>,
+    #[serde(default)]
+    pub acceptance_packages: Vec<AcceptancePackageRecord>,
+    #[serde(default)]
+    pub risks: Vec<DeliveryRiskRecord>,
+    #[serde(default)]
+    pub debts: Vec<DeliveryDebtRecord>,
+}
+
+impl Default for DeliveryCatalog {
+    fn default() -> Self {
+        Self {
+            version: default_delivery_catalog_version(),
+            initiatives: Vec::new(),
+            releases: Vec::new(),
+            acceptance_packages: Vec::new(),
+            risks: Vec::new(),
+            debts: Vec::new(),
+        }
+    }
+}
+
+fn default_delivery_catalog_version() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PortfolioDeliveryModel {
+    #[serde(default)]
+    pub initiatives: Vec<PortfolioInitiative>,
+    #[serde(default)]
+    pub milestones: Vec<PortfolioMilestone>,
+    #[serde(default)]
+    pub release_trains: Vec<ReleaseTrain>,
+    #[serde(default)]
+    pub outcome_contracts: Vec<OutcomeContract>,
+}
+
+impl PortfolioDeliveryModel {
+    pub fn is_empty(&self) -> bool {
+        self.initiatives.is_empty()
+            && self.milestones.is_empty()
+            && self.release_trains.is_empty()
+            && self.outcome_contracts.is_empty()
+    }
+
+    pub fn referenced_wave_ids(&self) -> Vec<u32> {
+        let mut wave_ids = BTreeSet::new();
+        for initiative in &self.initiatives {
+            wave_ids.extend(initiative.wave_ids.iter().copied());
+        }
+        for milestone in &self.milestones {
+            wave_ids.extend(milestone.wave_ids.iter().copied());
+        }
+        for release_train in &self.release_trains {
+            wave_ids.extend(release_train.wave_ids.iter().copied());
+        }
+        for outcome_contract in &self.outcome_contracts {
+            wave_ids.extend(outcome_contract.wave_ids.iter().copied());
+        }
+        wave_ids.into_iter().collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortfolioInitiative {
+    pub initiative_id: InitiativeId,
+    pub slug: String,
+    pub title: String,
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub milestone_ids: Vec<MilestoneId>,
+    pub release_train_id: Option<ReleaseTrainId>,
+    #[serde(default)]
+    pub outcome_contract_ids: Vec<OutcomeContractId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortfolioMilestone {
+    pub milestone_id: MilestoneId,
+    pub initiative_id: InitiativeId,
+    pub slug: String,
+    pub title: String,
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseTrain {
+    pub release_train_id: ReleaseTrainId,
+    pub slug: String,
+    pub title: String,
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub initiative_ids: Vec<InitiativeId>,
+    #[serde(default)]
+    pub milestone_ids: Vec<MilestoneId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutcomeContract {
+    pub outcome_contract_id: OutcomeContractId,
+    pub slug: String,
+    pub title: String,
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub initiative_ids: Vec<InitiativeId>,
+    #[serde(default)]
+    pub milestone_ids: Vec<MilestoneId>,
+    pub release_train_id: Option<ReleaseTrainId>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskDependencyKind {
     WaveClosure,
+    DesignApproval,
     ImplementationSlice,
     ContEvalVerdict,
     DesignReviewVerdict,
@@ -881,6 +1263,20 @@ impl TaskSeed {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DeclaredWaveDeliveryLink {
+    pub initiative_id: Option<String>,
+    pub release_id: Option<String>,
+    pub acceptance_package_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DesignGatePlan {
+    #[serde(default)]
+    pub agent_ids: Vec<String>,
+    pub ready_marker: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeclaredWavePlan {
     pub wave_id: u32,
@@ -891,6 +1287,10 @@ pub struct DeclaredWavePlan {
     pub validation: Vec<String>,
     pub rollback: Vec<String>,
     pub proof: Vec<String>,
+    pub wave_class: String,
+    pub intent: Option<String>,
+    pub delivery: Option<DeclaredWaveDeliveryLink>,
+    pub design_gate: Option<DesignGatePlan>,
     pub task_seeds: Vec<TaskSeed>,
 }
 
@@ -1035,6 +1435,83 @@ pub struct FactCitation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "id")]
+pub enum LineageRef {
+    Fact(FactId),
+    Question(QuestionId),
+    Assumption(AssumptionId),
+    Decision(DecisionId),
+    HumanInput(HumanInputRequestId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum LineageRecordSubject {
+    Question {
+        question_id: QuestionId,
+    },
+    Assumption {
+        assumption_id: AssumptionId,
+    },
+    Decision {
+        decision_id: DecisionId,
+    },
+    SupersededDecision {
+        decision_id: DecisionId,
+        superseded_by_decision_id: Option<DecisionId>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineageRecord {
+    pub record_id: LineageRecordId,
+    pub wave_id: u32,
+    pub task_id: Option<TaskId>,
+    pub subject: LineageRecordSubject,
+    pub authority: DesignAuthority,
+    pub state: LineageState,
+    pub summary: String,
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub citations: Vec<FactCitation>,
+    #[serde(default)]
+    pub upstream_refs: Vec<LineageRef>,
+    #[serde(default)]
+    pub supporting_fact_ids: Vec<FactId>,
+    #[serde(default)]
+    pub downstream_task_ids: Vec<TaskId>,
+    #[serde(default)]
+    pub downstream_wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub required_human_input_request_ids: Vec<HumanInputRequestId>,
+    pub introduced_by_event_id: Option<String>,
+}
+
+impl LineageRecord {
+    pub fn question_id(&self) -> Option<&QuestionId> {
+        match &self.subject {
+            LineageRecordSubject::Question { question_id } => Some(question_id),
+            _ => None,
+        }
+    }
+
+    pub fn assumption_id(&self) -> Option<&AssumptionId> {
+        match &self.subject {
+            LineageRecordSubject::Assumption { assumption_id } => Some(assumption_id),
+            _ => None,
+        }
+    }
+
+    pub fn decision_id(&self) -> Option<&DecisionId> {
+        match &self.subject {
+            LineageRecordSubject::Decision { decision_id }
+            | LineageRecordSubject::SupersededDecision { decision_id, .. } => Some(decision_id),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FactRecord {
     pub fact_id: FactId,
     pub wave_id: u32,
@@ -1054,12 +1531,16 @@ pub struct FactRecord {
 pub struct ContradictionRecord {
     pub contradiction_id: ContradictionId,
     pub wave_id: u32,
+    #[serde(default)]
     pub task_ids: Vec<TaskId>,
+    #[serde(default)]
     pub fact_ids: Vec<FactId>,
     pub state: ContradictionState,
     pub summary: String,
     pub detail: Option<String>,
     pub introduced_by_event_id: Option<String>,
+    #[serde(default)]
+    pub invalidated_refs: Vec<LineageRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1144,10 +1625,18 @@ pub struct HumanInputRequest {
     pub wave_id: u32,
     pub task_id: Option<TaskId>,
     pub state: HumanInputState,
+    #[serde(default)]
+    pub workflow_kind: HumanInputWorkflowKind,
     pub prompt: String,
     pub route: String,
     pub requested_by: String,
     pub answer: Option<String>,
+}
+
+impl HumanInputRequest {
+    pub fn effective_workflow_kind(&self) -> HumanInputWorkflowKind {
+        self.workflow_kind.effective(&self.route)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1258,6 +1747,9 @@ pub enum ControlEventPayload {
     FactObserved {
         fact: FactRecord,
     },
+    LineageUpdated {
+        lineage: LineageRecord,
+    },
     ContradictionUpdated {
         contradiction: ContradictionRecord,
     },
@@ -1289,6 +1781,20 @@ pub fn declared_wave_plan(wave: &WaveDocument) -> DeclaredWavePlan {
         validation: wave.metadata.validation.clone(),
         rollback: wave.metadata.rollback.clone(),
         proof: wave.metadata.proof.clone(),
+        wave_class: format!("{:?}", wave.metadata.wave_class).to_ascii_lowercase(),
+        intent: wave
+            .metadata
+            .intent
+            .map(|intent| format!("{intent:?}").to_ascii_lowercase()),
+        delivery: wave.metadata.delivery.as_ref().map(|delivery| DeclaredWaveDeliveryLink {
+            initiative_id: delivery.initiative_id.clone(),
+            release_id: delivery.release_id.clone(),
+            acceptance_package_id: delivery.acceptance_package_id.clone(),
+        }),
+        design_gate: wave.metadata.design_gate.as_ref().map(|gate| DesignGatePlan {
+            agent_ids: gate.agent_ids.clone(),
+            ready_marker: Some(gate.ready_marker.clone()),
+        }),
         task_seeds,
     }
 }
@@ -1329,6 +1835,16 @@ pub fn declaration_task_seeds(wave: &WaveDocument) -> Vec<TaskSeed> {
         .iter()
         .find(|agent| agent.id == "A9")
         .map(|agent| task_id_for_agent(wave.metadata.id, &agent.id));
+    let design_gate_task_ids = wave
+        .design_gate_agent_ids()
+        .iter()
+        .filter_map(|agent_id| {
+            wave.agents
+                .iter()
+                .find(|agent| agent.id == *agent_id)
+                .map(|agent| task_id_for_agent(wave.metadata.id, &agent.id))
+        })
+        .collect::<Vec<_>>();
 
     wave.agents
         .iter()
@@ -1358,6 +1874,7 @@ pub fn declaration_task_seeds(wave: &WaveDocument) -> Vec<TaskSeed> {
                 security_review_task_id.as_ref(),
                 integration_task_id.as_ref(),
                 documentation_task_id.as_ref(),
+                &design_gate_task_ids,
             ),
             required_role_prompts: agent
                 .expected_role_prompts()
@@ -1439,6 +1956,7 @@ fn task_dependencies(
     security_review_task_id: Option<&TaskId>,
     integration_task_id: Option<&TaskId>,
     documentation_task_id: Option<&TaskId>,
+    design_gate_task_ids: &[TaskId],
 ) -> Vec<TaskDependency> {
     let mut dependencies = wave_dependency_task_ids
         .iter()
@@ -1541,6 +2059,17 @@ fn task_dependencies(
     };
 
     dependencies.extend(specific_dependencies);
+    if !agent.is_closure_agent() && !agent.is_design_worker() {
+        for task_id in design_gate_task_ids {
+            if dependencies.iter().any(|dependency| dependency.task_id == *task_id) {
+                continue;
+            }
+            dependencies.push(TaskDependency {
+                task_id: task_id.clone(),
+                kind: TaskDependencyKind::DesignApproval,
+            });
+        }
+    }
     dependencies
 }
 
@@ -1702,6 +2231,24 @@ mod tests {
     use wave_spec::ExitContract;
     use wave_spec::WaveMetadata;
 
+    fn default_wave_metadata() -> WaveMetadata {
+        WaveMetadata {
+            id: 0,
+            slug: String::new(),
+            title: String::new(),
+            mode: ExecutionMode::DarkFactory,
+            owners: Vec::new(),
+            depends_on: Vec::new(),
+            validation: Vec::new(),
+            rollback: Vec::new(),
+            proof: Vec::new(),
+            wave_class: wave_spec::WaveClass::Implementation,
+            intent: None,
+            delivery: None,
+            design_gate: None,
+        }
+    }
+
     #[test]
     fn declaration_mapping_builds_explicit_closure_dependencies() {
         let wave = WaveDocument {
@@ -1716,6 +2263,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["docs/implementation/rust-wave-0.2-architecture.md".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 10".to_string()),
             commit_message: Some("Feat: authority core".to_string()),
@@ -1902,6 +2450,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["trace.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 10".to_string()),
             commit_message: Some("Feat: authority core".to_string()),
@@ -2403,6 +2952,75 @@ mod tests {
     fn runtime_id_exposes_runtime_skill_overlay_id() {
         assert_eq!(RuntimeId::Codex.skill_id(), "runtime-codex");
         assert_eq!(RuntimeId::Claude.skill_id(), "runtime-claude");
+    }
+
+    #[test]
+    fn human_input_workflow_kind_prefers_explicit_kind_over_route_text() {
+        assert_eq!(
+            HumanInputWorkflowKind::OperatorApproval.effective("dependency:wave-15"),
+            HumanInputWorkflowKind::OperatorApproval
+        );
+        assert!(
+            !HumanInputWorkflowKind::OperatorApproval.is_dependency_handshake("dependency:wave-15")
+        );
+    }
+
+    #[test]
+    fn human_input_workflow_kind_uses_legacy_route_fallback_when_unspecified() {
+        assert_eq!(
+            HumanInputWorkflowKind::Unspecified.effective("dependency:wave-15"),
+            HumanInputWorkflowKind::DependencyHandshake
+        );
+        assert_eq!(
+            HumanInputWorkflowKind::Unspecified.effective("operator:approve"),
+            HumanInputWorkflowKind::OperatorApproval
+        );
+    }
+
+    #[test]
+    fn portfolio_delivery_model_deduplicates_referenced_waves_across_layers() {
+        let model = PortfolioDeliveryModel {
+            initiatives: vec![PortfolioInitiative {
+                initiative_id: InitiativeId::new("initiative-portfolio"),
+                slug: "portfolio-release".to_string(),
+                title: "Portfolio release".to_string(),
+                summary: Some("Aggregate multiple waves into a single delivery view.".to_string()),
+                wave_ids: vec![17, 18],
+                milestone_ids: vec![MilestoneId::new("milestone-readiness")],
+                release_train_id: Some(ReleaseTrainId::new("train-2026-03")),
+                outcome_contract_ids: vec![OutcomeContractId::new("contract-rollout")],
+            }],
+            milestones: vec![PortfolioMilestone {
+                milestone_id: MilestoneId::new("milestone-readiness"),
+                initiative_id: InitiativeId::new("initiative-portfolio"),
+                slug: "readiness".to_string(),
+                title: "Readiness".to_string(),
+                summary: None,
+                wave_ids: vec![18, 19],
+            }],
+            release_trains: vec![ReleaseTrain {
+                release_train_id: ReleaseTrainId::new("train-2026-03"),
+                slug: "march-2026".to_string(),
+                title: "March 2026".to_string(),
+                summary: None,
+                wave_ids: vec![19, 20],
+                initiative_ids: vec![InitiativeId::new("initiative-portfolio")],
+                milestone_ids: vec![MilestoneId::new("milestone-readiness")],
+            }],
+            outcome_contracts: vec![OutcomeContract {
+                outcome_contract_id: OutcomeContractId::new("contract-rollout"),
+                slug: "rollout-readiness".to_string(),
+                title: "Rollout readiness".to_string(),
+                summary: None,
+                wave_ids: vec![20, 21],
+                initiative_ids: vec![InitiativeId::new("initiative-portfolio")],
+                milestone_ids: vec![MilestoneId::new("milestone-readiness")],
+                release_train_id: Some(ReleaseTrainId::new("train-2026-03")),
+            }],
+        };
+
+        assert_eq!(model.referenced_wave_ids(), vec![17, 18, 19, 20, 21]);
+        assert!(!model.is_empty());
     }
 
     fn agent(id: &str, title: &str, skills: Vec<&str>, file_ownership: Vec<&str>) -> WaveAgent {

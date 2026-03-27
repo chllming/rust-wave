@@ -11,9 +11,12 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use wave_config::DEFAULT_STATE_EVENTS_COORDINATION_DIR;
+use wave_domain::AssumptionId;
 use wave_domain::ContradictionId;
+use wave_domain::DecisionId;
 use wave_domain::FactId;
 use wave_domain::HumanInputRequestId;
+use wave_domain::QuestionId;
 use wave_domain::TaskId;
 
 pub const COORDINATION_RECORD_SCHEMA_VERSION: u32 = 1;
@@ -28,9 +31,12 @@ pub enum CoordinationRecordKind {
     Blocker,
     Clarification,
     Handoff,
+    Question,
+    Assumption,
     Contradiction,
     Escalation,
     Decision,
+    SupersededDecision,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +61,12 @@ pub struct CoordinationRecord {
     pub citations: Vec<CoordinationCitation>,
     #[serde(default)]
     pub fact_ids: Vec<FactId>,
+    #[serde(default)]
+    pub question_ids: Vec<QuestionId>,
+    #[serde(default)]
+    pub assumption_ids: Vec<AssumptionId>,
+    #[serde(default)]
+    pub decision_ids: Vec<DecisionId>,
     #[serde(default)]
     pub contradiction_ids: Vec<ContradictionId>,
     pub human_input_request_id: Option<HumanInputRequestId>,
@@ -81,6 +93,9 @@ impl CoordinationRecord {
             detail: None,
             citations: Vec::new(),
             fact_ids: Vec::new(),
+            question_ids: Vec::new(),
+            assumption_ids: Vec::new(),
+            decision_ids: Vec::new(),
             contradiction_ids: Vec::new(),
             human_input_request_id: None,
             related_record_ids: Vec::new(),
@@ -117,6 +132,21 @@ impl CoordinationRecord {
         self
     }
 
+    pub fn with_question_ids(mut self, question_ids: Vec<QuestionId>) -> Self {
+        self.question_ids = question_ids;
+        self
+    }
+
+    pub fn with_assumption_ids(mut self, assumption_ids: Vec<AssumptionId>) -> Self {
+        self.assumption_ids = assumption_ids;
+        self
+    }
+
+    pub fn with_decision_ids(mut self, decision_ids: Vec<DecisionId>) -> Self {
+        self.decision_ids = decision_ids;
+        self
+    }
+
     pub fn with_contradiction_ids(mut self, contradiction_ids: Vec<ContradictionId>) -> Self {
         self.contradiction_ids = contradiction_ids;
         self
@@ -144,6 +174,9 @@ pub struct CoordinationRecordQuery {
     pub record_id: Option<String>,
     pub kind: Option<CoordinationRecordKind>,
     pub fact_id: Option<FactId>,
+    pub question_id: Option<QuestionId>,
+    pub assumption_id: Option<AssumptionId>,
+    pub decision_id: Option<DecisionId>,
     pub contradiction_id: Option<ContradictionId>,
     pub human_input_request_id: Option<HumanInputRequestId>,
     pub related_record_id: Option<String>,
@@ -185,6 +218,21 @@ impl CoordinationRecordQuery {
         }
         if let Some(fact_id) = self.fact_id.as_ref() {
             if !record.fact_ids.contains(fact_id) {
+                return false;
+            }
+        }
+        if let Some(question_id) = self.question_id.as_ref() {
+            if !record.question_ids.contains(question_id) {
+                return false;
+            }
+        }
+        if let Some(assumption_id) = self.assumption_id.as_ref() {
+            if !record.assumption_ids.contains(assumption_id) {
+                return false;
+            }
+        }
+        if let Some(decision_id) = self.decision_id.as_ref() {
+            if !record.decision_ids.contains(decision_id) {
                 return false;
             }
         }
@@ -531,6 +579,9 @@ mod tests {
             record_id: None,
             kind: Some(CoordinationRecordKind::Decision),
             fact_id: None,
+            question_id: None,
+            assumption_id: None,
+            decision_id: None,
             contradiction_id: None,
             human_input_request_id: None,
             related_record_id: Some("rec-1".to_string()),

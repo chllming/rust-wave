@@ -28,6 +28,8 @@ For this repo, start with the Rust-specific docs first and treat the generic pac
   Read [implementation/rust-wave-0.2-architecture.md](./implementation/rust-wave-0.2-architecture.md) for the post-bootstrap authority model and the later reducer cutover plan.
 - Parallel-wave multi-runtime target:
   Read [implementation/parallel-wave-multi-runtime-architecture.md](./implementation/parallel-wave-multi-runtime-architecture.md) for the intended end-state harness: parallel waves, scheduler/lease control, and a shared planning/skills abstraction above Codex and Claude adapters.
+- True intra-wave MAS target:
+  Read [implementation/true-multi-agent-wave-architecture.md](./implementation/true-multi-agent-wave-architecture.md) and [plans/true-multi-agent-wave-rollout.md](./plans/true-multi-agent-wave-rollout.md) for the follow-on architecture after the current parallel-wave boundary: graph-aware execution inside one wave, per-agent sandboxes, merge or invalidation authority, and phased rollout from the product-factory baseline.
 - Full-cycle wave model:
   Read [plans/full-cycle-waves.md](./plans/full-cycle-waves.md) for the design-first operating model: spec, architecture, product/design, synthesis, implementation, and post-implementation hardening on one shared substrate.
 - Rust 0.3 carry-forward notes:
@@ -66,5 +68,6 @@ Some docs under `docs/guides/` and `docs/plans/` describe broader or older packa
   Describes behavior the current Rust workspace actually ships. Prefer `README.md`, `docs/implementation/rust-codex-refactor.md`, `docs/plans/current-state.md`, and `docs/reference/runtime-config/README.md`.
 - `target-state`
   Describes the intended architecture the Rust rewrite is moving toward, but not necessarily behavior that is implemented today. Prefer `docs/implementation/rust-wave-0.2-architecture.md`, `docs/implementation/rust-wave-0.3-notes.md`, and `docs/implementation/parallel-wave-multi-runtime-architecture.md`.
+- `target-state` also includes the next intra-wave MAS step in `docs/implementation/true-multi-agent-wave-architecture.md` and `docs/plans/true-multi-agent-wave-rollout.md`.
 - `reference-upstream`
   Describes the broader package-era or upstream Wave surface for comparison, migration planning, or future parity. Treat `docs/plans/wave-orchestrator.md` and some runtime-specific reference pages as this class unless a Rust-specific doc says otherwise.

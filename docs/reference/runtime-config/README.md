@@ -26,6 +26,8 @@ Wave 14 and Wave 15 together mean the live repo-local runtime now has:
 - late-bound runtime-aware skill projection derived from that wave-local execution root after final runtime selection and fallback
 - operator-facing runtime identity and fallback visibility in run detail transport
 
+That shared per-wave filesystem view is the live runtime boundary, not the later intra-wave MAS target. The follow-on per-agent sandbox model is documented in [../../implementation/true-multi-agent-wave-architecture.md](../../implementation/true-multi-agent-wave-architecture.md) and [../../plans/true-multi-agent-wave-rollout.md](../../plans/true-multi-agent-wave-rollout.md).
+
 ## Live Versus Proof Classification
 
 Read the runtime docs in this directory using these truth levels:

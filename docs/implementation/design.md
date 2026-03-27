@@ -2,9 +2,11 @@
 
 ## Status
 
-Not yet.
+Partially live.
 
-We have good direction, but not a detailed TUI UX and ergonomics spec at the level this harness now needs.
+The current shell already lands the thin right-side operator panel, queue selection, rerun controls, live runtime and stall visibility, and confirm-first manual-close actions.
+
+What is still missing is the full detailed TUI UX and ergonomics spec at the level this harness now needs.
 
 ## What exists today
 
@@ -16,6 +18,13 @@ At the architecture level, the current docs already cover the intended operator 
 - the rule that the TUI stays a thin consumer of reducer and projection truth
 
 That is the right information architecture and the right control-plane posture.
+
+The live repo-local shell currently proves a narrower slice of that design:
+
+- a stable right-side `Run`, `Agents`, `Queue`, and `Control` panel
+- queue selection plus direct rerun control from the shell
+- explicit runtime identity, fallback, last-activity, and stalled-run visibility
+- confirm-first manual-close apply and clear actions for the selected wave via `m` and `M`
 
 ## What is still missing
 
@@ -440,6 +449,8 @@ The keyboard model should be fast, memorable, and shallow.
 - `p`: focus proof for the selected wave
 - `a`: open action menu for the selected object
 - `r`: request rerun or retry where valid
+- `m`: open manual-close confirmation for the selected wave
+- `M`: clear the selected wave's manual-close override after confirmation
 - `u`: approve selected action when approval is allowed
 - `x`: reject or cancel selected request
 
@@ -738,9 +749,14 @@ The current Wave 14 landing now surfaces the first repo-local slice of that trut
 
 Must make runtime identity, runtime selection, fallback reason, and runtime-specific operator visibility fit the `Agents` and `Control` views without leaking runtime semantics into the TUI.
 
+The current repo-local shell now also carries the recovery slice that landed immediately after Wave 15 closeout: manual-close override visibility plus confirm-first apply and clear actions in the `Control` view.
+That live path is now transactional with rerun preservation rather than best-effort ordering: a failed override write or event append restores the prior rerun and override file state instead of silently discarding rerun intent.
+
 ### Wave 16
 
 Must make contradictions, human-input requests, dependency handshakes, and invalidation visible enough that blocker triage and approval flows are first-class.
+
+The current repo-local shell now carries the first live Wave 16-grade operator selection slice as well: dependency-handshake classification is typed workflow state rather than route-name folklore, and the `Control` and `Blockers` views can step through multiple actionable approvals or escalations on the selected wave via `[` and `]` before `u` or `x` confirms the chosen action.
 
 ### Wave 17
 

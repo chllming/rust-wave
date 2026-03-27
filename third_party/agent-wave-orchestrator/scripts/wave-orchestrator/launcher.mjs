@@ -1996,7 +1996,7 @@ function buildResidentOrchestratorRun({
     executorResolved,
   };
   const baseName = `wave-${wave.wave}-resident-orchestrator`;
-  const sessionName = `${lanePaths.tmuxSessionPrefix}${wave.wave}_resident_orchestrator_${runTag}`.replace(
+  const sessionName = `${lanePaths.tmuxSessionPrefix}${wave.wave}_resident_orchestrator`.replace(
     /[^a-zA-Z0-9_-]/g,
     "_",
   );
@@ -2088,17 +2088,13 @@ function isWaveDashboardBackedByLiveSession(lanePaths, dashboardPath, activeSess
   if (!Number.isFinite(waveNumber)) {
     return false;
   }
-  const dashboardState = readJsonOrNull(dashboardPath);
-  const runTag = String(dashboardState?.runTag || "").trim();
   const agentPrefix = `${lanePaths.tmuxSessionPrefix}${waveNumber}_`;
-  const dashboardPrefix = `${lanePaths.tmuxDashboardSessionPrefix}${waveNumber}_`;
+  const dashboardPrefix = `${lanePaths.tmuxDashboardSessionPrefix}${waveNumber}`;
   for (const sessionName of activeSessionNames) {
     if (!(sessionName.startsWith(agentPrefix) || sessionName.startsWith(dashboardPrefix))) {
       continue;
     }
-    if (!runTag || sessionName.endsWith(`_${runTag}`)) {
-      return true;
-    }
+    return true;
   }
   return false;
 }
@@ -2300,7 +2296,8 @@ function launchWaveDashboardSession(lanePaths, { sessionName, dashboardPath, mes
     `node ${shellQuote(path.join(PACKAGE_ROOT, "scripts", "wave-dashboard.mjs"))} --dashboard-file ${shellQuote(
       dashboardPath,
     )}${messageBoardArg} --lane ${shellQuote(lanePaths.lane)} --watch`,
-    "exec bash -l",
+    "status=$?",
+    'exit "$status"',
   ].join("; ");
   runTmux(
     lanePaths,

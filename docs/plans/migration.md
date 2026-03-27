@@ -41,7 +41,7 @@
 
 ## Future Migration Work
 
-- Cross-repo bootstrap automation, richer adoption flows, `wave adhoc`, `wave dep`, and live-host deployment workflows remain future work.
+- Cross-repo bootstrap automation, richer adoption flows, `wave dep`, and live-host deployment workflows remain future work.
 - The repo-local runtime waves are already executable in this worktree, so shared-plan docs should describe launcher, TUI, autonomous queueing, dependency-aware gating, replay, and queue-status projections as live local capabilities.
 - True parallel waves, durable scheduler leases, and live Claude execution remain target-state architecture for the Rust rewrite. Do not describe them as shipped until the runtime and docs both move together.
 - Trace bundles plus replay validation mean later closure and dogfood waves can cite durable local evidence for recorded runs without waiting on live-host mutation proof.

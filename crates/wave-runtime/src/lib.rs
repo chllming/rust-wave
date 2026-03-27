@@ -5,6 +5,8 @@
 //! under the project-scoped paths declared in `wave.toml`, and launched agents
 //! persist structured result envelopes through the `wave-results` boundary.
 
+mod adhoc;
+
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
@@ -12,6 +14,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::env;
@@ -30,13 +33,29 @@ use std::thread;
 use std::time::Duration;
 use wave_config::ProjectConfig;
 use wave_control_plane::PlanningStatus;
+use wave_coordination::CoordinationLog;
+use wave_coordination::CoordinationRecord;
+use wave_coordination::CoordinationRecordKind;
 use wave_domain::AttemptId;
 use wave_domain::AttemptRecord;
 use wave_domain::AttemptState;
 use wave_domain::ClosureDisposition;
+use wave_domain::ContradictionRecord;
+use wave_domain::ContradictionState;
 use wave_domain::ControlEventPayload;
+use wave_domain::DesignAuthority;
+use wave_domain::FactRecord;
+use wave_domain::FactState;
+use wave_domain::HumanInputRequest;
+use wave_domain::HumanInputState;
+use wave_domain::HumanInputWorkflowKind;
+use wave_domain::LineageRecord;
+use wave_domain::LineageRecordSubject;
+use wave_domain::LineageRef;
+use wave_domain::LineageState;
 use wave_domain::RerunRequest;
 use wave_domain::RerunRequestId;
+use wave_domain::RerunScope;
 use wave_domain::RerunState;
 use wave_domain::ResultEnvelope;
 use wave_domain::RuntimeExecutionIdentity;
@@ -45,7 +64,6 @@ use wave_domain::RuntimeFallbackRecord;
 use wave_domain::RuntimeId;
 use wave_domain::RuntimeSelectionPolicy;
 use wave_domain::RuntimeSkillProjection;
-use wave_domain::RerunScope;
 use wave_domain::SchedulerBudget;
 use wave_domain::SchedulerBudgetId;
 use wave_domain::SchedulerBudgetRecord;
@@ -94,6 +112,18 @@ use wave_trace::now_epoch_ms;
 use wave_trace::write_run_record;
 use wave_trace::write_trace_bundle;
 
+pub use adhoc::AdhocPlanReport;
+pub use adhoc::AdhocPromotionReport;
+pub use adhoc::AdhocResult;
+pub use adhoc::AdhocRunRecord;
+pub use adhoc::AdhocRunReport;
+pub use adhoc::AdhocRunStatus;
+pub use adhoc::list_adhoc_runs;
+pub use adhoc::plan_adhoc;
+pub use adhoc::promote_adhoc;
+pub use adhoc::run_adhoc;
+pub use adhoc::show_adhoc_run;
+
 /// Stable label for the runtime landing zone.
 pub const RUNTIME_LANDING_ZONE: &str = "launch-and-replay-bootstrap";
 
@@ -132,6 +162,15 @@ pub struct DogfoodEvidenceReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DesignAuthorityProofSeedReport {
+    pub wave_id: u32,
+    pub correlation_id: String,
+    pub event_log_path: PathBuf,
+    pub event_ids: Vec<String>,
+    pub already_present: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AutonomousWaveSelection {
     pub wave_id: u32,
     pub slug: String,
@@ -144,6 +183,24 @@ struct FifoOrderedClaimableWave {
     selection: AutonomousWaveSelection,
     claimable_order: usize,
     waiting_since_ms: u128,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct WaveLaunchDesignState {
+    unresolved_question_ids: Vec<String>,
+    unresolved_assumption_ids: Vec<String>,
+    pending_human_input_request_ids: Vec<String>,
+    invalidated_fact_ids: Vec<String>,
+    invalidated_decision_ids: Vec<String>,
+    selectively_invalidated_task_ids: Vec<String>,
+    ambiguous_dependency_wave_ids: Vec<u32>,
+    blocker_reasons: Vec<String>,
+}
+
+impl WaveLaunchDesignState {
+    fn is_blocked(&self) -> bool {
+        !self.blocker_reasons.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -359,6 +416,16 @@ pub struct RerunIntentRecord {
     pub status: RerunIntentStatus,
     pub requested_at_ms: u128,
     pub cleared_at_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ClosureOverridePreview {
+    pub wave_id: u32,
+    pub source_run_id: String,
+    pub source_run_status: WaveRunStatus,
+    pub source_run_error: Option<String>,
+    pub source_promotion_detail: Option<String>,
+    pub evidence_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1146,6 +1213,401 @@ pub fn clear_rerun(
     clear_rerun_with_state(root, config, wave_id, RerunState::Cancelled)
 }
 
+pub fn seed_design_authority_live_proof(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+) -> Result<DesignAuthorityProofSeedReport> {
+    let control_log = control_event_log(root, config);
+    let event_log_path = control_log.wave_path(wave_id);
+    let correlation_id = format!("proof-wave-{wave_id:02}-design-authority-live");
+    let existing_events = control_log.load_wave(wave_id)?;
+    let existing_event_ids = existing_events
+        .iter()
+        .filter(|event| event.correlation_id.as_deref() == Some(correlation_id.as_str()))
+        .map(|event| event.event_id.clone())
+        .collect::<Vec<_>>();
+    if !existing_event_ids.is_empty() {
+        return Ok(DesignAuthorityProofSeedReport {
+            wave_id,
+            correlation_id,
+            event_log_path,
+            event_ids: existing_event_ids,
+            already_present: true,
+        });
+    }
+
+    let created_at_ms = now_epoch_ms()?;
+    let dependency_wave = wave_id.saturating_sub(1);
+    let downstream_wave = wave_id + 1;
+    let task_a1 = task_id_for_agent(wave_id, "A1");
+    let task_a2 = task_id_for_agent(wave_id, "A2");
+    let downstream_task = task_id_for_agent(downstream_wave, "A1");
+
+    let fact_id = wave_domain::FactId::new(format!("fact-wave-{wave_id:02}-proof-api-shape"));
+    let question_id =
+        wave_domain::QuestionId::new(format!("question-wave-{wave_id:02}-proof-open-api"));
+    let human_input_id =
+        wave_domain::HumanInputRequestId::new(format!("human-wave-{wave_id:02}-proof-dependency"));
+    let decision_v1_id =
+        wave_domain::DecisionId::new(format!("decision-wave-{wave_id:02}-proof-api-v1"));
+    let decision_v2_id =
+        wave_domain::DecisionId::new(format!("decision-wave-{wave_id:02}-proof-api-v2"));
+    let contradiction_id =
+        wave_domain::ContradictionId::new(format!("contradiction-wave-{wave_id:02}-proof-api"));
+
+    let event_specs = vec![
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-fact"),
+            ControlEventKind::FactObserved,
+            wave_id,
+        )
+        .with_task_id(task_a1.clone())
+        .with_created_at_ms(created_at_ms)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::FactObserved {
+            fact: FactRecord {
+                fact_id: fact_id.clone(),
+                wave_id,
+                task_id: Some(task_a1.clone()),
+                attempt_id: None,
+                state: FactState::Active,
+                summary: "Observed initial dependency API shape".to_string(),
+                detail: Some("Wave 16 live-proof seed: initial fact before contradiction repair"
+                    .to_string()),
+                source_artifact: Some(".wave/live-proofs/wave-16-design-authority.md".to_string()),
+                introduced_by_event_id: None,
+                citations: Vec::new(),
+                contradiction_ids: Vec::new(),
+                superseded_by_fact_id: None,
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-question-open"),
+            ControlEventKind::LineageUpdated,
+            wave_id,
+        )
+        .with_task_id(task_a1.clone())
+        .with_created_at_ms(created_at_ms + 1)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::LineageUpdated {
+            lineage: LineageRecord {
+                record_id: wave_domain::LineageRecordId::new(format!(
+                    "lineage-wave-{wave_id:02}-question-open"
+                )),
+                wave_id,
+                task_id: Some(task_a1.clone()),
+                subject: LineageRecordSubject::Question {
+                    question_id: question_id.clone(),
+                },
+                authority: DesignAuthority::Review,
+                state: LineageState::Open,
+                summary: "Question whether the dependency API shape is still valid".to_string(),
+                detail: Some(
+                    "Wave 16 live-proof seed: unresolved question before dependency reply"
+                        .to_string(),
+                ),
+                citations: Vec::new(),
+                upstream_refs: vec![LineageRef::Fact(fact_id.clone())],
+                supporting_fact_ids: vec![fact_id.clone()],
+                downstream_task_ids: vec![downstream_task.clone()],
+                downstream_wave_ids: vec![downstream_wave],
+                required_human_input_request_ids: Vec::new(),
+                introduced_by_event_id: None,
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-human-pending"),
+            ControlEventKind::HumanInputUpdated,
+            wave_id,
+        )
+        .with_task_id(task_a2.clone())
+        .with_created_at_ms(created_at_ms + 2)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::HumanInputUpdated {
+            request: HumanInputRequest {
+                request_id: human_input_id.clone(),
+                wave_id,
+                task_id: Some(task_a2.clone()),
+                state: HumanInputState::Pending,
+                workflow_kind: HumanInputWorkflowKind::DependencyHandshake,
+                prompt: "Confirm which dependency API revision Wave 16 should trust".to_string(),
+                route: format!("dependency:wave-{dependency_wave}"),
+                requested_by: "A2".to_string(),
+                answer: None,
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-decision-pending-human"),
+            ControlEventKind::LineageUpdated,
+            wave_id,
+        )
+        .with_task_id(task_a2.clone())
+        .with_created_at_ms(created_at_ms + 3)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::LineageUpdated {
+            lineage: LineageRecord {
+                record_id: wave_domain::LineageRecordId::new(format!(
+                    "lineage-wave-{wave_id:02}-decision-v1-pending-human"
+                )),
+                wave_id,
+                task_id: Some(task_a2.clone()),
+                subject: LineageRecordSubject::Decision {
+                    decision_id: decision_v1_id.clone(),
+                },
+                authority: DesignAuthority::Dependency,
+                state: LineageState::PendingHuman,
+                summary: "Decision v1 waits on dependency confirmation".to_string(),
+                detail: Some(
+                    "Wave 16 live-proof seed: pending human-input route blocks downstream work"
+                        .to_string(),
+                ),
+                citations: Vec::new(),
+                upstream_refs: vec![
+                    LineageRef::Fact(fact_id.clone()),
+                    LineageRef::Question(question_id.clone()),
+                ],
+                supporting_fact_ids: vec![fact_id.clone()],
+                downstream_task_ids: vec![downstream_task.clone()],
+                downstream_wave_ids: vec![downstream_wave],
+                required_human_input_request_ids: vec![human_input_id.clone()],
+                introduced_by_event_id: None,
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-contradiction-detected"),
+            ControlEventKind::ContradictionUpdated,
+            wave_id,
+        )
+        .with_created_at_ms(created_at_ms + 4)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::ContradictionUpdated {
+            contradiction: ContradictionRecord {
+                contradiction_id: contradiction_id.clone(),
+                wave_id,
+                task_ids: vec![task_a1.clone(), task_a2.clone()],
+                fact_ids: vec![fact_id.clone()],
+                state: ContradictionState::Detected,
+                summary: "Dependency response contradicts the initial API fact".to_string(),
+                detail: Some(
+                    "Wave 16 live-proof seed: contradiction invalidates the first decision"
+                        .to_string(),
+                ),
+                introduced_by_event_id: None,
+                invalidated_refs: vec![
+                    LineageRef::Fact(fact_id.clone()),
+                    LineageRef::Decision(decision_v1_id.clone()),
+                ],
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-human-answered"),
+            ControlEventKind::HumanInputUpdated,
+            wave_id,
+        )
+        .with_task_id(task_a2.clone())
+        .with_created_at_ms(created_at_ms + 5)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::HumanInputUpdated {
+            request: HumanInputRequest {
+                request_id: human_input_id.clone(),
+                wave_id,
+                task_id: Some(task_a2.clone()),
+                state: HumanInputState::Answered,
+                workflow_kind: HumanInputWorkflowKind::DependencyHandshake,
+                prompt: "Confirm which dependency API revision Wave 16 should trust".to_string(),
+                route: format!("dependency:wave-{dependency_wave}"),
+                requested_by: "A2".to_string(),
+                answer: Some("Dependency owner confirmed the v2 API contract.".to_string()),
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-question-resolved"),
+            ControlEventKind::LineageUpdated,
+            wave_id,
+        )
+        .with_task_id(task_a1.clone())
+        .with_created_at_ms(created_at_ms + 6)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::LineageUpdated {
+            lineage: LineageRecord {
+                record_id: wave_domain::LineageRecordId::new(format!(
+                    "lineage-wave-{wave_id:02}-question-resolved"
+                )),
+                wave_id,
+                task_id: Some(task_a1.clone()),
+                subject: LineageRecordSubject::Question {
+                    question_id: question_id.clone(),
+                },
+                authority: DesignAuthority::Review,
+                state: LineageState::Resolved,
+                summary: "Question resolved after dependency confirmation".to_string(),
+                detail: Some(
+                    "Wave 16 live-proof seed: the blocking question is now resolved".to_string(),
+                ),
+                citations: Vec::new(),
+                upstream_refs: vec![LineageRef::HumanInput(human_input_id.clone())],
+                supporting_fact_ids: vec![fact_id.clone()],
+                downstream_task_ids: vec![downstream_task.clone()],
+                downstream_wave_ids: vec![downstream_wave],
+                required_human_input_request_ids: vec![human_input_id.clone()],
+                introduced_by_event_id: None,
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-decision-v1-superseded"),
+            ControlEventKind::LineageUpdated,
+            wave_id,
+        )
+        .with_task_id(task_a2.clone())
+        .with_created_at_ms(created_at_ms + 7)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::LineageUpdated {
+            lineage: LineageRecord {
+                record_id: wave_domain::LineageRecordId::new(format!(
+                    "lineage-wave-{wave_id:02}-decision-v1-superseded"
+                )),
+                wave_id,
+                task_id: Some(task_a2.clone()),
+                subject: LineageRecordSubject::SupersededDecision {
+                    decision_id: decision_v1_id.clone(),
+                    superseded_by_decision_id: Some(decision_v2_id.clone()),
+                },
+                authority: DesignAuthority::Review,
+                state: LineageState::Superseded,
+                summary: "Decision v1 is superseded by the confirmed dependency contract"
+                    .to_string(),
+                detail: Some(
+                    "Wave 16 live-proof seed: superseded decision invalidates the original downstream plan"
+                        .to_string(),
+                ),
+                citations: Vec::new(),
+                upstream_refs: vec![LineageRef::Decision(decision_v1_id.clone())],
+                supporting_fact_ids: vec![fact_id.clone()],
+                downstream_task_ids: vec![downstream_task.clone()],
+                downstream_wave_ids: vec![downstream_wave],
+                required_human_input_request_ids: vec![human_input_id.clone()],
+                introduced_by_event_id: None,
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-decision-v1-resolved"),
+            ControlEventKind::LineageUpdated,
+            wave_id,
+        )
+        .with_task_id(task_a2.clone())
+        .with_created_at_ms(created_at_ms + 8)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::LineageUpdated {
+            lineage: LineageRecord {
+                record_id: wave_domain::LineageRecordId::new(format!(
+                    "lineage-wave-{wave_id:02}-decision-v1-resolved"
+                )),
+                wave_id,
+                task_id: Some(task_a2.clone()),
+                subject: LineageRecordSubject::Decision {
+                    decision_id: decision_v1_id.clone(),
+                },
+                authority: DesignAuthority::Review,
+                state: LineageState::Resolved,
+                summary: "Decision v1 is retired after the repair walkthrough".to_string(),
+                detail: Some(
+                    "Wave 16 live-proof seed: the old decision remains in history but is no longer active"
+                        .to_string(),
+                ),
+                citations: Vec::new(),
+                upstream_refs: vec![LineageRef::Decision(decision_v2_id.clone())],
+                supporting_fact_ids: vec![fact_id.clone()],
+                downstream_task_ids: vec![downstream_task.clone()],
+                downstream_wave_ids: vec![downstream_wave],
+                required_human_input_request_ids: Vec::new(),
+                introduced_by_event_id: None,
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-decision-v2-decided"),
+            ControlEventKind::LineageUpdated,
+            wave_id,
+        )
+        .with_task_id(task_a2.clone())
+        .with_created_at_ms(created_at_ms + 9)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::LineageUpdated {
+            lineage: LineageRecord {
+                record_id: wave_domain::LineageRecordId::new(format!(
+                    "lineage-wave-{wave_id:02}-decision-v2-decided"
+                )),
+                wave_id,
+                task_id: Some(task_a2.clone()),
+                subject: LineageRecordSubject::Decision {
+                    decision_id: decision_v2_id.clone(),
+                },
+                authority: DesignAuthority::Review,
+                state: LineageState::Decided,
+                summary: "Decision v2 becomes the accepted dependency contract".to_string(),
+                detail: Some(
+                    "Wave 16 live-proof seed: replacement decision restores clean downstream state"
+                        .to_string(),
+                ),
+                citations: Vec::new(),
+                upstream_refs: vec![
+                    LineageRef::Fact(fact_id.clone()),
+                    LineageRef::HumanInput(human_input_id.clone()),
+                ],
+                supporting_fact_ids: vec![fact_id.clone()],
+                downstream_task_ids: vec![downstream_task.clone()],
+                downstream_wave_ids: vec![downstream_wave],
+                required_human_input_request_ids: Vec::new(),
+                introduced_by_event_id: None,
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-contradiction-resolved"),
+            ControlEventKind::ContradictionUpdated,
+            wave_id,
+        )
+        .with_created_at_ms(created_at_ms + 10)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::ContradictionUpdated {
+            contradiction: ContradictionRecord {
+                contradiction_id,
+                wave_id,
+                task_ids: vec![task_a1, task_a2],
+                fact_ids: vec![fact_id],
+                state: ContradictionState::Resolved,
+                summary: "Dependency contradiction resolved after decision repair".to_string(),
+                detail: Some(
+                    "Wave 16 live-proof seed: contradiction history remains durable after resolution"
+                        .to_string(),
+                ),
+                introduced_by_event_id: None,
+                invalidated_refs: vec![
+                    LineageRef::Fact(wave_domain::FactId::new(format!(
+                        "fact-wave-{wave_id:02}-proof-api-shape"
+                    ))),
+                    LineageRef::Decision(decision_v1_id),
+                ],
+            },
+        }),
+    ];
+
+    let event_ids = event_specs
+        .iter()
+        .map(|event| event.event_id.clone())
+        .collect::<Vec<_>>();
+    for event in event_specs {
+        append_control_event(root, config, event)?;
+    }
+
+    Ok(DesignAuthorityProofSeedReport {
+        wave_id,
+        correlation_id,
+        event_log_path,
+        event_ids,
+        already_present: false,
+    })
+}
+
 pub fn apply_closure_override(
     root: &Path,
     config: &ProjectConfig,
@@ -1160,67 +1622,97 @@ pub fn apply_closure_override(
         bail!("closure override reason must not be empty");
     }
 
-    let latest_runs = load_latest_runs(root, config)?;
-    if latest_runs
-        .get(&wave_id)
-        .map(|run| run.status)
-        .is_some_and(|status| matches!(status, WaveRunStatus::Running | WaveRunStatus::Planned))
-    {
-        bail!("wave {wave_id} has an active run; clear it before applying a closure override");
-    }
-
-    let source_run_id = match source_run_id {
-        Some(source_run_id) => {
-            let run_path = state_runs_dir(root, config).join(format!("{source_run_id}.json"));
-            if !run_path.exists() {
-                bail!("source run {source_run_id} does not exist");
-            }
-            let run = load_run_record(&run_path)?;
-            if run.wave_id != wave_id {
-                bail!("source run {source_run_id} belongs to wave {}", run.wave_id);
-            }
-            if matches!(run.status, WaveRunStatus::Running | WaveRunStatus::Planned) {
-                bail!("source run {source_run_id} is still active");
-            }
-            source_run_id.to_string()
-        }
-        None => latest_runs
-            .get(&wave_id)
-            .filter(|run| !matches!(run.status, WaveRunStatus::Running | WaveRunStatus::Planned))
-            .map(|run| run.run_id.clone())
-            .with_context(|| format!("wave {wave_id} has no terminal run to use as override evidence"))?,
-    };
-
-    let applied_at_ms = now_epoch_ms()?;
-    let record = WaveClosureOverrideRecord {
-        override_id: format!("closure-override-wave-{wave_id:02}-{applied_at_ms}"),
-        wave_id,
-        status: WaveClosureOverrideStatus::Applied,
-        reason,
-        requested_by: "operator".to_string(),
-        source_run_id,
-        evidence_paths,
-        detail,
-        applied_at_ms,
-        cleared_at_ms: None,
-    };
-    write_closure_override(root, config, &record)?;
-    let _ = clear_rerun_with_state(root, config, wave_id, RerunState::Cancelled);
-    append_control_event(
-        root,
-        config,
-        ControlEvent::new(
-            format!("evt-closure-override-applied-{wave_id:02}-{applied_at_ms}"),
-            ControlEventKind::ClosureOverrideApplied,
+    with_control_mutation(root, config, || {
+        let preview =
+            preview_closure_override(root, config, wave_id, source_run_id, evidence_paths)?;
+        let applied_at_ms = now_epoch_ms()?;
+        let record = WaveClosureOverrideRecord {
+            override_id: format!("closure-override-wave-{wave_id:02}-{applied_at_ms}"),
             wave_id,
-        )
-        .with_created_at_ms(applied_at_ms)
-        .with_correlation_id(record.override_id.clone())
-        .with_payload(ControlEventPayload::ClosureOverrideUpdated {
-            closure_override: record.clone(),
-        }),
-    )?;
-    Ok(record)
+            status: WaveClosureOverrideStatus::Applied,
+            reason,
+            requested_by: "operator".to_string(),
+            source_run_id: preview.source_run_id,
+            evidence_paths: preview.evidence_paths,
+            detail,
+            applied_at_ms,
+            cleared_at_ms: None,
+        };
+
+        let rerun_path = rerun_intent_path(root, config, wave_id);
+        let override_path = closure_override_path(root, config, wave_id);
+        let rerun_snapshot = snapshot_control_file(&rerun_path)?;
+        let override_snapshot = snapshot_control_file(&override_path)?;
+
+        let result = (|| {
+            if let Some(snapshot) = rerun_snapshot.as_ref() {
+                let mut rerun_record: RerunIntentRecord = serde_json::from_slice(snapshot)
+                    .with_context(|| {
+                        format!("failed to parse rerun intent {}", rerun_path.display())
+                    })?;
+                rerun_record.status = RerunIntentStatus::Cleared;
+                rerun_record.cleared_at_ms = Some(applied_at_ms);
+                write_rerun_intent(root, config, &rerun_record)?;
+            }
+            write_closure_override(root, config, &record)?;
+            append_control_event(
+                root,
+                config,
+                ControlEvent::new(
+                    format!("evt-closure-override-applied-{wave_id:02}-{applied_at_ms}"),
+                    ControlEventKind::ClosureOverrideApplied,
+                    wave_id,
+                )
+                .with_created_at_ms(applied_at_ms)
+                .with_correlation_id(record.override_id.clone())
+                .with_payload(ControlEventPayload::ClosureOverrideUpdated {
+                    closure_override: record.clone(),
+                }),
+            )?;
+            Ok(())
+        })();
+
+        if let Err(error) = result {
+            if let Err(restore_error) = restore_control_file(&override_path, override_snapshot)
+                .and_then(|()| restore_control_file(&rerun_path, rerun_snapshot))
+            {
+                bail!(
+                    "failed to apply closure override: {error}; rollback also failed: {restore_error}"
+                );
+            }
+            return Err(error);
+        }
+
+        Ok(record)
+    })
+}
+
+pub fn preview_closure_override(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    source_run_id: Option<&str>,
+    evidence_paths: Vec<String>,
+) -> Result<ClosureOverridePreview> {
+    let (resolved_source_run_id, source_run, source_run_path) =
+        resolve_closure_override_source_run(root, config, wave_id, source_run_id)?;
+    let evidence_paths = if evidence_paths.is_empty() {
+        derive_closure_override_evidence_paths(root, &source_run_path, &source_run)?
+    } else {
+        validate_explicit_closure_override_evidence_paths(root, evidence_paths)?
+    };
+
+    Ok(ClosureOverridePreview {
+        wave_id,
+        source_run_id: resolved_source_run_id,
+        source_run_status: source_run.status,
+        source_run_error: source_run.error.clone(),
+        source_promotion_detail: source_run
+            .promotion
+            .as_ref()
+            .and_then(|promotion| promotion.detail.clone()),
+        evidence_paths,
+    })
 }
 
 pub fn clear_closure_override(
@@ -1256,6 +1748,64 @@ pub fn clear_closure_override(
     Ok(Some(record))
 }
 
+pub fn approve_human_input_request(
+    root: &Path,
+    config: &ProjectConfig,
+    request_id: &str,
+) -> Result<HumanInputRequest> {
+    update_human_input_request(
+        root,
+        config,
+        request_id,
+        HumanInputState::Answered,
+        "Approved by operator from the Wave TUI",
+    )
+}
+
+pub fn reject_human_input_request(
+    root: &Path,
+    config: &ProjectConfig,
+    request_id: &str,
+) -> Result<HumanInputRequest> {
+    update_human_input_request(
+        root,
+        config,
+        request_id,
+        HumanInputState::Resolved,
+        "Rejected by operator from the Wave TUI",
+    )
+}
+
+pub fn acknowledge_escalation(
+    root: &Path,
+    config: &ProjectConfig,
+    escalation_id: &str,
+) -> Result<CoordinationRecord> {
+    resolve_escalation(
+        root,
+        config,
+        escalation_id,
+        CoordinationRecordKind::Decision,
+        "acknowledged",
+        "Operator acknowledged escalation from the Wave TUI",
+    )
+}
+
+pub fn dismiss_escalation(
+    root: &Path,
+    config: &ProjectConfig,
+    escalation_id: &str,
+) -> Result<CoordinationRecord> {
+    resolve_escalation(
+        root,
+        config,
+        escalation_id,
+        CoordinationRecordKind::Clarification,
+        "dismissed",
+        "Operator dismissed escalation from the Wave TUI",
+    )
+}
+
 fn clear_rerun_with_state(
     root: &Path,
     config: &ProjectConfig,
@@ -1285,6 +1835,328 @@ fn clear_rerun_with_state(
         }),
     )?;
     Ok(Some(record))
+}
+
+fn update_human_input_request(
+    root: &Path,
+    config: &ProjectConfig,
+    request_id: &str,
+    next_state: HumanInputState,
+    answer: &str,
+) -> Result<HumanInputRequest> {
+    let mut request = latest_human_input_request(root, config, request_id)?;
+    if request.state.is_resolved() {
+        bail!("human input request {request_id} is already resolved");
+    }
+    request.state = next_state;
+    request.answer = Some(answer.to_string());
+    let created_at_ms = now_epoch_ms()?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!(
+                "evt-human-input-updated-{}-{created_at_ms}",
+                request.request_id
+            ),
+            ControlEventKind::HumanInputUpdated,
+            request.wave_id,
+        )
+        .with_created_at_ms(created_at_ms)
+        .with_correlation_id(request.request_id.as_str().to_string())
+        .with_payload(ControlEventPayload::HumanInputUpdated {
+            request: request.clone(),
+        }),
+    )?;
+    Ok(request)
+}
+
+fn latest_human_input_request(
+    root: &Path,
+    config: &ProjectConfig,
+    request_id: &str,
+) -> Result<HumanInputRequest> {
+    let mut control_events = control_event_log(root, config).load_all()?;
+    control_events.sort_by_key(|event| (event.created_at_ms, event.event_id.clone()));
+    control_events
+        .into_iter()
+        .rev()
+        .find_map(|event| match event.payload {
+            ControlEventPayload::HumanInputUpdated { request }
+                if request.request_id.as_str() == request_id =>
+            {
+                Some(request)
+            }
+            _ => None,
+        })
+        .with_context(|| format!("human input request {request_id} does not exist"))
+}
+
+fn resolve_escalation(
+    root: &Path,
+    config: &ProjectConfig,
+    escalation_id: &str,
+    kind: CoordinationRecordKind,
+    action: &str,
+    detail_prefix: &str,
+) -> Result<CoordinationRecord> {
+    let coordination_log = CoordinationLog::new(
+        config
+            .resolved_paths(root)
+            .authority
+            .state_events_coordination_dir,
+    );
+    let records = coordination_log.load_all()?;
+    let escalation = records
+        .iter()
+        .find(|record| {
+            record.kind == CoordinationRecordKind::Escalation && record.record_id == escalation_id
+        })
+        .cloned()
+        .with_context(|| format!("escalation {escalation_id} does not exist"))?;
+    if records.iter().any(|record| {
+        record.kind != CoordinationRecordKind::Escalation
+            && record
+                .related_record_ids
+                .iter()
+                .any(|id| id == escalation_id)
+    }) {
+        bail!("escalation {escalation_id} is already resolved");
+    }
+
+    let created_at_ms = now_epoch_ms()?;
+    let mut record = CoordinationRecord::new(
+        format!("operator-escalation-{}-{created_at_ms}", action),
+        kind,
+        escalation.wave_id,
+        format!("Operator {action} escalation {escalation_id}"),
+    )
+    .with_created_at_ms(created_at_ms)
+    .with_agent_id("operator/tui")
+    .with_related_record_ids(vec![escalation.record_id.clone()]);
+    if let Some(task_id) = escalation.task_id.clone() {
+        record = record.with_task_id(task_id);
+    }
+    if let Some(request_id) = escalation.human_input_request_id.clone() {
+        record = record.with_human_input_request_id(request_id);
+    }
+    let detail = match escalation.detail.as_deref() {
+        Some(existing) => format!("{detail_prefix}: {existing}"),
+        None => format!("{detail_prefix}: {}", escalation.summary),
+    };
+    record = record.with_detail(detail);
+    coordination_log.append(&record)?;
+    Ok(record)
+}
+
+fn resolve_closure_override_source_run(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    source_run_id: Option<&str>,
+) -> Result<(String, WaveRunRecord, PathBuf)> {
+    let latest_runs = load_latest_runs(root, config)?;
+    if latest_runs
+        .get(&wave_id)
+        .map(|run| run.status)
+        .is_some_and(|status| matches!(status, WaveRunStatus::Running | WaveRunStatus::Planned))
+    {
+        bail!("wave {wave_id} has an active run; clear it before applying a closure override");
+    }
+    if load_closure_override(root, config, wave_id)?
+        .as_ref()
+        .is_some_and(WaveClosureOverrideRecord::is_active)
+    {
+        bail!("wave {wave_id} already has an active closure override");
+    }
+
+    match source_run_id {
+        Some(source_run_id) => {
+            let run_path = state_runs_dir(root, config).join(format!("{source_run_id}.json"));
+            if !run_path.exists() {
+                bail!("source run {source_run_id} does not exist");
+            }
+            let run = load_run_record(&run_path)?;
+            if run.wave_id != wave_id {
+                bail!("source run {source_run_id} belongs to wave {}", run.wave_id);
+            }
+            if matches!(run.status, WaveRunStatus::Running | WaveRunStatus::Planned) {
+                bail!("source run {source_run_id} is still active");
+            }
+            Ok((source_run_id.to_string(), run, run_path))
+        }
+        None => {
+            let run = latest_runs
+                .get(&wave_id)
+                .filter(|run| {
+                    !matches!(run.status, WaveRunStatus::Running | WaveRunStatus::Planned)
+                })
+                .cloned()
+                .with_context(|| {
+                    format!("wave {wave_id} has no terminal run to use as override evidence")
+                })?;
+            let run_path = state_runs_dir(root, config).join(format!("{}.json", run.run_id));
+            Ok((run.run_id.clone(), run, run_path))
+        }
+    }
+}
+
+fn derive_closure_override_evidence_paths(
+    root: &Path,
+    source_run_path: &Path,
+    source_run: &WaveRunRecord,
+) -> Result<Vec<String>> {
+    let mut evidence_paths = Vec::new();
+    let mut seen = HashSet::new();
+    push_derived_closure_override_evidence_path(
+        root,
+        source_run_path,
+        &mut evidence_paths,
+        &mut seen,
+    )?;
+    push_derived_closure_override_evidence_path(
+        root,
+        &source_run.trace_path,
+        &mut evidence_paths,
+        &mut seen,
+    )?;
+    for agent in &source_run.agents {
+        if let Some(result_envelope_path) = agent.result_envelope_path.as_ref() {
+            push_derived_closure_override_evidence_path(
+                root,
+                result_envelope_path,
+                &mut evidence_paths,
+                &mut seen,
+            )?;
+        }
+        if let Some(runtime_detail_path) = agent.runtime_detail_path.as_ref() {
+            push_derived_closure_override_evidence_path(
+                root,
+                runtime_detail_path,
+                &mut evidence_paths,
+                &mut seen,
+            )?;
+        }
+    }
+    if evidence_paths.is_empty() {
+        bail!(
+            "wave {} source run {} produced no inspectable evidence files",
+            source_run.wave_id,
+            source_run.run_id
+        );
+    }
+    Ok(evidence_paths)
+}
+
+fn validate_explicit_closure_override_evidence_paths(
+    root: &Path,
+    evidence_paths: Vec<String>,
+) -> Result<Vec<String>> {
+    let mut normalized_paths = Vec::new();
+    let mut seen = HashSet::new();
+    for raw_path in evidence_paths {
+        let normalized = normalize_explicit_closure_override_evidence_path(&raw_path)?;
+        let display = normalized.to_string_lossy().into_owned();
+        if !seen.insert(display.clone()) {
+            bail!("closure override evidence path {display} is duplicated");
+        }
+        ensure_closure_override_evidence_file(root, &normalized)?;
+        normalized_paths.push(display);
+    }
+    Ok(normalized_paths)
+}
+
+fn normalize_explicit_closure_override_evidence_path(raw_path: &str) -> Result<PathBuf> {
+    let trimmed = raw_path.trim();
+    if trimmed.is_empty() {
+        bail!("closure override evidence path must not be empty");
+    }
+    let candidate = Path::new(trimmed);
+    if candidate.is_absolute() {
+        bail!("closure override evidence path {trimmed} must be repo-relative");
+    }
+    normalize_repo_relative_path(candidate)
+        .with_context(|| format!("invalid closure override evidence path {trimmed}"))
+}
+
+fn normalize_repo_relative_path(path: &Path) -> Result<PathBuf> {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::ParentDir => {
+                bail!("path must not escape the repo root");
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                bail!("path must be repo-relative");
+            }
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        bail!("path must point to a file");
+    }
+    Ok(normalized)
+}
+
+fn ensure_closure_override_evidence_file(root: &Path, relative_path: &Path) -> Result<()> {
+    let resolved_path = root.join(relative_path);
+    let metadata = fs::metadata(&resolved_path).with_context(|| {
+        format!(
+            "closure override evidence {} does not exist",
+            relative_path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        bail!(
+            "closure override evidence {} must point to a file",
+            relative_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn push_derived_closure_override_evidence_path(
+    root: &Path,
+    candidate_path: &Path,
+    evidence_paths: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+) -> Result<()> {
+    let Some(relative_path) = repo_relative_existing_evidence_path(root, candidate_path)? else {
+        return Ok(());
+    };
+    let display = relative_path.to_string_lossy().into_owned();
+    if seen.insert(display.clone()) {
+        evidence_paths.push(display);
+    }
+    Ok(())
+}
+
+fn repo_relative_existing_evidence_path(root: &Path, path: &Path) -> Result<Option<PathBuf>> {
+    let resolved_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    if !resolved_path.exists() {
+        return Ok(None);
+    }
+    let metadata = fs::metadata(&resolved_path)
+        .with_context(|| format!("failed to inspect {}", resolved_path.display()))?;
+    if !metadata.is_file() {
+        bail!(
+            "closure override evidence {} must point to a file",
+            resolved_path.display()
+        );
+    }
+    let relative_path = resolved_path.strip_prefix(root).with_context(|| {
+        format!(
+            "closure override evidence {} is outside the repo root {}",
+            resolved_path.display(),
+            root.display()
+        )
+    })?;
+    Ok(Some(normalize_repo_relative_path(relative_path)?))
 }
 
 pub fn select_wave<'a>(
@@ -1319,6 +2191,44 @@ pub fn select_wave<'a>(
         .iter()
         .find(|wave| wave.metadata.id == wave_id)
         .with_context(|| format!("missing wave definition for ready wave {}", wave_id))
+}
+
+fn select_launchable_wave<'a>(
+    waves: &'a [WaveDocument],
+    status: &PlanningStatus,
+    requested_wave_id: Option<u32>,
+    design_states: &HashMap<u32, WaveLaunchDesignState>,
+) -> Result<&'a WaveDocument> {
+    if let Some(wave_id) = requested_wave_id {
+        let wave = select_wave(waves, status, Some(wave_id))?;
+        if let Some(design) = design_states
+            .get(&wave_id)
+            .filter(|state| state.is_blocked())
+        {
+            bail!(
+                "wave {} is blocked by design authority: {}",
+                wave_id,
+                design.blocker_reasons.join(", ")
+            );
+        }
+        return Ok(wave);
+    }
+
+    let Some(selection) = next_claimable_wave_selection_with_design(status, design_states) else {
+        bail!(
+            "{}",
+            queue_unavailable_reason_with_design(status, design_states)
+        );
+    };
+    waves
+        .iter()
+        .find(|wave| wave.metadata.id == selection.wave_id)
+        .with_context(|| {
+            format!(
+                "missing wave definition for launchable wave {}",
+                selection.wave_id
+            )
+        })
 }
 
 pub fn compile_wave_bundle(
@@ -1391,15 +2301,385 @@ fn requested_rerun_intent(
         .filter(|record| record.status == RerunIntentStatus::Requested))
 }
 
+#[derive(Debug, Clone, Default)]
+struct LaunchDesignIndex {
+    waves: BTreeMap<u32, LaunchDesignWaveState>,
+    impacted_tasks: BTreeMap<String, BTreeSet<String>>,
+    impacted_waves: BTreeMap<u32, BTreeSet<String>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct LaunchDesignWaveState {
+    unresolved_question_ids: BTreeSet<String>,
+    unresolved_assumption_ids: BTreeSet<String>,
+    pending_human_input_request_ids: BTreeSet<String>,
+    invalidated_fact_ids: BTreeSet<String>,
+    invalidated_decision_ids: BTreeSet<String>,
+}
+
+fn load_wave_launch_design_states(
+    root: &Path,
+    config: &ProjectConfig,
+    waves: &[WaveDocument],
+) -> Result<HashMap<u32, WaveLaunchDesignState>> {
+    let control_events = control_event_log(root, config).load_all()?;
+    Ok(build_wave_launch_design_states(waves, &control_events))
+}
+
+fn build_wave_launch_design_states(
+    waves: &[WaveDocument],
+    control_events: &[ControlEvent],
+) -> HashMap<u32, WaveLaunchDesignState> {
+    let mut sorted_events = control_events.to_vec();
+    sorted_events.sort_by_key(|event| (event.created_at_ms, event.event_id.clone()));
+
+    let mut contradictions = BTreeMap::new();
+    let mut facts = BTreeMap::new();
+    let mut human_inputs = BTreeMap::new();
+    let mut lineages = BTreeMap::new();
+
+    for event in sorted_events {
+        match event.payload {
+            ControlEventPayload::ContradictionUpdated { contradiction } => {
+                contradictions.insert(contradiction.contradiction_id.clone(), contradiction);
+            }
+            ControlEventPayload::FactObserved { fact } => {
+                facts.insert(fact.fact_id.clone(), fact);
+            }
+            ControlEventPayload::HumanInputUpdated { request } => {
+                human_inputs.insert(request.request_id.clone(), request);
+            }
+            ControlEventPayload::LineageUpdated { lineage } => {
+                lineages.insert(lineage_subject_key(&lineage), lineage);
+            }
+            _ => {}
+        }
+    }
+
+    let mut index = LaunchDesignIndex::default();
+    let mut invalidated_facts = BTreeSet::<String>::new();
+    let mut invalidated_decisions = BTreeSet::<String>::new();
+    let mut invalidated_by_fact = BTreeSet::<String>::new();
+    let mut decision_records = BTreeMap::<String, LineageRecord>::new();
+
+    for contradiction in contradictions
+        .values()
+        .filter(|record| record.state.is_active())
+    {
+        for invalidated in &contradiction.invalidated_refs {
+            match invalidated {
+                LineageRef::Fact(fact_id) => {
+                    invalidated_facts.insert(fact_id.as_str().to_string());
+                }
+                LineageRef::Decision(decision_id) => {
+                    invalidated_decisions.insert(decision_id.as_str().to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for lineage in lineages.values() {
+        if let Some(decision_id) = lineage.decision_id() {
+            decision_records.insert(decision_id.as_str().to_string(), lineage.clone());
+        }
+    }
+
+    for lineage in decision_records.values() {
+        if let Some(decision_id) = lineage.decision_id() {
+            if matches!(
+                lineage.subject,
+                LineageRecordSubject::SupersededDecision { .. }
+            ) || matches!(
+                lineage.state,
+                LineageState::Superseded | LineageState::Invalidated
+            ) {
+                invalidated_decisions.insert(decision_id.as_str().to_string());
+            }
+
+            let depends_on_invalidated_fact = lineage
+                .supporting_fact_ids
+                .iter()
+                .any(|fact_id| invalidated_facts.contains(fact_id.as_str()))
+                || lineage
+                    .upstream_refs
+                    .iter()
+                    .any(|reference| match reference {
+                        LineageRef::Fact(fact_id) => invalidated_facts.contains(fact_id.as_str()),
+                        _ => false,
+                    });
+            if depends_on_invalidated_fact {
+                invalidated_by_fact.insert(decision_id.as_str().to_string());
+            }
+        }
+    }
+
+    invalidated_decisions.extend(invalidated_by_fact);
+
+    for request in human_inputs
+        .values()
+        .filter(|request| !request.state.is_resolved())
+    {
+        index
+            .waves
+            .entry(request.wave_id)
+            .or_default()
+            .pending_human_input_request_ids
+            .insert(request.request_id.as_str().to_string());
+    }
+
+    for fact in facts.values() {
+        if invalidated_facts.contains(fact.fact_id.as_str()) {
+            index
+                .waves
+                .entry(fact.wave_id)
+                .or_default()
+                .invalidated_fact_ids
+                .insert(fact.fact_id.as_str().to_string());
+        }
+    }
+
+    for lineage in lineages.values() {
+        let wave_state = index.waves.entry(lineage.wave_id).or_default();
+        let required_human_input = lineage
+            .required_human_input_request_ids
+            .iter()
+            .filter(|request_id| {
+                human_inputs
+                    .get(*request_id)
+                    .map(|request| !request.state.is_resolved())
+                    .unwrap_or(true)
+            })
+            .map(|request_id| request_id.as_str().to_string())
+            .collect::<Vec<_>>();
+        for request_id in required_human_input {
+            wave_state
+                .pending_human_input_request_ids
+                .insert(request_id);
+        }
+
+        if let Some(question_id) = lineage.question_id() {
+            if matches!(
+                lineage.state,
+                LineageState::Open | LineageState::PendingHuman
+            ) {
+                wave_state
+                    .unresolved_question_ids
+                    .insert(question_id.as_str().to_string());
+            }
+        }
+
+        if let Some(assumption_id) = lineage.assumption_id() {
+            if matches!(
+                lineage.state,
+                LineageState::Open | LineageState::PendingHuman
+            ) {
+                wave_state
+                    .unresolved_assumption_ids
+                    .insert(assumption_id.as_str().to_string());
+            }
+        }
+
+        if let Some(decision_id) = lineage.decision_id() {
+            let decision_id = decision_id.as_str().to_string();
+            if invalidated_decisions.contains(&decision_id) {
+                wave_state
+                    .invalidated_decision_ids
+                    .insert(decision_id.clone());
+                for task_id in &lineage.downstream_task_ids {
+                    index
+                        .impacted_tasks
+                        .entry(task_id.as_str().to_string())
+                        .or_default()
+                        .insert(decision_id.clone());
+                }
+                for wave_id in &lineage.downstream_wave_ids {
+                    index
+                        .impacted_waves
+                        .entry(*wave_id)
+                        .or_default()
+                        .insert(decision_id.clone());
+                }
+            }
+        }
+    }
+
+    waves
+        .iter()
+        .map(|wave| {
+            (
+                wave.metadata.id,
+                build_wave_launch_design_state(&index, wave),
+            )
+        })
+        .collect()
+}
+
+fn build_wave_launch_design_state(
+    index: &LaunchDesignIndex,
+    wave: &WaveDocument,
+) -> WaveLaunchDesignState {
+    let wave_state = index
+        .waves
+        .get(&wave.metadata.id)
+        .cloned()
+        .unwrap_or_default();
+    let wave_task_ids = wave
+        .agents
+        .iter()
+        .map(|agent| task_id_for_agent(wave.metadata.id, agent.id.as_str()))
+        .map(|task_id| task_id.as_str().to_string())
+        .collect::<BTreeSet<_>>();
+
+    let selectively_invalidated_task_ids = wave_task_ids
+        .iter()
+        .filter(|task_id| index.impacted_tasks.contains_key(*task_id))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut invalidated_decision_ids = wave_state.invalidated_decision_ids.clone();
+    for task_id in &selectively_invalidated_task_ids {
+        if let Some(decision_ids) = index.impacted_tasks.get(task_id) {
+            invalidated_decision_ids.extend(decision_ids.iter().cloned());
+        }
+    }
+    if let Some(decision_ids) = index.impacted_waves.get(&wave.metadata.id) {
+        invalidated_decision_ids.extend(decision_ids.iter().cloned());
+    }
+
+    let ambiguous_dependency_wave_ids = wave
+        .metadata
+        .depends_on
+        .iter()
+        .copied()
+        .filter(|wave_id| launch_wave_has_ambiguity(index, *wave_id))
+        .collect::<Vec<_>>();
+
+    let mut blocker_reasons = Vec::new();
+    blocker_reasons.extend(
+        wave_state
+            .unresolved_question_ids
+            .iter()
+            .map(|question_id| format!("design:open-question:{question_id}")),
+    );
+    blocker_reasons.extend(
+        wave_state
+            .unresolved_assumption_ids
+            .iter()
+            .map(|assumption_id| format!("design:open-assumption:{assumption_id}")),
+    );
+    blocker_reasons.extend(
+        wave_state
+            .pending_human_input_request_ids
+            .iter()
+            .map(|request_id| format!("design:human-input:{request_id}")),
+    );
+    blocker_reasons.extend(
+        wave_state
+            .invalidated_fact_ids
+            .iter()
+            .map(|fact_id| format!("design:invalidated-fact:{fact_id}")),
+    );
+    blocker_reasons.extend(
+        invalidated_decision_ids
+            .iter()
+            .map(|decision_id| format!("design:invalidated-decision:{decision_id}")),
+    );
+    blocker_reasons.extend(
+        selectively_invalidated_task_ids
+            .iter()
+            .map(|task_id| format!("design:downstream-task-invalidated:{task_id}")),
+    );
+    blocker_reasons.extend(
+        ambiguous_dependency_wave_ids
+            .iter()
+            .map(|wave_id| format!("design:dependency-ambiguity:wave-{wave_id}")),
+    );
+    blocker_reasons.sort();
+    blocker_reasons.dedup();
+
+    WaveLaunchDesignState {
+        unresolved_question_ids: wave_state.unresolved_question_ids.into_iter().collect(),
+        unresolved_assumption_ids: wave_state.unresolved_assumption_ids.into_iter().collect(),
+        pending_human_input_request_ids: wave_state
+            .pending_human_input_request_ids
+            .into_iter()
+            .collect(),
+        invalidated_fact_ids: wave_state.invalidated_fact_ids.into_iter().collect(),
+        invalidated_decision_ids: invalidated_decision_ids.into_iter().collect(),
+        selectively_invalidated_task_ids,
+        ambiguous_dependency_wave_ids,
+        blocker_reasons,
+    }
+}
+
+fn launch_wave_has_ambiguity(index: &LaunchDesignIndex, wave_id: u32) -> bool {
+    index
+        .waves
+        .get(&wave_id)
+        .map(|wave| {
+            !wave.unresolved_question_ids.is_empty()
+                || !wave.unresolved_assumption_ids.is_empty()
+                || !wave.pending_human_input_request_ids.is_empty()
+                || !wave.invalidated_fact_ids.is_empty()
+                || !wave.invalidated_decision_ids.is_empty()
+        })
+        .unwrap_or(false)
+}
+
+fn lineage_subject_key(lineage: &LineageRecord) -> String {
+    match &lineage.subject {
+        LineageRecordSubject::Question { question_id } => {
+            format!("question:{}", question_id.as_str())
+        }
+        LineageRecordSubject::Assumption { assumption_id } => {
+            format!("assumption:{}", assumption_id.as_str())
+        }
+        LineageRecordSubject::Decision { decision_id } => {
+            format!("decision:{}", decision_id.as_str())
+        }
+        LineageRecordSubject::SupersededDecision { decision_id, .. } => {
+            format!("decision:{}", decision_id.as_str())
+        }
+    }
+}
+
 fn planned_execution_indices(
     ordered_agents: &[&WaveAgent],
     prior_run: Option<&WaveRunRecord>,
     scope: RerunScope,
+    wave_id: u32,
+    selectively_invalidated_task_ids: &[String],
 ) -> Result<Vec<usize>> {
+    if prior_run.is_some()
+        && !matches!(scope, RerunScope::ClosureOnly | RerunScope::PromotionOnly)
+        && !selectively_invalidated_task_ids.is_empty()
+    {
+        let selective_task_ids = selectively_invalidated_task_ids
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        let mut indices = ordered_agents
+            .iter()
+            .enumerate()
+            .filter(|(_, agent)| {
+                selective_task_ids.contains(task_id_for_agent(wave_id, agent.id.as_str()).as_str())
+                    || is_closure_followup_agent(agent.id.as_str())
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        indices.sort_unstable();
+        indices.dedup();
+        if !indices.is_empty() {
+            return Ok(indices);
+        }
+    }
+
     match scope {
         RerunScope::Full => Ok((0..ordered_agents.len()).collect()),
         RerunScope::FromFirstIncomplete => {
-            let prior_run = prior_run.context("from-first-incomplete rerun requires a prior run")?;
+            let prior_run =
+                prior_run.context("from-first-incomplete rerun requires a prior run")?;
             let Some(start_index) = ordered_agents.iter().position(|agent| {
                 prior_run
                     .agents
@@ -1446,7 +2726,7 @@ fn seed_reused_agent_records(
     execution_indices: &[usize],
     scope: RerunScope,
 ) -> Result<()> {
-    if matches!(scope, RerunScope::Full) {
+    if matches!(scope, RerunScope::Full) && execution_indices.len() == ordered_agents.len() {
         return Ok(());
     }
     let prior_run = prior_run.with_context(|| {
@@ -1502,13 +2782,12 @@ fn prepare_closure_artifact_placeholders(execution_root: &Path, wave: &WaveDocum
             if artifact_path.exists() {
                 continue;
             }
-            let placeholder = if artifact_path.extension().and_then(|ext| ext.to_str())
-                == Some("json")
-            {
-                "{}\n"
-            } else {
-                ""
-            };
+            let placeholder =
+                if artifact_path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                    "{}\n"
+                } else {
+                    ""
+                };
             fs::write(&artifact_path, placeholder)
                 .with_context(|| format!("failed to seed {}", artifact_path.display()))?;
         }
@@ -1556,7 +2835,8 @@ pub fn launch_wave(
     } else {
         refresh_planning_status(root, config, waves)?
     };
-    let wave = select_wave(waves, &planning_status, options.wave_id)?;
+    let design_states = load_wave_launch_design_states(root, config, waves)?;
+    let wave = select_launchable_wave(waves, &planning_status, options.wave_id, &design_states)?;
     let rerun_intent = requested_rerun_intent(root, config, wave.metadata.id)?;
     let rerun_scope = rerun_intent
         .as_ref()
@@ -1564,7 +2844,16 @@ pub fn launch_wave(
         .unwrap_or(RerunScope::Full);
     let prior_run = load_latest_runs(root, config)?.remove(&wave.metadata.id);
     let ordered_agents = ordered_agents(wave);
-    let execution_indices = planned_execution_indices(&ordered_agents, prior_run.as_ref(), rerun_scope)?;
+    let execution_indices = planned_execution_indices(
+        &ordered_agents,
+        prior_run.as_ref(),
+        rerun_scope,
+        wave.metadata.id,
+        design_states
+            .get(&wave.metadata.id)
+            .map(|state| state.selectively_invalidated_task_ids.as_slice())
+            .unwrap_or(&[]),
+    )?;
     let run_id = format!("wave-{:02}-{}", wave.metadata.id, now_epoch_ms()?);
     let bundle = compile_wave_bundle(root, config, wave, &run_id)?;
     let mut agent_records = bundle
@@ -2397,7 +3686,11 @@ pub fn autonomous_launch(
         }
     }
     if launched.is_empty() {
-        bail!("{}", queue_unavailable_reason(&status));
+        let design_states = load_wave_launch_design_states(root, config, waves)?;
+        bail!(
+            "{}",
+            queue_unavailable_reason_with_design(&status, &design_states)
+        );
     }
     Ok(launched)
 }
@@ -2413,6 +3706,21 @@ fn next_claimable_wave_selection(status: &PlanningStatus) -> Option<AutonomousWa
         .next()
 }
 
+fn next_claimable_wave_selection_with_design(
+    status: &PlanningStatus,
+    design_states: &HashMap<u32, WaveLaunchDesignState>,
+) -> Option<AutonomousWaveSelection> {
+    fifo_ordered_claimable_implementation_waves(status, now_epoch_ms().unwrap_or_default())
+        .into_iter()
+        .find(|candidate| {
+            !design_states
+                .get(&candidate.selection.wave_id)
+                .map(WaveLaunchDesignState::is_blocked)
+                .unwrap_or(false)
+        })
+        .map(|candidate| candidate.selection)
+}
+
 fn next_parallel_wave_batch(
     root: &Path,
     config: &ProjectConfig,
@@ -2425,10 +3733,18 @@ fn next_parallel_wave_batch(
     }
     let now_ms = now_epoch_ms()?;
     let effective_batch_size = effective_parallel_batch_size(status, max_batch_size);
+    let design_states = load_wave_launch_design_states(root, config, waves)?;
     let fairness_candidates = fifo_ordered_claimable_implementation_waves(status, now_ms);
     let mut selected = Vec::new();
     let mut waiting_updates = Vec::new();
     for (index, ordered) in fairness_candidates.iter().enumerate() {
+        if design_states
+            .get(&ordered.selection.wave_id)
+            .map(WaveLaunchDesignState::is_blocked)
+            .unwrap_or(false)
+        {
+            continue;
+        }
         let Some(entry) = status
             .waves
             .iter()
@@ -2654,6 +3970,44 @@ fn queue_unavailable_reason(status: &PlanningStatus) -> String {
     )
 }
 
+fn queue_unavailable_reason_with_design(
+    status: &PlanningStatus,
+    design_states: &HashMap<u32, WaveLaunchDesignState>,
+) -> String {
+    if let Some(selection) = next_claimable_wave_selection_with_design(status, design_states) {
+        return format!(
+            "wave {} is ready but could not be claimed: {}",
+            selection.wave_id,
+            queue_entry_reason_from_blockers(&selection.blocked_by)
+        );
+    }
+
+    let design_blocked_wave_ids = status
+        .queue
+        .claimable_wave_ids
+        .iter()
+        .copied()
+        .filter(|wave_id| {
+            design_states
+                .get(wave_id)
+                .map(WaveLaunchDesignState::is_blocked)
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    if !design_blocked_wave_ids.is_empty() {
+        return format!(
+            "design authority blocks launchable waves: {}",
+            design_blocked_wave_ids
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    queue_unavailable_reason(status)
+}
+
 fn refresh_planning_status(
     root: &Path,
     config: &ProjectConfig,
@@ -2763,6 +4117,23 @@ fn control_event_log(root: &Path, config: &ProjectConfig) -> ControlEventLog {
             .authority
             .state_events_control_dir,
     )
+}
+
+fn control_mutation_lock_path(root: &Path, config: &ProjectConfig) -> PathBuf {
+    config
+        .resolved_paths(root)
+        .authority
+        .state_derived_dir
+        .join("control")
+        .join("mutation.lock")
+}
+
+fn with_control_mutation<T>(
+    root: &Path,
+    config: &ProjectConfig,
+    f: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    wave_events::with_scheduler_mutation_lock(control_mutation_lock_path(root, config), f)
 }
 
 fn scheduler_event_log(root: &Path, config: &ProjectConfig) -> SchedulerEventLog {
@@ -5187,13 +6558,14 @@ fn merge_json_value(target: &mut JsonValue, overlay: JsonValue) {
 fn ordered_agents(wave: &WaveDocument) -> Vec<&WaveAgent> {
     let mut agents = wave.agents.iter().collect::<Vec<_>>();
     agents.sort_by_key(|agent| match agent.id.as_str() {
-        "E0" => (1_u8, agent.id.as_str()),
-        "A6" => (2_u8, agent.id.as_str()),
-        "A7" => (3_u8, agent.id.as_str()),
-        "A8" => (4_u8, agent.id.as_str()),
-        "A9" => (5_u8, agent.id.as_str()),
-        "A0" => (6_u8, agent.id.as_str()),
-        _ => (0_u8, agent.id.as_str()),
+        _ if agent.is_design_worker() => (0_u8, agent.id.as_str()),
+        "E0" => (2_u8, agent.id.as_str()),
+        "A6" => (3_u8, agent.id.as_str()),
+        "A7" => (4_u8, agent.id.as_str()),
+        "A8" => (5_u8, agent.id.as_str()),
+        "A9" => (6_u8, agent.id.as_str()),
+        "A0" => (7_u8, agent.id.as_str()),
+        _ => (1_u8, agent.id.as_str()),
     });
     agents
 }
@@ -5375,6 +6747,11 @@ fn build_launch_preflight(
                 .to_string(),
         },
         LaunchPreflightCheck {
+            name: "design-gate",
+            ok: design_gate_preflight_ok(wave),
+            detail: design_gate_preflight_detail(wave),
+        },
+        LaunchPreflightCheck {
             name: "runtime-availability",
             ok: runtime_details.iter().all(|detail| detail.0),
             detail: if dry_run {
@@ -5468,6 +6845,42 @@ fn runtime_preflight_detail(
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+    )
+}
+
+fn design_gate_preflight_ok(wave: &WaveDocument) -> bool {
+    let Some(design_gate) = wave.metadata.design_gate.as_ref() else {
+        return true;
+    };
+    if design_gate.agent_ids.is_empty() {
+        return false;
+    }
+    if wave.code_implementation_agents().next().is_none() {
+        return false;
+    }
+    design_gate.agent_ids.iter().all(|agent_id| {
+        wave.agents
+            .iter()
+            .find(|agent| agent.id == *agent_id)
+            .map(|agent| agent.is_design_worker())
+            .unwrap_or(false)
+    })
+}
+
+fn design_gate_preflight_detail(wave: &WaveDocument) -> String {
+    let Some(design_gate) = wave.metadata.design_gate.as_ref() else {
+        return "no design gate declared".to_string();
+    };
+    let agent_labels = if design_gate.agent_ids.is_empty() {
+        "none".to_string()
+    } else {
+        design_gate.agent_ids.join(", ")
+    };
+    format!(
+        "design gate agents={} ready_marker={} code_agents={}",
+        agent_labels,
+        design_gate.ready_marker,
+        wave.code_implementation_agents().count()
     )
 }
 
@@ -5718,6 +7131,35 @@ fn write_rerun_intent(
     Ok(())
 }
 
+fn snapshot_control_file(path: &Path) -> Result<Option<Vec<u8>>> {
+    match fs::read(path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+fn restore_control_file(path: &Path, snapshot: Option<Vec<u8>>) -> Result<()> {
+    match snapshot {
+        Some(contents) => {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create {}", parent.display()))?;
+            }
+            fs::write(path, contents)
+                .with_context(|| format!("failed to restore {}", path.display()))?;
+            Ok(())
+        }
+        None => match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => {
+                Err(error).with_context(|| format!("failed to remove {}", path.display()))
+            }
+        },
+    }
+}
+
 fn write_closure_override(
     root: &Path,
     config: &ProjectConfig,
@@ -5762,6 +7204,24 @@ mod tests {
 
     static FAKE_RUNTIME_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+    fn default_wave_metadata() -> WaveMetadata {
+        WaveMetadata {
+            id: 0,
+            slug: String::new(),
+            title: String::new(),
+            mode: ExecutionMode::DarkFactory,
+            owners: Vec::new(),
+            depends_on: Vec::new(),
+            validation: Vec::new(),
+            rollback: Vec::new(),
+            proof: Vec::new(),
+            wave_class: wave_spec::WaveClass::Implementation,
+            intent: None,
+            delivery: None,
+            design_gate: None,
+        }
+    }
+
     #[test]
     fn closure_agents_run_after_implementation_agents() {
         let wave = WaveDocument {
@@ -5776,6 +7236,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 0".to_string()),
             commit_message: Some("Feat: test".to_string()),
@@ -6104,6 +7565,7 @@ mod tests {
                 validation: Vec::new(),
                 rollback: Vec::new(),
                 proof: Vec::new(),
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 6".to_string()),
             commit_message: Some(
@@ -6473,6 +7935,10 @@ mod tests {
         failed_run.completed_at_ms = Some(2);
         failed_run.error = Some("promotion blocked by conflicts".to_string());
         write_run_record_fixture(&root, &config, &failed_run);
+        let evidence_path = root.join("docs/evidence.md");
+        fs::create_dir_all(evidence_path.parent().expect("evidence parent"))
+            .expect("create evidence dir");
+        fs::write(&evidence_path, "manual close evidence\n").expect("write evidence");
 
         request_rerun(
             &root,
@@ -6489,10 +7955,7 @@ mod tests {
             15,
             "manual close accepted for Wave 15 baseline",
             None,
-            vec![
-                "docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/README.md"
-                    .to_string(),
-            ],
+            vec!["docs/evidence.md".to_string()],
             Some("operator accepted failed promotion after inspection".to_string()),
         )
         .expect("apply closure override");
@@ -6500,13 +7963,7 @@ mod tests {
         assert!(record.is_active());
         assert_eq!(record.wave_id, 15);
         assert_eq!(record.source_run_id, "wave-15-failed");
-        assert_eq!(
-            record.evidence_paths,
-            vec![
-                "docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/README.md"
-                    .to_string()
-            ]
-        );
+        assert_eq!(record.evidence_paths, vec!["docs/evidence.md".to_string()]);
 
         let stored = load_closure_override(&root, &config, 15)
             .expect("load closure override")
@@ -6530,6 +7987,479 @@ mod tests {
     }
 
     #[test]
+    fn preview_closure_override_derives_default_evidence_bundle_from_terminal_run() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-closure-override-preview-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let wave = launchable_test_wave(15);
+        let mut failed_run = scheduler_test_run(&root, &wave, "wave-15-failed", 1);
+        failed_run.status = WaveRunStatus::Failed;
+        failed_run.completed_at_ms = Some(2);
+        failed_run.error = Some("promotion blocked by conflicts".to_string());
+        failed_run.trace_path = root.join(".wave/traces/runs/wave-15-failed.json");
+        failed_run.agents = vec![AgentRunRecord {
+            id: "A1".to_string(),
+            title: "Implementation".to_string(),
+            status: WaveRunStatus::Failed,
+            prompt_path: root.join(".wave/state/build/specs/wave-15-failed/agents/A1/prompt.md"),
+            last_message_path: root
+                .join(".wave/state/build/specs/wave-15-failed/agents/A1/last-message.txt"),
+            events_path: root.join(".wave/state/build/specs/wave-15-failed/agents/A1/events.jsonl"),
+            stderr_path: root.join(".wave/state/build/specs/wave-15-failed/agents/A1/stderr.txt"),
+            result_envelope_path: Some(
+                root.join(".wave/state/results/wave-15/attempt-a1/agent_result_envelope.json"),
+            ),
+            runtime_detail_path: Some(
+                root.join(".wave/state/build/specs/wave-15-failed/agents/A1/runtime-detail.json"),
+            ),
+            expected_markers: Vec::new(),
+            observed_markers: Vec::new(),
+            exit_code: Some(1),
+            error: Some("promotion blocked by conflicts".to_string()),
+            runtime: None,
+        }];
+        write_run_record_fixture(&root, &config, &failed_run);
+        fs::create_dir_all(failed_run.trace_path.parent().expect("trace parent"))
+            .expect("create trace parent");
+        fs::write(&failed_run.trace_path, "{}\n").expect("write trace");
+        fs::create_dir_all(
+            failed_run.agents[0]
+                .result_envelope_path
+                .as_ref()
+                .expect("result path")
+                .parent()
+                .expect("result parent"),
+        )
+        .expect("create result parent");
+        fs::write(
+            failed_run.agents[0]
+                .result_envelope_path
+                .as_ref()
+                .expect("result path"),
+            "{}\n",
+        )
+        .expect("write result envelope");
+        fs::create_dir_all(
+            failed_run.agents[0]
+                .runtime_detail_path
+                .as_ref()
+                .expect("runtime detail path")
+                .parent()
+                .expect("runtime detail parent"),
+        )
+        .expect("create runtime detail parent");
+        fs::write(
+            failed_run.agents[0]
+                .runtime_detail_path
+                .as_ref()
+                .expect("runtime detail path"),
+            "{}\n",
+        )
+        .expect("write runtime detail");
+
+        let preview = preview_closure_override(&root, &config, 15, None, Vec::new())
+            .expect("preview closure override");
+
+        assert_eq!(preview.wave_id, 15);
+        assert_eq!(preview.source_run_id, "wave-15-failed");
+        assert_eq!(preview.source_run_status, WaveRunStatus::Failed);
+        assert_eq!(
+            preview.source_run_error.as_deref(),
+            Some("promotion blocked by conflicts")
+        );
+        assert_eq!(
+            preview.evidence_paths,
+            vec![
+                ".wave/state/runs/wave-15-failed.json".to_string(),
+                ".wave/traces/runs/wave-15-failed.json".to_string(),
+                ".wave/state/results/wave-15/attempt-a1/agent_result_envelope.json".to_string(),
+                ".wave/state/build/specs/wave-15-failed/agents/A1/runtime-detail.json".to_string(),
+            ]
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn preview_closure_override_rejects_absolute_missing_parent_and_directory_evidence() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-closure-override-evidence-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let wave = launchable_test_wave(15);
+        let mut failed_run = scheduler_test_run(&root, &wave, "wave-15-failed", 1);
+        failed_run.status = WaveRunStatus::Failed;
+        failed_run.completed_at_ms = Some(2);
+        write_run_record_fixture(&root, &config, &failed_run);
+        let directory_path = root.join("docs/evidence-dir");
+        fs::create_dir_all(&directory_path).expect("create evidence dir");
+
+        let absolute_error = preview_closure_override(
+            &root,
+            &config,
+            15,
+            None,
+            vec![root.join("docs/evidence.md").to_string_lossy().into_owned()],
+        )
+        .expect_err("absolute evidence should fail");
+        assert!(absolute_error.to_string().contains("must be repo-relative"));
+
+        let parent_error =
+            preview_closure_override(&root, &config, 15, None, vec!["../outside.md".to_string()])
+                .expect_err("parent traversal should fail");
+        assert!(
+            parent_error
+                .to_string()
+                .contains("invalid closure override evidence path")
+        );
+
+        let missing_error = preview_closure_override(
+            &root,
+            &config,
+            15,
+            None,
+            vec!["docs/missing.md".to_string()],
+        )
+        .expect_err("missing evidence should fail");
+        assert!(missing_error.to_string().contains("does not exist"));
+
+        let directory_error = preview_closure_override(
+            &root,
+            &config,
+            15,
+            None,
+            vec!["docs/evidence-dir".to_string()],
+        )
+        .expect_err("directory evidence should fail");
+        assert!(directory_error.to_string().contains("must point to a file"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn apply_closure_override_rolls_back_when_override_event_append_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-closure-override-rerun-fail-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let wave = launchable_test_wave(15);
+        let mut failed_run = scheduler_test_run(&root, &wave, "wave-15-failed", 1);
+        failed_run.status = WaveRunStatus::Failed;
+        failed_run.completed_at_ms = Some(2);
+        write_run_record_fixture(&root, &config, &failed_run);
+        let evidence_path = root.join("docs/evidence.md");
+        fs::create_dir_all(evidence_path.parent().expect("evidence parent"))
+            .expect("create evidence dir");
+        fs::write(&evidence_path, "manual close evidence\n").expect("write evidence");
+
+        request_rerun(
+            &root,
+            &config,
+            15,
+            "retry closure after promotion conflict",
+            RerunScope::ClosureOnly,
+        )
+        .expect("request rerun");
+
+        let control_wave_path = control_event_log(&root, &config).wave_path(15);
+        if control_wave_path.exists() {
+            fs::remove_file(&control_wave_path).expect("remove control event log");
+        }
+        fs::create_dir_all(&control_wave_path).expect("create blocking control log dir");
+
+        let error = apply_closure_override(
+            &root,
+            &config,
+            15,
+            "manual close accepted for Wave 15 baseline",
+            None,
+            vec!["docs/evidence.md".to_string()],
+            Some("operator accepted failed promotion after inspection".to_string()),
+        )
+        .expect_err("rerun clear failure should fail closure override");
+
+        assert!(error.to_string().contains("failed to open"));
+        assert!(
+            load_closure_override(&root, &config, 15)
+                .expect("load closure override")
+                .is_none()
+        );
+        let rerun = list_rerun_intents(&root, &config)
+            .expect("load reruns")
+            .remove(&15)
+            .expect("rerun intent restored");
+        assert_eq!(rerun.status, RerunIntentStatus::Requested);
+        assert!(rerun.cleared_at_ms.is_none());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn apply_closure_override_rolls_back_when_override_write_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-closure-override-write-fail-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let wave = launchable_test_wave(15);
+        let mut failed_run = scheduler_test_run(&root, &wave, "wave-15-failed", 1);
+        failed_run.status = WaveRunStatus::Failed;
+        failed_run.completed_at_ms = Some(2);
+        write_run_record_fixture(&root, &config, &failed_run);
+        let evidence_path = root.join("docs/evidence.md");
+        fs::create_dir_all(evidence_path.parent().expect("evidence parent"))
+            .expect("create evidence dir");
+        fs::write(&evidence_path, "manual close evidence\n").expect("write evidence");
+
+        request_rerun(
+            &root,
+            &config,
+            15,
+            "retry closure after promotion conflict",
+            RerunScope::ClosureOnly,
+        )
+        .expect("request rerun");
+
+        let override_dir = control_closure_overrides_dir(&root, &config);
+        fs::create_dir_all(override_dir.parent().expect("closure override dir parent"))
+            .expect("create control parent dir");
+        fs::write(&override_dir, "blocked").expect("block closure override dir with file");
+
+        let error = apply_closure_override(
+            &root,
+            &config,
+            15,
+            "manual close accepted for Wave 15 baseline",
+            None,
+            vec!["docs/evidence.md".to_string()],
+            Some("operator accepted failed promotion after inspection".to_string()),
+        )
+        .expect_err("override write failure should fail closure override");
+        assert!(!error.to_string().trim().is_empty());
+        assert!(!closure_override_path(&root, &config, 15).exists());
+        let rerun = list_rerun_intents(&root, &config)
+            .expect("load reruns")
+            .remove(&15)
+            .expect("rerun intent restored");
+        assert_eq!(rerun.status, RerunIntentStatus::Requested);
+        assert!(rerun.cleared_at_ms.is_none());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approve_human_input_request_records_answered_request() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-human-input-approve-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let request = HumanInputRequest {
+            request_id: wave_domain::HumanInputRequestId::new("human-16"),
+            wave_id: 16,
+            task_id: Some(task_id_for_agent(16, "A2")),
+            state: HumanInputState::Pending,
+            workflow_kind: HumanInputWorkflowKind::DependencyHandshake,
+            prompt: "Need dependency confirmation".to_string(),
+            route: "dependency:wave-15".to_string(),
+            requested_by: "A2".to_string(),
+            answer: None,
+        };
+        append_control_event(
+            &root,
+            &config,
+            ControlEvent::new(
+                "evt-human-16-seeded",
+                ControlEventKind::HumanInputUpdated,
+                16,
+            )
+            .with_created_at_ms(1)
+            .with_payload(ControlEventPayload::HumanInputUpdated {
+                request: request.clone(),
+            }),
+        )
+        .expect("seed human input request");
+
+        let updated =
+            approve_human_input_request(&root, &config, "human-16").expect("approve request");
+
+        assert_eq!(updated.state, HumanInputState::Answered);
+        assert_eq!(
+            updated.answer.as_deref(),
+            Some("Approved by operator from the Wave TUI")
+        );
+        assert_eq!(
+            latest_human_input_request(&root, &config, "human-16").expect("load updated request"),
+            updated
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dismiss_escalation_appends_resolution_record_once() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-escalation-dismiss-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let coordination_log = CoordinationLog::new(
+            config
+                .resolved_paths(&root)
+                .authority
+                .state_events_coordination_dir,
+        );
+        let escalation = CoordinationRecord::new(
+            "esc-16",
+            CoordinationRecordKind::Escalation,
+            16,
+            "Need operator review",
+        )
+        .with_created_at_ms(1)
+        .with_task_id(task_id_for_agent(16, "A6"))
+        .with_human_input_request_id(wave_domain::HumanInputRequestId::new("human-16"))
+        .with_detail("dependency handshake is blocked");
+        coordination_log
+            .append(&escalation)
+            .expect("append escalation");
+
+        let resolution = dismiss_escalation(&root, &config, "esc-16").expect("dismiss escalation");
+
+        assert_eq!(resolution.kind, CoordinationRecordKind::Clarification);
+        assert_eq!(resolution.related_record_ids, vec!["esc-16".to_string()]);
+        assert!(
+            coordination_log
+                .load_wave(16)
+                .expect("load coordination log")
+                .iter()
+                .any(|record| record.record_id == resolution.record_id)
+        );
+
+        let error =
+            dismiss_escalation(&root, &config, "esc-16").expect_err("second dismiss must fail");
+        assert!(error.to_string().contains("already resolved"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn seed_design_authority_live_proof_is_idempotent_and_leaves_wave_unblocked() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-proof-seed-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let report =
+            seed_design_authority_live_proof(&root, &config, 16).expect("seed proof events");
+        assert!(!report.already_present);
+        assert!(!report.event_ids.is_empty());
+
+        let second_report =
+            seed_design_authority_live_proof(&root, &config, 16).expect("seed proof twice");
+        assert!(second_report.already_present);
+        assert_eq!(second_report.event_ids, report.event_ids);
+
+        let control_log = ControlEventLog::new(
+            config
+                .resolved_paths(&root)
+                .authority
+                .state_events_control_dir,
+        );
+        let seeded_events = control_log
+            .load_wave(16)
+            .expect("load seeded events")
+            .into_iter()
+            .filter(|event| event.correlation_id.as_deref() == Some(report.correlation_id.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(seeded_events.len(), report.event_ids.len());
+        assert!(
+            seeded_events
+                .iter()
+                .any(|event| matches!(event.kind, ControlEventKind::FactObserved))
+        );
+        assert!(
+            seeded_events
+                .iter()
+                .any(|event| matches!(event.kind, ControlEventKind::LineageUpdated))
+        );
+        assert!(
+            seeded_events
+                .iter()
+                .any(|event| matches!(event.kind, ControlEventKind::HumanInputUpdated))
+        );
+        assert!(
+            seeded_events
+                .iter()
+                .any(|event| matches!(event.kind, ControlEventKind::ContradictionUpdated))
+        );
+
+        let design_states = build_wave_launch_design_states(
+            &[launchable_test_wave(16)],
+            &control_log.load_wave(16).expect("load full wave log"),
+        );
+        let design = design_states.get(&16).expect("design state");
+        assert!(!design.is_blocked());
+        assert!(design.unresolved_question_ids.is_empty());
+        assert!(design.pending_human_input_request_ids.is_empty());
+        assert!(design.invalidated_decision_ids.is_empty());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn rerun_scope_selection_distinguishes_closure_and_promotion_agents() {
         let wave = WaveDocument {
             path: PathBuf::from("waves/15.md"),
@@ -6543,6 +8473,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["README.md".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 15".to_string()),
             commit_message: Some("Feat: wave 15".to_string()),
@@ -6560,17 +8491,20 @@ mod tests {
         };
         let ordered = ordered_agents(&wave);
         assert_eq!(
-            ordered.iter().map(|agent| agent.id.as_str()).collect::<Vec<_>>(),
+            ordered
+                .iter()
+                .map(|agent| agent.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["A1", "A6", "A7", "A8", "A9", "A0"]
         );
 
         assert_eq!(
-            planned_execution_indices(&ordered, None, RerunScope::ClosureOnly)
+            planned_execution_indices(&ordered, None, RerunScope::ClosureOnly, 15, &[])
                 .expect("closure-only indices"),
             vec![1, 2, 3, 4, 5]
         );
         assert_eq!(
-            planned_execution_indices(&ordered, None, RerunScope::PromotionOnly)
+            planned_execution_indices(&ordered, None, RerunScope::PromotionOnly, 15, &[])
                 .expect("promotion-only indices"),
             vec![3, 4, 5]
         );
@@ -6668,9 +8602,238 @@ mod tests {
         };
 
         assert_eq!(
-            planned_execution_indices(&ordered, Some(&prior_run), RerunScope::FromFirstIncomplete)
-                .expect("resume indices"),
+            planned_execution_indices(
+                &ordered,
+                Some(&prior_run),
+                RerunScope::FromFirstIncomplete,
+                15,
+                &[],
+            )
+            .expect("resume indices"),
             vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn selective_invalidation_reuses_unrelated_successful_agents() {
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/16.md"),
+            metadata: WaveMetadata {
+                id: 16,
+                slug: "wave-16".to_string(),
+                title: "Wave 16".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["A0".to_string()],
+                depends_on: Vec::new(),
+                validation: Vec::new(),
+                rollback: Vec::new(),
+                proof: Vec::new(),
+                wave_class: wave_spec::WaveClass::Implementation,
+                intent: None,
+                delivery: None,
+                design_gate: None,
+            },
+            heading_title: Some("Wave 16".to_string()),
+            commit_message: Some("Feat: wave 16".to_string()),
+            component_promotions: Vec::new(),
+            deploy_environments: Vec::new(),
+            context7_defaults: None,
+            agents: vec![
+                test_agent("A1"),
+                test_agent("A2"),
+                closure_test_agent("A8"),
+                closure_test_agent("A9"),
+                closure_test_agent("A0"),
+            ],
+        };
+        let ordered = ordered_agents(&wave);
+        let prior_run = WaveRunRecord {
+            run_id: "wave-16-prior".to_string(),
+            wave_id: 16,
+            slug: "wave-16".to_string(),
+            title: "Wave 16".to_string(),
+            status: WaveRunStatus::Succeeded,
+            dry_run: false,
+            bundle_dir: PathBuf::from(".wave/state/build/specs/wave-16-prior"),
+            trace_path: PathBuf::from(".wave/traces/runs/wave-16-prior.json"),
+            codex_home: PathBuf::from(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(1),
+            launcher_pid: None,
+            launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
+            completed_at_ms: Some(2),
+            agents: ordered
+                .iter()
+                .map(|agent| AgentRunRecord {
+                    id: agent.id.clone(),
+                    title: agent.title.clone(),
+                    status: WaveRunStatus::Succeeded,
+                    prompt_path: PathBuf::from(format!("prior-{}.md", agent.id)),
+                    last_message_path: PathBuf::from(format!("prior-{}.txt", agent.id)),
+                    events_path: PathBuf::from(format!("prior-{}.jsonl", agent.id)),
+                    stderr_path: PathBuf::from(format!("prior-{}.stderr", agent.id)),
+                    result_envelope_path: None,
+                    runtime_detail_path: None,
+                    expected_markers: agent
+                        .expected_final_markers()
+                        .iter()
+                        .map(|marker| (*marker).to_string())
+                        .collect(),
+                    observed_markers: agent
+                        .expected_final_markers()
+                        .iter()
+                        .map(|marker| (*marker).to_string())
+                        .collect(),
+                    exit_code: Some(0),
+                    error: None,
+                    runtime: None,
+                })
+                .collect(),
+            error: None,
+        };
+
+        let execution_indices = planned_execution_indices(
+            &ordered,
+            Some(&prior_run),
+            RerunScope::Full,
+            16,
+            &[task_id_for_agent(16, "A2").as_str().to_string()],
+        )
+        .expect("selective rerun indices");
+        assert_eq!(execution_indices, vec![1, 2, 3, 4]);
+
+        let mut current_agents = ordered
+            .iter()
+            .map(|agent| AgentRunRecord {
+                id: agent.id.clone(),
+                title: agent.title.clone(),
+                status: WaveRunStatus::Planned,
+                prompt_path: PathBuf::from(format!("current-{}.md", agent.id)),
+                last_message_path: PathBuf::from(format!("current-{}.txt", agent.id)),
+                events_path: PathBuf::from(format!("current-{}.jsonl", agent.id)),
+                stderr_path: PathBuf::from(format!("current-{}.stderr", agent.id)),
+                result_envelope_path: None,
+                runtime_detail_path: None,
+                expected_markers: agent
+                    .expected_final_markers()
+                    .iter()
+                    .map(|marker| (*marker).to_string())
+                    .collect(),
+                observed_markers: Vec::new(),
+                exit_code: None,
+                error: None,
+                runtime: None,
+            })
+            .collect::<Vec<_>>();
+        seed_reused_agent_records(
+            &mut current_agents,
+            &ordered,
+            Some(&prior_run),
+            &execution_indices,
+            RerunScope::Full,
+        )
+        .expect("seed reused records");
+
+        assert_eq!(current_agents[0], prior_run.agents[0]);
+        assert_eq!(current_agents[1].status, WaveRunStatus::Planned);
+        assert_eq!(current_agents[2].status, WaveRunStatus::Planned);
+        assert_eq!(current_agents[3].status, WaveRunStatus::Planned);
+        assert_eq!(current_agents[4].status, WaveRunStatus::Planned);
+    }
+
+    #[test]
+    fn invalidated_lineage_blocks_only_the_impacted_wave() {
+        let waves = vec![
+            launchable_test_wave(0),
+            launchable_test_wave(1),
+            launchable_test_wave(2),
+        ];
+        let design_states = build_wave_launch_design_states(
+            &waves,
+            &[
+                ControlEvent::new("evt-fact", ControlEventKind::FactObserved, 0).with_payload(
+                    ControlEventPayload::FactObserved {
+                        fact: wave_domain::FactRecord {
+                            fact_id: wave_domain::FactId::new("fact-api-shape"),
+                            wave_id: 0,
+                            task_id: Some(task_id_for_agent(0, "A1")),
+                            attempt_id: None,
+                            state: wave_domain::FactState::Active,
+                            summary: "Observed API shape".to_string(),
+                            detail: None,
+                            source_artifact: None,
+                            introduced_by_event_id: None,
+                            citations: Vec::new(),
+                            contradiction_ids: Vec::new(),
+                            superseded_by_fact_id: None,
+                        },
+                    },
+                ),
+                ControlEvent::new("evt-decision", ControlEventKind::LineageUpdated, 0)
+                    .with_payload(ControlEventPayload::LineageUpdated {
+                        lineage: LineageRecord {
+                            record_id: wave_domain::LineageRecordId::new("lineage-decision"),
+                            wave_id: 0,
+                            task_id: Some(task_id_for_agent(0, "A1")),
+                            subject: LineageRecordSubject::Decision {
+                                decision_id: wave_domain::DecisionId::new("decision-api-shape"),
+                            },
+                            authority: wave_domain::DesignAuthority::Review,
+                            state: LineageState::Decided,
+                            summary: "Implement against the observed API shape".to_string(),
+                            detail: None,
+                            citations: Vec::new(),
+                            upstream_refs: vec![LineageRef::Fact(wave_domain::FactId::new(
+                                "fact-api-shape",
+                            ))],
+                            supporting_fact_ids: vec![wave_domain::FactId::new("fact-api-shape")],
+                            downstream_task_ids: vec![task_id_for_agent(1, "A1")],
+                            downstream_wave_ids: Vec::new(),
+                            required_human_input_request_ids: Vec::new(),
+                            introduced_by_event_id: None,
+                        },
+                    }),
+                ControlEvent::new(
+                    "evt-contradiction",
+                    ControlEventKind::ContradictionUpdated,
+                    0,
+                )
+                .with_payload(ControlEventPayload::ContradictionUpdated {
+                    contradiction: wave_domain::ContradictionRecord {
+                        contradiction_id: wave_domain::ContradictionId::new("contradiction-api"),
+                        wave_id: 0,
+                        task_ids: vec![task_id_for_agent(0, "A1"), task_id_for_agent(1, "A1")],
+                        fact_ids: vec![wave_domain::FactId::new("fact-api-shape")],
+                        state: wave_domain::ContradictionState::Detected,
+                        summary: "The API shape changed".to_string(),
+                        detail: None,
+                        introduced_by_event_id: None,
+                        invalidated_refs: vec![LineageRef::Fact(wave_domain::FactId::new(
+                            "fact-api-shape",
+                        ))],
+                    },
+                }),
+            ],
+        );
+
+        assert!(
+            design_states
+                .get(&1)
+                .expect("impacted wave")
+                .selectively_invalidated_task_ids
+                .contains(&task_id_for_agent(1, "A1").as_str().to_string())
+        );
+        assert!(design_states.get(&1).expect("impacted wave").is_blocked());
+        assert!(!design_states.get(&2).expect("unaffected wave").is_blocked());
+        assert!(
+            design_states
+                .get(&2)
+                .expect("unaffected wave")
+                .invalidated_decision_ids
+                .is_empty()
         );
     }
 
@@ -6695,6 +8858,7 @@ mod tests {
                 validation: Vec::new(),
                 rollback: Vec::new(),
                 proof: Vec::new(),
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 15".to_string()),
             commit_message: Some("Feat: wave 15".to_string()),
@@ -6865,7 +9029,8 @@ echo '{"loggedIn":true}'
             |status, stdout, _| status && stdout.contains("\"loggedIn\":true"),
         );
         assert!(!ok);
-        assert!(detail.contains("timed out after 50ms"));
+        assert!(detail.contains("timed out after"));
+        assert!(detail.contains("50"));
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -9809,6 +11974,7 @@ echo '{"loggedIn":true}'
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["README.md".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some(format!("Wave {id}")),
             commit_message: Some(format!("Feat: wave {id}")),
@@ -10274,8 +12440,11 @@ esac
     fn write_run_record_fixture(root: &Path, config: &ProjectConfig, run: &WaveRunRecord) {
         let path = state_runs_dir(root, config).join(format!("{}.json", run.run_id));
         fs::create_dir_all(path.parent().expect("run record parent")).expect("create run dir");
-        fs::write(&path, serde_json::to_string_pretty(run).expect("serialize run"))
-            .expect("write run record");
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(run).expect("serialize run"),
+        )
+        .expect("write run record");
     }
 
     #[test]

@@ -90,6 +90,27 @@
           "finished_at_ms": 1774526590437,
           "stale": true,
           "detail": "agent A3 completed"
+        },
+        {
+          "lease_id": "lease-wave-15-a6",
+          "task_id": "wave-15:agent-a6",
+          "claim_id": "claim-wave-15-wave-15-1774525178250",
+          "owner": {
+            "scheduler_id": "wave-runtime",
+            "scheduler_path": "wave-runtime/launcher",
+            "runtime": null,
+            "executor": null,
+            "session_id": "wave-15-1774525178250",
+            "process_id": 739789,
+            "process_started_at_ms": 1774525170769
+          },
+          "state": "released",
+          "granted_at_ms": 1774526590768,
+          "heartbeat_at_ms": 1774526800878,
+          "expires_at_ms": 1774526819314,
+          "finished_at_ms": 1774526800878,
+          "stale": true,
+          "detail": "agent A6 completed"
         }
       ],
       "contention_reasons": [],
@@ -208,7 +229,7 @@
     "status": "failed",
     "created_at_ms": 1774525179766,
     "started_at_ms": 1774525186801,
-    "elapsed_ms": 4965106,
+    "elapsed_ms": 9542596,
     "current_agent_id": "A6",
     "current_agent_title": "Design Review Steward",
     "activity_excerpt": "Review report is in [.wave/design/wave-15.md](/home/coder/codex-wave-mode/.wave/state/worktrees/wave-15-wave-15-1774525178250/.wave/design/wave-15.md). The disposition is `aligned`: the landed Wave 15 surfaces make runtime identity, selection, fallback cause, and adapter visibility clear enough in `Agents` and `Control` without leaking runtime-native semantics into queue truth.\n\n[wave-design] state=aligned findings=0 detail=runtime identity, selection, fallback, and adapter cues are operator-honest without leaking runtime semantics",

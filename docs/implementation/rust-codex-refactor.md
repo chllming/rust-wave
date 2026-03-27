@@ -287,18 +287,23 @@ If a future wave changes the contract, update the parser, lint rules, queue/stat
   Shows dependency-driven wave readiness, closure coverage, blocker state, and skill-catalog state.
 - `wave control show|task|rerun|proof`
   Exposes wave detail, active tasks, rerun intents, and proof/replay state from the same operator snapshot used by the TUI.
+- `wave delivery status [--json]`
+  Exposes release, acceptance-package, risk, debt, and delivery-signal truth from the repo-local delivery catalog.
+- `wave delivery initiative|release|acceptance show --id <id> [--json]`
+  Shows one delivery object in the same projection family as the TUI and app-server.
 - `wave draft`
   Compiles a wave bundle and writes per-agent prompt files under `.wave/state/build/specs/`.
 - `wave launch [--dry-run]`
   Runs a single ready wave through the Codex-backed launcher.
 - `wave autonomous [--dry-run]`
   Runs the current ready queue through the same launcher contract.
+- `wave adhoc plan|run|list|show|promote`
+  Uses repo-local adhoc state under `.wave/state/adhoc/` and can promote a planned run back into `waves/`.
 - `wave trace latest|replay`
   Shows compatibility run and trace outputs and validates replay semantics against stored artifacts in `.wave/traces/runs/`.
 
-Two areas are still intentionally incomplete:
+One area is still intentionally incomplete:
 
-- `wave adhoc`
 - `wave dep`
 
 ## Self-Host Runbook
@@ -318,7 +323,7 @@ This is a real self-host loop, but it is local and repo-scoped. It uses the laun
 
 Remaining gaps stay explicit:
 
-- `wave adhoc` and `wave dep` are still stubs.
+- `wave dep` is still a stub.
 - The operator shell is the built-in TUI, not a separate dashboard product.
 - Queue and replay visibility are evidence surfaces, not a guarantee that every future orchestration feature has shipped.
 

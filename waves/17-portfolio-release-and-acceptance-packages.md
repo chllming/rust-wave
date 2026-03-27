@@ -35,7 +35,7 @@ proof = ["Cargo.toml", "crates/wave-domain/src/lib.rs", "crates/wave-reducer/src
 - Show one release or promotion object moving through explicit readiness states.
 - Show one acceptance package explaining why something is or is not ready to ship.
 - Show known risk and outstanding debt as durable delivery state, not only prose.
-- Show proof, acceptance, risk, and debt visibility that fits the `Proof` and delivery-facing `Overview` UX in `docs/implementation/design.md`.
+- Show proof, acceptance, risk, and debt visibility that fits the `Proof` and delivery-facing `Overview` or `Portfolio` UX in `docs/implementation/design.md`.
 
 ## Quality control expectations
 - Add deterministic tests for initiative aggregation, release-state transitions, acceptance-package assembly, and known-risk or debt propagation.
@@ -378,7 +378,11 @@ Specific expectations:
 - introduce release or promotion state beyond simple wave completion
 - make known risks and outstanding debt first-class delivery state
 - produce a durable acceptance-package concept that ties design intent, implementation proof, release state, and signoff together
-- surface ship or no-ship state in operator-facing views or proof artifacts
+- surface ship or no-ship state in operator-facing views, not only ad hoc proof artifacts
+- add a stable delivery-facing `Overview` or `Portfolio` shell surface that exposes initiative, milestone, release-train, and outcome-contract rollups plus blocking reasons
+- add a dedicated `Proof` shell surface that exposes acceptance-package state, known risks, outstanding debt, and ship or no-ship reasoning directly
+- ensure acceptance-package state only treats active rerun requests as active release concerns
+- align acceptance-package design blocking rules with planner truth so `StructurallyComplete` design is not treated as a no-ship blocker by itself
 - emit the final [wave-proof], [wave-doc-delta], and [wave-component] markers as plain lines by themselves at the end of the output
 
 File ownership (only touch these paths):

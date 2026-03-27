@@ -23,19 +23,21 @@ Working now:
 - `wave doctor [--json]`
 - `wave lint [--json]`
 - `wave control status [--json]`
+- `wave delivery status [--json]`
+- `wave delivery initiative|release|acceptance show --id <id> [--json]`
 - `wave launch`
 - `wave autonomous`
 - `wave draft`
+- `wave adhoc plan|run|list|show|promote`
 - `wave control show|task|rerun|proof`
 - `wave trace latest|replay`
 
 Still pending:
 
-- `wave adhoc`
 - `wave dep`
 - terminal-surface integration beyond the built-in TUI shell
 
-`wave adhoc` and `wave dep` are present in the CLI surface, but they currently short-circuit with not-implemented messages.
+`wave dep` is still present in the CLI surface but currently short-circuits with a not-implemented message.
 
 ## Repo Layout
 
@@ -75,6 +77,8 @@ Useful live commands:
 ```bash
 cargo run -p wave-cli -- launch --wave 0 --dry-run --json
 cargo run -p wave-cli -- control show --wave 0 --json
+cargo run -p wave-cli -- delivery status --json
+cargo run -p wave-cli -- adhoc plan --task "investigate scheduler drift" --json
 cargo run -p wave-cli -- control rerun request --wave 4 --reason "operator request"
 cargo run -p wave-cli -- trace replay --json
 ```
@@ -148,7 +152,7 @@ The runbook is intentionally repo-local. It relies on `.wave/codex/`, `.wave/sta
 
 Current gaps remain explicit:
 
-- `wave adhoc` and `wave dep` still short-circuit with not-implemented messages.
+- `wave dep` still short-circuits with a not-implemented message.
 - The TUI is the built-in operator shell, not a separate dashboard app.
 - Self-host dogfooding is local-first; it does not imply live-host deployment or remote fleet control.
 - Wave 0.2 now lands authority-core plus reducer-backed planning, queue, and control projections over compatibility run inputs; proof and closure surfaces are envelope-first through stored result envelopes, with legacy proof adaptation isolated to `wave-results`, while replay ratification still depends on compatibility run and trace artifacts until later waves retire those adapters.

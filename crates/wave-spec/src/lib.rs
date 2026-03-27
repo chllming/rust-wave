@@ -27,6 +27,54 @@ pub struct WaveMetadata {
     pub rollback: Vec<String>,
     #[serde(default)]
     pub proof: Vec<String>,
+    #[serde(default)]
+    pub wave_class: WaveClass,
+    #[serde(default)]
+    pub intent: Option<WaveIntent>,
+    #[serde(default)]
+    pub delivery: Option<WaveDeliveryLink>,
+    #[serde(default)]
+    pub design_gate: Option<DesignGateSpec>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum WaveClass {
+    #[default]
+    Implementation,
+    Design,
+    Delivery,
+    Acceptance,
+    Investigation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WaveIntent {
+    Implementation,
+    Delivery,
+    Acceptance,
+    Investigation,
+    Design,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WaveDeliveryLink {
+    pub initiative_id: Option<String>,
+    pub release_id: Option<String>,
+    pub acceptance_package_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignGateSpec {
+    #[serde(default)]
+    pub agent_ids: Vec<String>,
+    #[serde(default = "default_design_gate_ready_marker")]
+    pub ready_marker: String,
+}
+
+fn default_design_gate_ready_marker() -> String {
+    "ready-for-implementation".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -202,6 +250,14 @@ impl WaveAgent {
             .iter()
             .any(|owned_path| path_is_owned_by(path, owned_path))
     }
+
+    pub fn is_design_worker(&self) -> bool {
+        !self.is_closure_agent()
+            && self
+                .skills
+                .iter()
+                .any(|skill| skill.eq_ignore_ascii_case("role-design"))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -221,8 +277,25 @@ impl WaveDocument {
         self.agents.iter().filter(|agent| !agent.is_closure_agent())
     }
 
+    pub fn design_agents(&self) -> impl Iterator<Item = &WaveAgent> {
+        self.agents.iter().filter(|agent| agent.is_design_worker())
+    }
+
+    pub fn code_implementation_agents(&self) -> impl Iterator<Item = &WaveAgent> {
+        self.implementation_agents()
+            .filter(|agent| !agent.is_design_worker())
+    }
+
     pub fn closure_agents(&self) -> impl Iterator<Item = &WaveAgent> {
         self.agents.iter().filter(|agent| agent.is_closure_agent())
+    }
+
+    pub fn design_gate_agent_ids(&self) -> &[String] {
+        self.metadata
+            .design_gate
+            .as_ref()
+            .map(|gate| gate.agent_ids.as_slice())
+            .unwrap_or(&[])
     }
 }
 

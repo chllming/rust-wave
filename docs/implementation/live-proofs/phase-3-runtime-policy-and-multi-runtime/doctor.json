@@ -1359,6 +1359,27 @@
               "finished_at_ms": 1774526590437,
               "stale": true,
               "detail": "agent A3 completed"
+            },
+            {
+              "lease_id": "lease-wave-15-a6",
+              "task_id": "wave-15:agent-a6",
+              "claim_id": "claim-wave-15-wave-15-1774525178250",
+              "owner": {
+                "scheduler_id": "wave-runtime",
+                "scheduler_path": "wave-runtime/launcher",
+                "runtime": null,
+                "executor": null,
+                "session_id": "wave-15-1774525178250",
+                "process_id": 739789,
+                "process_started_at_ms": 1774525170769
+              },
+              "state": "released",
+              "granted_at_ms": 1774526590768,
+              "heartbeat_at_ms": 1774526800878,
+              "expires_at_ms": 1774526819314,
+              "finished_at_ms": 1774526800878,
+              "stale": true,
+              "detail": "agent A6 completed"
             }
           ],
           "contention_reasons": [],
@@ -1483,7 +1504,71 @@
         "ownership": {
           "claim": null,
           "active_leases": [],
-          "stale_leases": [],
+          "stale_leases": [
+            {
+              "lease_id": "lease-wave-16-a1",
+              "task_id": "wave-16:agent-a1",
+              "claim_id": "claim-wave-16-wave-16-1774530356696",
+              "owner": {
+                "scheduler_id": "wave-runtime",
+                "scheduler_path": "wave-runtime/launcher",
+                "runtime": null,
+                "executor": null,
+                "session_id": "wave-16-1774530356696",
+                "process_id": 3643444,
+                "process_started_at_ms": 1774530349259
+              },
+              "state": "released",
+              "granted_at_ms": 1774530365009,
+              "heartbeat_at_ms": 1774530993313,
+              "expires_at_ms": 1774531008993,
+              "finished_at_ms": 1774530993313,
+              "stale": true,
+              "detail": "agent A1 completed"
+            },
+            {
+              "lease_id": "lease-wave-16-a2",
+              "task_id": "wave-16:agent-a2",
+              "claim_id": "claim-wave-16-wave-16-1774530356696",
+              "owner": {
+                "scheduler_id": "wave-runtime",
+                "scheduler_path": "wave-runtime/launcher",
+                "runtime": null,
+                "executor": null,
+                "session_id": "wave-16-1774530356696",
+                "process_id": 3643444,
+                "process_started_at_ms": 1774530349262
+              },
+              "state": "released",
+              "granted_at_ms": 1774530993651,
+              "heartbeat_at_ms": 1774532096593,
+              "expires_at_ms": 1774532114423,
+              "finished_at_ms": 1774532096593,
+              "stale": true,
+              "detail": "agent A2 completed"
+            },
+            {
+              "lease_id": "lease-wave-16-a6",
+              "task_id": "wave-16:agent-a6",
+              "claim_id": "claim-wave-16-wave-16-1774530356696",
+              "owner": {
+                "scheduler_id": "wave-runtime",
+                "scheduler_path": "wave-runtime/launcher",
+                "runtime": null,
+                "executor": null,
+                "session_id": "wave-16-1774530356696",
+                "process_id": 3643444,
+                "process_started_at_ms": 1774530349267
+              },
+              "state": "revoked",
+              "granted_at_ms": 1774532096947,
+              "heartbeat_at_ms": 1774532284362,
+              "expires_at_ms": 1774532303806,
+              "finished_at_ms": 1774532284362,
+              "stale": true,
+              "detail": "agent A6 failed"
+            }
+          ],
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
@@ -1500,11 +1585,47 @@
           }
         },
         "execution": {
-          "worktree": null,
-          "promotion": null,
-          "scheduling": null,
+          "worktree": {
+            "worktree_id": "worktree-wave-16-wave-16-1774530356696",
+            "wave_id": 16,
+            "state": "released",
+            "path": "./.wave/state/worktrees/wave-16-wave-16-1774530356696",
+            "base_ref": "main",
+            "snapshot_ref": "786bedd8342b8ee28f80eb16a22b9f2e386e1259",
+            "branch_ref": null,
+            "shared_scope": "wave",
+            "allocated_at_ms": 1774530358034,
+            "released_at_ms": 1774532285234,
+            "detail": "wave failed; worktree released"
+          },
+          "promotion": {
+            "promotion_id": "promotion-wave-16-786bedd8342b8ee28f80eb16a22b9f2e386e1259",
+            "wave_id": 16,
+            "worktree_id": "worktree-wave-16-wave-16-1774530356696",
+            "state": "not_started",
+            "target_ref": "main",
+            "snapshot_ref": "786bedd8342b8ee28f80eb16a22b9f2e386e1259",
+            "candidate_ref": null,
+            "candidate_tree": null,
+            "conflict_paths": [],
+            "checked_at_ms": 1774530358034,
+            "completed_at_ms": null,
+            "detail": "promotion not yet evaluated"
+          },
+          "scheduling": {
+            "wave_id": 16,
+            "phase": "implementation",
+            "priority": "implementation",
+            "state": "released",
+            "fairness_rank": 2,
+            "waiting_since_ms": null,
+            "protected_closure_capacity": false,
+            "preemptible": false,
+            "last_decision": "A6 failed; run released",
+            "updated_at_ms": 1774532285235
+          },
           "merge_blocked": false,
-          "closure_blocked_by_promotion": false
+          "closure_blocked_by_promotion": true
         },
         "agent_count": 6,
         "implementation_agent_count": 2,
@@ -1533,7 +1654,7 @@
         "rerun_requested": false,
         "closure_override_applied": false,
         "completed": false,
-        "last_run_status": null
+        "last_run_status": "failed"
       },
       {
         "id": 17,
@@ -1543,13 +1664,13 @@
           16
         ],
         "blocked_by": [
-          "wave:16:pending"
+          "wave:16:failed"
         ],
         "blocker_state": [
           {
             "kind": "dependency",
-            "raw": "wave:16:pending",
-            "detail": "16:pending"
+            "raw": "wave:16:failed",
+            "detail": "16:failed"
           }
         ],
         "lint_errors": 0,
@@ -1604,14 +1725,14 @@
           "reasons": [
             {
               "kind": "dependency",
-              "raw": "wave:16:pending",
-              "detail": "16:pending"
+              "raw": "wave:16:failed",
+              "detail": "16:failed"
             }
           ],
           "primary_reason": {
             "kind": "dependency",
-            "raw": "wave:16:pending",
-            "detail": "16:pending"
+            "raw": "wave:16:failed",
+            "detail": "16:failed"
           }
         },
         "rerun_requested": false,
@@ -1773,13 +1894,13 @@
             16
           ],
           "blocked_by": [
-            "wave:16:pending"
+            "wave:16:failed"
           ],
           "blocker_state": [
             {
               "kind": "dependency",
-              "raw": "wave:16:pending",
-              "detail": "16:pending"
+              "raw": "wave:16:failed",
+              "detail": "16:failed"
             }
           ],
           "lint_errors": 0,
@@ -2004,6 +2125,8 @@
     "control": {
       "rerun_supported": true,
       "clear_rerun_supported": true,
+      "apply_closure_override_supported": true,
+      "clear_closure_override_supported": true,
       "launch_supported": true,
       "autonomous_supported": true,
       "launcher_required": true,
@@ -3571,6 +3694,27 @@
               "finished_at_ms": 1774526590437,
               "stale": true,
               "detail": "agent A3 completed"
+            },
+            {
+              "lease_id": "lease-wave-15-a6",
+              "task_id": "wave-15:agent-a6",
+              "claim_id": "claim-wave-15-wave-15-1774525178250",
+              "owner": {
+                "scheduler_id": "wave-runtime",
+                "scheduler_path": "wave-runtime/launcher",
+                "runtime": null,
+                "executor": null,
+                "session_id": "wave-15-1774525178250",
+                "process_id": 739789,
+                "process_started_at_ms": 1774525170769
+              },
+              "state": "released",
+              "granted_at_ms": 1774526590768,
+              "heartbeat_at_ms": 1774526800878,
+              "expires_at_ms": 1774526819314,
+              "finished_at_ms": 1774526800878,
+              "stale": true,
+              "detail": "agent A6 completed"
             }
           ],
           "contention_reasons": [],
@@ -3695,7 +3839,71 @@
         "ownership": {
           "claim": null,
           "active_leases": [],
-          "stale_leases": [],
+          "stale_leases": [
+            {
+              "lease_id": "lease-wave-16-a1",
+              "task_id": "wave-16:agent-a1",
+              "claim_id": "claim-wave-16-wave-16-1774530356696",
+              "owner": {
+                "scheduler_id": "wave-runtime",
+                "scheduler_path": "wave-runtime/launcher",
+                "runtime": null,
+                "executor": null,
+                "session_id": "wave-16-1774530356696",
+                "process_id": 3643444,
+                "process_started_at_ms": 1774530349259
+              },
+              "state": "released",
+              "granted_at_ms": 1774530365009,
+              "heartbeat_at_ms": 1774530993313,
+              "expires_at_ms": 1774531008993,
+              "finished_at_ms": 1774530993313,
+              "stale": true,
+              "detail": "agent A1 completed"
+            },
+            {
+              "lease_id": "lease-wave-16-a2",
+              "task_id": "wave-16:agent-a2",
+              "claim_id": "claim-wave-16-wave-16-1774530356696",
+              "owner": {
+                "scheduler_id": "wave-runtime",
+                "scheduler_path": "wave-runtime/launcher",
+                "runtime": null,
+                "executor": null,
+                "session_id": "wave-16-1774530356696",
+                "process_id": 3643444,
+                "process_started_at_ms": 1774530349262
+              },
+              "state": "released",
+              "granted_at_ms": 1774530993651,
+              "heartbeat_at_ms": 1774532096593,
+              "expires_at_ms": 1774532114423,
+              "finished_at_ms": 1774532096593,
+              "stale": true,
+              "detail": "agent A2 completed"
+            },
+            {
+              "lease_id": "lease-wave-16-a6",
+              "task_id": "wave-16:agent-a6",
+              "claim_id": "claim-wave-16-wave-16-1774530356696",
+              "owner": {
+                "scheduler_id": "wave-runtime",
+                "scheduler_path": "wave-runtime/launcher",
+                "runtime": null,
+                "executor": null,
+                "session_id": "wave-16-1774530356696",
+                "process_id": 3643444,
+                "process_started_at_ms": 1774530349267
+              },
+              "state": "revoked",
+              "granted_at_ms": 1774532096947,
+              "heartbeat_at_ms": 1774532284362,
+              "expires_at_ms": 1774532303806,
+              "finished_at_ms": 1774532284362,
+              "stale": true,
+              "detail": "agent A6 failed"
+            }
+          ],
           "contention_reasons": [],
           "blocked_by_owner": null,
           "budget": {
@@ -3712,16 +3920,52 @@
           }
         },
         "execution": {
-          "worktree": null,
-          "promotion": null,
-          "scheduling": null,
+          "worktree": {
+            "worktree_id": "worktree-wave-16-wave-16-1774530356696",
+            "wave_id": 16,
+            "state": "released",
+            "path": "./.wave/state/worktrees/wave-16-wave-16-1774530356696",
+            "base_ref": "main",
+            "snapshot_ref": "786bedd8342b8ee28f80eb16a22b9f2e386e1259",
+            "branch_ref": null,
+            "shared_scope": "wave",
+            "allocated_at_ms": 1774530358034,
+            "released_at_ms": 1774532285234,
+            "detail": "wave failed; worktree released"
+          },
+          "promotion": {
+            "promotion_id": "promotion-wave-16-786bedd8342b8ee28f80eb16a22b9f2e386e1259",
+            "wave_id": 16,
+            "worktree_id": "worktree-wave-16-wave-16-1774530356696",
+            "state": "not_started",
+            "target_ref": "main",
+            "snapshot_ref": "786bedd8342b8ee28f80eb16a22b9f2e386e1259",
+            "candidate_ref": null,
+            "candidate_tree": null,
+            "conflict_paths": [],
+            "checked_at_ms": 1774530358034,
+            "completed_at_ms": null,
+            "detail": "promotion not yet evaluated"
+          },
+          "scheduling": {
+            "wave_id": 16,
+            "phase": "implementation",
+            "priority": "implementation",
+            "state": "released",
+            "fairness_rank": 2,
+            "waiting_since_ms": null,
+            "protected_closure_capacity": false,
+            "preemptible": false,
+            "last_decision": "A6 failed; run released",
+            "updated_at_ms": 1774532285235
+          },
           "merge_blocked": false,
-          "closure_blocked_by_promotion": false
+          "closure_blocked_by_promotion": true
         },
         "rerun_requested": false,
         "closure_override_applied": false,
         "completed": false,
-        "last_run_status": null,
+        "last_run_status": "failed",
         "agents": {
           "total": 6,
           "implementation": 2,
@@ -3763,13 +4007,13 @@
           16
         ],
         "blocked_by": [
-          "wave:16:pending"
+          "wave:16:failed"
         ],
         "blocker_state": [
           {
             "kind": "dependency",
-            "raw": "wave:16:pending",
-            "detail": "16:pending"
+            "raw": "wave:16:failed",
+            "detail": "16:failed"
           }
         ],
         "readiness": {
@@ -3779,14 +4023,14 @@
           "reasons": [
             {
               "kind": "dependency",
-              "raw": "wave:16:pending",
-              "detail": "16:pending"
+              "raw": "wave:16:failed",
+              "detail": "16:failed"
             }
           ],
           "primary_reason": {
             "kind": "dependency",
-            "raw": "wave:16:pending",
-            "detail": "16:pending"
+            "raw": "wave:16:failed",
+            "detail": "16:failed"
           }
         },
         "lint_errors": 0,
@@ -4105,7 +4349,7 @@
           "id": 17,
           "slug": "portfolio-release-and-acceptance-packages",
           "title": "Land portfolio, release, and acceptance packages",
-          "queue_state": "blocked: wave:16:pending",
+          "queue_state": "blocked: wave:16:failed",
           "blocked": true
         }
       ]
@@ -4113,6 +4357,8 @@
     "control": {
       "rerun_supported": true,
       "clear_rerun_supported": true,
+      "apply_closure_override_supported": true,
+      "clear_closure_override_supported": true,
       "launch_supported": true,
       "autonomous_supported": true,
       "launcher_required": true,
@@ -4140,6 +4386,18 @@
           "key": "c",
           "label": "Clear rerun",
           "description": "Clear the selected wave's rerun intent.",
+          "implemented": true
+        },
+        {
+          "key": "m",
+          "label": "Apply manual close",
+          "description": "Open a confirmation flow to apply a manual close override.",
+          "implemented": true
+        },
+        {
+          "key": "M",
+          "label": "Clear manual close",
+          "description": "Open a confirmation flow to clear an active manual close override.",
           "implemented": true
         },
         {
@@ -4184,6 +4442,18 @@
           "key": "c",
           "label": "Clear rerun",
           "description": "Clear the selected wave's rerun intent.",
+          "implemented": true
+        },
+        {
+          "key": "m",
+          "label": "Apply manual close",
+          "description": "Open a confirmation flow to apply a manual close override.",
+          "implemented": true
+        },
+        {
+          "key": "M",
+          "label": "Clear manual close",
+          "description": "Open a confirmation flow to clear an active manual close override.",
           "implemented": true
         },
         {
@@ -4313,7 +4583,7 @@
     {
       "name": "run-state",
       "ok": true,
-      "detail": "loaded 15 recorded runs, 0 active waves"
+      "detail": "loaded 16 recorded runs, 0 active waves"
     },
     {
       "name": "planning-queue",

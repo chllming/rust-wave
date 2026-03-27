@@ -6,6 +6,11 @@ It is intentionally architecture-first.
 
 It does **not** claim that the current Rust repo already ships this end state.
 
+It now stops at the parallel-wave boundary. True concurrent agents inside one wave are covered separately in:
+
+- [true-multi-agent-wave-architecture.md](./true-multi-agent-wave-architecture.md)
+- [../plans/true-multi-agent-wave-rollout.md](../plans/true-multi-agent-wave-rollout.md)
+
 For live behavior today, read:
 
 - [rust-codex-refactor.md](./rust-codex-refactor.md)
@@ -18,6 +23,10 @@ For the broader 0.2 cutover architecture that this document extends, read:
 - [rust-wave-0.2-architecture.md](./rust-wave-0.2-architecture.md)
 - [rust-wave-0.3-notes.md](./rust-wave-0.3-notes.md)
 - [../plans/full-cycle-waves.md](../plans/full-cycle-waves.md)
+
+For the detailed target-state design for true concurrent agents inside one wave, read:
+
+- [true-multi-agent-wave-architecture.md](./true-multi-agent-wave-architecture.md)
 
 ## Wave 14 And Wave 15 Live Boundary
 
@@ -41,9 +50,9 @@ What is still later work:
 
 - a richer runtime policy engine and operator policy controls
 - more runtimes beyond Codex and Claude
-- portfolio or release-layer delivery state
+- hosted or richer portfolio-delivery policy above the now-landed repo-local delivery layer
 - decision, contradiction, and invalidation lineage
-- per-agent worktrees
+- true concurrent intra-wave MAS execution with per-agent sandboxes, merge queue authority, and invalidation control
 
 ## Architectural Readout
 
@@ -169,17 +178,13 @@ Projections should render:
 
 The TUI, CLI, and app-server should remain consumers of that projection spine.
 
-## 6. Isolate execution per parallel wave
+## 6. Isolate execution per active wave
 
 True parallel implementation waves need filesystem isolation.
 
-The isolation unit should be:
+The live and near-term isolation unit should be:
 
 - one worktree per active parallel wave
-
-It should **not** be:
-
-- one worktree per agent
 
 Agents participating in the same wave should share that wave-local worktree so they are collaborating on one coherent wave state, while different active waves stay isolated from one another.
 
@@ -191,6 +196,8 @@ That implies the target architecture needs:
 - conflict detection before closure
 
 Without wave-level workspace isolation, true parallel waves are operationally unsafe even if claims and leases exist on paper.
+
+This section describes the active parallel-wave boundary only. The later true-MAS architecture adds per-agent sandboxes inside the admitted wave while retaining the wave-scoped integration lineage. See [true-multi-agent-wave-architecture.md](./true-multi-agent-wave-architecture.md).
 
 ## The Intended End-State Model
 
@@ -398,8 +405,10 @@ Design/spec/product tasks may run in parallel where ownership and artifacts do n
 Across waves, the scheduler should assume:
 
 - each active parallel wave gets its own isolated worktree
-- agents inside that wave operate against the same wave-local filesystem view
+- today, agents inside that wave operate against the same wave-local filesystem view
 - merge or promotion back to the shared line is an explicit step, not an accidental side effect of concurrent root-workspace edits
+
+The follow-on MAS cut keeps the first and third bullets, but replaces the shared wave-local agent view with per-agent sandboxes derived from the current accepted integration head.
 
 ## Result And Gate Model
 
