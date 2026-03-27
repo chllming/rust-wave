@@ -113,6 +113,8 @@ describe("launchAgentSession", () => {
       expect(command).toContain("grep -Eqi");
       expect(command).toContain("rate-limit detected for A1");
       expect(command).toContain("sleep_seconds=$((rate_delay_base * (2 ** (rate_attempt - 1))))");
+      expect(command).toContain('exit "$status"');
+      expect(command).not.toContain("exec bash -l");
     } finally {
       process.env.PATH = originalPath;
     }
