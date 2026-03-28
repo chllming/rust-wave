@@ -240,8 +240,7 @@ pub fn compatibility_run_facts(
         .as_ref()
         .map(CompatibilityRunInput::is_authoritative_completion)
         .unwrap_or(false);
-    let completed =
-        closure_override_applied || (authoritative_completion && !rerun_requested);
+    let completed = closure_override_applied || (authoritative_completion && !rerun_requested);
 
     let disposition = if actively_running {
         GateDisposition::Blocked
@@ -372,9 +371,9 @@ pub fn dependency_gate_verdict_for_wave(
         None
     } else {
         match latest_run.as_ref() {
-        Some(run) if run.satisfies_dependency_gate() => None,
-        Some(run) => Some(format!("wave:{dependency_wave_id}:{}", run.status)),
-        None => Some(format!("wave:{dependency_wave_id}:pending")),
+            Some(run) if run.satisfies_dependency_gate() => None,
+            Some(run) => Some(format!("wave:{dependency_wave_id}:{}", run.status)),
+            None => Some(format!("wave:{dependency_wave_id}:pending")),
         }
     };
     let satisfied = blocker_token.is_none();
@@ -828,13 +827,12 @@ mod tests {
 
     #[test]
     fn dependency_gate_can_be_scoped_to_the_wave_being_evaluated() {
-        let verdict =
-            dependency_gate_verdict_for_wave(
-                11,
-                10,
-                Some(&run_input(10, WaveRunStatus::Running)),
-                false,
-            );
+        let verdict = dependency_gate_verdict_for_wave(
+            11,
+            10,
+            Some(&run_input(10, WaveRunStatus::Running)),
+            false,
+        );
 
         assert_eq!(verdict.dependency_wave_id, 10);
         assert_eq!(verdict.gate.wave_id, 11);
@@ -901,7 +899,10 @@ mod tests {
         assert!(facts.completed);
         assert!(!facts.actively_running);
         assert!(facts.closure_override_applied);
-        assert_eq!(facts.latest_run.as_ref().map(|run| run.status), Some(WaveRunStatus::Failed));
+        assert_eq!(
+            facts.latest_run.as_ref().map(|run| run.status),
+            Some(WaveRunStatus::Failed)
+        );
         assert_eq!(facts.gate.disposition, GateDisposition::Pass);
         assert!(facts.gate.blocking_reasons.is_empty());
     }
@@ -1243,6 +1244,12 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                wave_class: wave_spec::WaveClass::Implementation,
+                intent: None,
+                delivery: None,
+                design_gate: None,
+                execution_model: wave_spec::WaveExecutionModel::Serial,
+                concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
             },
             heading_title: Some(format!("Wave {id}")),
             commit_message: Some("Feat: test".to_string()),
@@ -1291,6 +1298,13 @@ mod tests {
             deliverables: Vec::new(),
             file_ownership: vec![format!(".wave/reviews/{id}.md")],
             final_markers: vec![marker.to_string()],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::ClosureBarrier,
+            parallel_safety: wave_spec::ParallelSafetyClass::Serialized,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: "Primary goal:\n- Close the wave honestly.".to_string(),
         }
     }

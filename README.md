@@ -11,7 +11,7 @@ The current state is an executable local operator slice:
 - repo-specific skill bundles for Rust workspace, control-plane, Codex runtime, TUI, and closure-marker work
 - pinned and vendored upstream baselines for Codex OSS and the Wave control-plane reference branch
 - project-scoped Codex state under `.wave/codex/`
-- canonical authority roots under `.wave/state/events/control/`, `.wave/state/events/coordination/`, `.wave/state/results/`, `.wave/state/derived/`, `.wave/state/projections/`, and `.wave/state/traces/`
+- canonical authority roots under `.wave/state/events/control/`, `.wave/state/events/coordination/`, `.wave/state/events/scheduler/`, `.wave/state/results/`, `.wave/state/derived/`, `.wave/state/projections/`, and `.wave/state/traces/`
 - compatibility outputs under `.wave/state/runs/` and `.wave/traces/runs/`, plus rerun intents under `.wave/state/control/reruns/`
 
 ## Status
@@ -19,23 +19,26 @@ The current state is an executable local operator slice:
 Working now:
 
 - `wave`
+- `wave tui [--alt-screen auto|always|never] [--fresh-session]`
 - `wave project show [--json]`
 - `wave doctor [--json]`
 - `wave lint [--json]`
 - `wave control status [--json]`
+- `wave control show|task|agent|rerun|close|proof|orchestrator|repair`
+- `wave delivery status [--json]`
+- `wave delivery initiative|release|acceptance show --id <id> [--json]`
 - `wave launch`
 - `wave autonomous`
 - `wave draft`
-- `wave control show|task|rerun|proof`
+- `wave adhoc plan|run|list|show|promote`
 - `wave trace latest|replay`
 
 Still pending:
 
-- `wave adhoc`
 - `wave dep`
-- terminal-surface integration beyond the built-in TUI shell
+- the real Wave 18 proof run that ratifies concurrent MAS execution, targeted recovery, and honest closure end to end
 
-`wave adhoc` and `wave dep` are present in the CLI surface, but they currently short-circuit with not-implemented messages.
+`wave dep` is still present in the CLI surface but currently short-circuits with a not-implemented message.
 
 ## Repo Layout
 
@@ -45,8 +48,10 @@ Still pending:
   The implementation backlog for this refactor, expressed as rich multi-agent authored waves.
 - `wave.toml`
   The new project-scoped config for the Rust implementation.
+- `docs/plans/current-state.md`
+  The live baseline for the current repo-local runtime, operator shell, and MAS cutover state.
 - `docs/implementation/rust-codex-refactor.md`
-  The current architecture baseline for this repo.
+  The bootstrap and cutover record for how the Rust baseline replaced the older package-era stack.
 - `third_party/codex-rs/`
   Reviewed and vendored Codex OSS baseline plus `UPSTREAM.toml`.
 - `third_party/agent-wave-orchestrator/`
@@ -56,25 +61,103 @@ Still pending:
 
 ## Getting Started
 
-1. Install Rust stable.
-2. Run `cargo run -p wave-cli -- project show --json` to confirm the parsed project config and state roots.
-3. Run `cargo test`.
-4. Run `cargo run -p wave-cli -- doctor --json`.
-5. Run `cargo run -p wave-cli -- control status --json`.
+The current tagged release is `v0.1.0`.
 
-If you want the interactive operator shell with the right-side status panel:
+Wave is not published to crates.io yet, but you can install the released CLI directly from the Git tag:
 
 ```bash
-cargo run -p wave-cli --
+cargo install --git https://github.com/chllming/rust-wave.git --tag v0.1.0 wave-cli --locked
+wave project show --json
+wave doctor --json
+wave control status --json
+```
+
+If you prefer to work from a checked-out release tag:
+
+```bash
+git clone --branch v0.1.0 https://github.com/chllming/rust-wave.git
+cd rust-wave
+cargo install --path crates/wave-cli --locked
+wave project show --json
+```
+
+For active development on the repo itself, build or install from source:
+
+Prerequisites:
+
+1. Install Rust stable with `rustup`.
+2. Ensure `cargo` is on your `PATH`.
+3. Clone this repository locally.
+
+Build and run from the workspace:
+
+```bash
+cargo build --release -p wave-cli
+./target/release/wave project show --json
+./target/release/wave doctor --json
+./target/release/wave control status --json
+```
+
+If you prefer a local per-user install from your clone without managing the `target/release/` path directly:
+
+```bash
+cargo install --path crates/wave-cli --locked
+wave project show --json
+wave doctor --json
+wave control status --json
+```
+
+If you are working on the repo itself, the editable dev path is still:
+
+```bash
+cargo run -p wave-cli -- project show --json
+cargo test
+cargo run -p wave-cli -- doctor --json
+cargo run -p wave-cli -- control status --json
+```
+
+To update after pulling new changes:
+
+```bash
+git pull
+cargo build --release -p wave-cli
+```
+
+If you installed from your clone with `cargo install --path`, rerun:
+
+```bash
+cargo install --path crates/wave-cli --locked --force
+```
+
+If you installed from the tagged Git release, rerun the same command with `--force`:
+
+```bash
+cargo install --git https://github.com/chllming/rust-wave.git --tag v0.1.0 wave-cli --locked --force
+```
+
+If you want the interactive operator shell:
+
+```bash
+./target/release/wave
 ```
 
 In a non-interactive shell, the same command falls back to a text summary.
+
+Useful shell entry points:
+
+```bash
+cargo run -p wave-cli -- tui --help
+cargo run -p wave-cli -- tui --alt-screen never
+cargo run -p wave-cli -- tui --fresh-session
+```
 
 Useful live commands:
 
 ```bash
 cargo run -p wave-cli -- launch --wave 0 --dry-run --json
 cargo run -p wave-cli -- control show --wave 0 --json
+cargo run -p wave-cli -- delivery status --json
+cargo run -p wave-cli -- adhoc plan --task "investigate scheduler drift" --json
 cargo run -p wave-cli -- control rerun request --wave 4 --reason "operator request"
 cargo run -p wave-cli -- trace replay --json
 ```
@@ -138,7 +221,7 @@ cargo run -p wave-cli -- trace latest --json
 cargo run -p wave-cli -- trace replay --json
 ```
 
-6. Open the TUI on an interactive terminal to inspect `Run`, `Agents`, `Queue`, and `Control` from one snapshot:
+6. Open the TUI on an interactive terminal to inspect `Overview`, `Agents`, `Queue`, `Proof`, and `Control` from one reducer-backed snapshot:
 
 ```bash
 cargo run -p wave-cli --
@@ -148,10 +231,11 @@ The runbook is intentionally repo-local. It relies on `.wave/codex/`, `.wave/sta
 
 Current gaps remain explicit:
 
-- `wave adhoc` and `wave dep` still short-circuit with not-implemented messages.
+- `wave dep` still short-circuits with a not-implemented message.
 - The TUI is the built-in operator shell, not a separate dashboard app.
 - Self-host dogfooding is local-first; it does not imply live-host deployment or remote fleet control.
 - Wave 0.2 now lands authority-core plus reducer-backed planning, queue, and control projections over compatibility run inputs; proof and closure surfaces are envelope-first through stored result envelopes, with legacy proof adaptation isolated to `wave-results`, while replay ratification still depends on compatibility run and trace artifacts until later waves retire those adapters.
+- Wave 18 is partially live, not fully ratified: MAS waves now have per-agent sandboxes, recovery-required state, runtime-backed head control, and the finished shell product, but the live proof run is still outstanding.
 
 ## Context7
 
@@ -303,31 +387,63 @@ For future waves, write the spec as if `wave lint` were the first reviewer:
 
 ## Operator Shell
 
-On an interactive terminal, `wave` opens a Ratatui shell with a right-side panel.
+On an interactive terminal, `wave` opens a Ratatui operator shell.
 
-The right-side panel currently exposes:
+The shell is split into:
 
-- `Run`
-  Active wave, run id, elapsed time, proof counts, and declared proof artifacts.
-- `Agents`
-  Per-agent state, proof-marker completeness, and deliverables for the active run.
-- `Queue`
-  Wave readiness, blockers, and dependency-driven queue state.
-- `Control`
-  Rerun intents, replay/proof state, and the available operator keybindings.
+- a left-side operator shell with header, transcript, and composer
+- a right-side dashboard with `Overview`, `Agents`, `Queue`, `Proof`, and `Control`
+
+The shell supports:
+
+- `head`, `wave`, and `agent` scopes
+- operator and autonomous mode
+- reducer-backed queue, proof, control, autonomy, and recovery visibility
+- transcript search and compare mode
+- explicit `--alt-screen` and `--fresh-session` startup controls via `wave tui`
+- dashboard focus by default on startup so shell hotkeys work immediately
+- plain text guidance bound to the current shell target
+- wave hotkeys and implicit wave commands bound to the visibly selected wave
+- `follow run|agent|off` tracking for active runs, pinned agents, or manual selection
+- a visible cross-wave review queue in repo-level `head` scope, with `u` / `x` bound to the selected review row
+- a one-column shell layout in narrow terminals, with visible transcript, composer, and dashboard instead of hidden input
 
 Current keybindings:
 
 - `q`
   Quit the shell.
 - `Tab` / `Shift+Tab`
-  Cycle the right-side panel tabs.
+  Cycle transcript, composer, and dashboard focus. Composer capture is explicit; startup focus is `Dashboard`.
+- `[` / `]`
+  Cycle the right-side dashboard tabs.
 - `j` / `k`
-  Move the selected wave.
+  Scroll transcript or move dashboard selection, depending on focus.
 - `r`
   Request a rerun for the selected wave.
 - `c`
   Clear the selected wave's rerun intent.
+- `m` / `M`
+  Apply or clear manual close with confirmation.
+- `u` / `x`
+  Approve or reject the selected operator action.
+- `?`
+  Open shell help.
+
+Live shell commands include:
+
+- `/wave <id>`
+- `/agent <id>`
+- `/scope head|wave|agent`
+- `/mode operator|autonomous`
+- `/launch [wave-id]`
+- `/rerun [full|from-first-incomplete|closure-only|promotion-only]`
+- `/clear-rerun`
+- `/pause`, `/resume`, `/rerun-agent`, `/rebase`, `/reconcile`
+- `/approve-merge`, `/reject-merge`
+- `/open overview|agents|queue|proof|control`
+- `/follow run|agent|off`
+- `/search <text>`, `/clear-search`
+- `/compare wave <id> | /compare agent <id>`, `/clear-compare`
 
 When authoring or updating a wave, keep the docs and the executable contract aligned in the same slice.
 

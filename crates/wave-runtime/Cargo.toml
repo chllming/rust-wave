@@ -10,6 +10,7 @@ libc = "0.2"
 serde.workspace = true
 serde_json.workspace = true
 wave-config.workspace = true
+wave-coordination.workspace = true
 wave-control-plane.workspace = true
 wave-dark-factory.workspace = true
 wave-domain.workspace = true

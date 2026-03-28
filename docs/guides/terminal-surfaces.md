@@ -1,125 +1,227 @@
-# Terminal Surfaces And Dashboards
+# Terminal Surfaces And Operator Shell
 
-The active Rust rewrite uses the built-in Ratatui shell as its operator surface.
+The active Rust rewrite uses the built-in Ratatui operator shell as its terminal surface.
 
 ## Current Operator Surface
 
-- `wave` on an interactive terminal opens the built-in Ratatui shell.
-- The shell's right-side operator panel is the built-in dashboard surface for the repo.
-- `wave` on a non-interactive terminal falls back to a text summary that carries the same control-plane truth in a narrower form.
+- `wave` on an interactive terminal opens the built-in operator shell.
+- `wave tui` opens that same shell explicitly.
+- `wave tui --alt-screen auto|always|never` controls terminal-screen policy explicitly.
+- `wave tui --fresh-session` starts a new shell session instead of resuming the latest active one.
+- `wave` on a non-interactive terminal falls back to the text summary path instead of trying to paint the TUI.
+- The shell now renders an immediate loading state while the first operator snapshot refreshes in the background. Startup should not look like a dead black screen.
 
-This is the live operator surface in this repo. Older terminal-surface patterns are not part of the active contract unless this doc says otherwise.
+This is the live contract in this repo. Older package-era terminal-surface patterns are not active unless a Rust-specific doc says otherwise.
 
-## Right-Side Panel
+## Layout Contract
 
-The right-side panel is the built-in operator dashboard. It is shipped inside the TUI, not as a separate app or a placeholder surface. The current TUI exposes four tabs:
+The TUI is now split into two intentional surfaces:
 
-- `Run`
-  Active wave, run id, elapsed time, proof counts, and declared proof artifacts.
+- Left side: the operator shell
+  - transcript
+  - composer
+  - shell header with current target, follow mode, snapshot freshness, and selected wave state
+- Right side: the stable dashboard
+  - `Overview`
+  - `Agents`
+  - `Queue`
+  - `Proof`
+  - `Control`
+
+In narrow terminals, the shell collapses into a one-column shell that still shows the transcript, composer, and dashboard stack rather than drawing a broken split layout.
+
+## Operator Shell
+
+The left side is no longer just a passive log window. It is the primary interaction lane.
+
+Plain text in the composer becomes operator guidance for the current target:
+
+- head target in `operator` mode: persisted head turn plus proposal set
+- head target in `autonomous` mode: runtime-backed autonomous head cycle and durable autonomous evidence
+- wave target: persisted wave-level steer directive
+- agent target: persisted agent-level steer directive
+
+The shell target is explicit and lives in one of three scopes:
+
+- `head`
+- `wave`
+- `agent`
+
+`head` with no explicit wave target is a cross-wave active-run workspace. It is not just a label for the currently selected wave anymore.
+
+Wave targeting is intentionally split:
+
+- plain-text guidance follows the current shell target
+- wave hotkeys and implicit wave commands act on the visibly selected wave in the dashboard
+- `/wave` and `/agent` retarget the shell and align the visible selection to the same context
+
+The shell transcript is projection-backed transport assembled by `wave-app-server`. It is not a local UI log. Today it carries:
+
+- durable operator, head, and system turns
+- recent run state updates
+- directives and directive delivery
+- head proposals and their outcomes
+- approvals and escalations
+- rerun intent changes
+- manual-close override records
+
+This keeps the transcript on the same authority path as the rest of the operator surfaces.
+
+## Dashboard Tabs
+
+The right-side dashboard is the stable context lane. It should stay scannable while the operator works in the shell.
+
+- `Overview`
+  Head-workspace summary: queue state, cross-wave autonomous summary, active-wave rows, selected-wave delivery summary, and top blockers.
 - `Agents`
-  Per-agent state, marker completeness, and deliverables.
+  MAS agent control context for the selected wave: state, merge, sandbox, pending directives, and recent head action.
 - `Queue`
-  Ready waves, blockers, dependency-driven queue truth, and wave readiness.
+  Reducer-backed queue story, queue-ready state, and wave queue labels.
+- `Proof`
+  Acceptance, signoff, proof artifacts, replay state, risks, and debt.
 - `Control`
-  Rerun intents, replay/proof status, and the available keybindings.
+  Shell target state, rerun/manual-close status, review queue, autonomous action/failure summary, launcher availability, and live operator actions.
 
-The `Queue` view is the operator planning surface. It reflects the same control-plane truth used by `wave control status --json`, including:
+The dashboard stays a consumer of operator snapshot truth. It must not recompute queue readiness, signoff, or proof state locally.
 
-- wave readiness
-- blocker state
-- dependency-driven ordering
-- whether a wave is waiting on upstream work or is ready to claim
+## Commands And Keys
 
-The panel should keep consuming that same queue truth. The UI may change, but it should not invent a second source of status state.
-In the current Rust implementation, that queue/control truth is reducer-backed: `wave-reducer` computes the planning state and `wave-projections` turns it into the `ProjectionSpine`, operator snapshot input read models, and queue/control status helper read models that `wave control status --json`, `wave-app-server`, and the TUI consume. `wave-app-server` now carries that control-status read model through the operator snapshot so the TUI can render the queue decision story and control attention lines without rebuilding them locally. `wave-control-plane` is now only a forwarding shim over that contract. Compatibility run records still enter as adapter inputs for active-run and replay facts in this stage.
-Parity is covered by repo-local fixtures: `cargo test -p wave-cli`, `cargo test -p wave-app-server`, and `cargo test -p wave-tui` all exercise the same reducer-backed queue/control payload from different consumer edges, and the queue-row fixtures explicitly preserve `active`, `blocked`, and `completed` labels from reducer readiness state rather than inferring them from blocker strings alone.
-When multiple waves are active, the `Run`, `Agents`, and `Control` tabs follow the currently selected wave instead of whichever run happens to appear first in the snapshot.
+The live keyboard model is now focus-driven rather than tab-only.
 
-## Keybindings
-
-These are the live actions currently shipped in the TUI:
+### Focus lanes
 
 - `Tab` / `Shift+Tab`
-  Cycle the right-side tabs.
-- `j` / `k`
-  Move the selected wave.
-- `r`
-  Request a rerun for the selected wave.
-- `c`
-  Clear the selected wave's rerun intent.
+  Cycle `Transcript`, `Composer`, and `Dashboard`.
+- Startup focus is `Dashboard`, so shell hotkeys work immediately and free-text guidance stays explicit.
+- `Esc`
+  Leave transient state, help, or the composer focus.
+- `Ctrl+C`
+  Cancel the pending local action, or quit when nothing is pending.
+
+### Navigation
+
+- `j` / `k` or arrows
+  Scroll transcript when `Transcript` is focused.
+  Move dashboard selection when `Dashboard` is focused.
+- `[` / `]`
+  Move between right-side dashboard tabs.
+- `?`
+  Open contextual help with command and keybinding reference.
 - `q`
   Quit the shell.
 
-In narrow terminals, the shell keeps the same data model but collapses the surface into the fallback text summary rather than trying to render a broken split layout. That fallback is live behavior, not a planned one.
-The fallback keeps the repo's operator truth visible by rendering condensed `Run`, `Agents`, `Queue`, and `Control` sections from the same snapshot used by the wide panel, but it does not pretend the right-side dashboard fits when there is no space for it.
+### Direct hotkeys
 
-## Live Actions
+- `r`
+  Request a full rerun for the selected wave.
+- `c`
+  Clear rerun intent for the selected wave.
+- `m`
+  Prepare manual close for the selected wave.
+- `M`
+  Prepare clearing the active manual close override.
+- `u`
+  Prepare approval or acknowledgment for the selected operator action.
+- `x`
+  Prepare rejection or dismissal for the selected operator action.
 
-The current TUI actions that actually ship are:
+In repo-level `head` scope, `Control` shows one visible cross-wave review queue. `u` and `x` apply to the selected visible queue row, not to a hidden per-wave action slot.
 
-- tab switching with `Tab` and `Shift+Tab`
-- wave selection movement with `j` and `k`
-- rerun-intent creation with `r`
-- rerun-intent clearing with `c`
-- quitting with `q`
+### Follow behavior
 
-Any other dashboard interactions should be treated as planned follow-on work until the implementation lands. In particular, anything beyond tab switching, wave movement, rerun-intent creation, rerun-intent clearing, and quit is not yet part of the shipped TUI contract.
+- `/follow run`
+  Follow the active run wave and current agent on snapshot refresh.
+- `/follow agent`
+  Pin the selected MAS agent and keep wave/agent selection aligned to it.
+- `/follow off`
+  Preserve manual selection and transcript position.
 
-The right-side panel is therefore a shipped dashboard, but only these actions are live today:
+### Slash commands
 
-- tab cycling with `Tab` and `Shift+Tab`
-- wave movement with `j` and `k`
-- rerun-intent creation with `r`
-- rerun-intent clearing with `c`
-- quitting with `q`
+These are the live shell commands:
+
+- `/wave <id>`
+- `/agent <id>`
+- `/scope head|wave|agent`
+- `/mode operator|autonomous`
+- `/launch [wave-id]`
+- `/rerun [full|from-first-incomplete|closure-only|promotion-only]`
+- `/clear-rerun`
+- `/pause`
+- `/resume`
+- `/rerun-agent`
+- `/rebase`
+- `/reconcile`
+- `/approve-merge`
+- `/reject-merge`
+- `/approve`
+- `/reject`
+- `/close`
+- `/open overview|agents|queue|proof|control`
+- `/follow run|agent|off`
+- `/search <text>`
+- `/clear-search`
+- `/compare wave <id> | /compare agent <id>`
+- `/clear-compare`
+- `/help`
+
+The command surface is intentionally small. It maps to existing runtime and control-plane actions rather than inventing a second backend.
+
+`/mode operator|autonomous` now behaves differently by scope:
+
+- in wave or agent scope it remains wave-scoped
+- in repo-level `head` scope it applies across all active waves
 
 ## State Sources
 
-The shell is backed by the same repo-local inputs and projection contract as the CLI:
+The shell is backed by the same repo-local authority roots and projection contract as the CLI:
 
 - `waves/`
 - `.wave/state/build/specs/`
 - `.wave/state/runs/`
-- `.wave/state/control/reruns/`
+- `.wave/state/control/`
 - `.wave/traces/runs/`
 
-Planning, queue, and control tabs are reducer-backed projections assembled from those inputs, rather than UI-local readiness logic. `wave-app-server` now maps reducer-backed operator snapshot inputs plus the projection-owned control-status read model into the transport snapshot the TUI reads, and the TUI queue/control tabs render that snapshot payload so the closure-blocked story, closure-attention lines, and skill-issue lines stay aligned with `wave control status`. `.wave/state/projections/` remains the canonical root for persisted projection material once later waves start writing those read models out durably.
-Dry-run launch and preflight refusal remain non-mutating from the queue's point of view: they may write draft/preflight material under `.wave/state/build/specs/`, but they do not clear rerun intents or write durable compatibility run/trace records into `.wave/state/runs/` or `.wave/traces/runs/`.
+Planning, queue, proof, and control truth come from the reducer-backed operator snapshot assembled by `wave-app-server`. The TUI consumes that snapshot. It does not own scheduling or delivery semantics.
 
-The trace surface is evidence, not debug logging. `wave trace latest` reports the recorded run, replay result, and trace path for each wave, while `wave trace replay` rechecks the stored record or v1 trace bundle against the current run state and emits replay issues when something diverges.
+Operator actions flow through `wave-runtime` helpers such as:
 
-The stored trace bundle records:
+- launch
+- rerun request and clear
+- manual close apply and clear
+- mode switch
+- steer wave
+- steer agent
+- approval and escalation handling
 
-- the run record for the completed wave
-- per-agent artifact presence for `prompt.md`, `last-message.txt`, `events.jsonl`, and `stderr.txt`
-- run-level artifact presence for the bundle directory and the project-scoped Codex home
+Autonomous head behavior also flows through `wave-runtime`. The TUI does not run its own autonomy loop or invent a second scheduler.
 
-Replay validation is read-only. It does not rebuild the run; it verifies that the durable artifacts still match the recorded outcome.
-The planning/control projections are reducer-backed in memory today, but replay is still compatibility-backed until the canonical trace/result layers replace the current adapters.
-
-The planning-status surface is therefore control-plane first. Any future TUI dependency should read from the same status model rather than recomputing readiness, blockers, or queue order locally in the UI layer, and any future dashboard transport should start from the same reducer-backed operator snapshot inputs that `wave-app-server` uses today.
+That keeps the shell on the same authority path as `wave control ...`, `wave launch`, and the other CLI entry points.
 
 ## Current Non-Goals
 
-These older surfaces are not the live operator contract in the Rust rewrite:
+These are still out of scope for the current shell:
 
-- tmux-managed per-wave dashboards
-- `.vscode/terminals.json` integration
-- lane-scoped terminal-surface flags
+- embedding the Codex backend as the primary TUI authority
+- a second planner or scheduler model inside the UI
+- mouse-driven workflows
+- a full free-form assistant backend inside the shell
 
-Planned additions may extend the right-side panel, but they should stay documented as planned until the runtime supports them.
+Plain text guidance is persisted as Wave directives. The shell is not yet a general-purpose conversational agent runtime.
 
-If those come back later, they should be treated as new runtime work rather than assumed from the package-era docs.
+What is still missing now is above the shell surface:
 
-## Suggested Validation Path
+- the real Wave 18 proof run for concurrent MAS execution plus targeted recovery
+- deeper operator-agent assistance beyond proposal and action synthesis
+- broader overview polish for very busy multi-wave sessions
+
+## Validation Path
 
 ```bash
-cargo run -p wave-cli --
-cargo run -p wave-cli -- control status --json
-cargo run -p wave-cli -- control show --wave 0 --json
-cargo run -p wave-cli -- trace latest
-cargo run -p wave-cli -- trace replay --wave 0
-cargo test -p wave-projections -p wave-cli -p wave-app-server -p wave-tui
+cargo build -p wave-cli
+target/debug/wave --help
+target/debug/wave tui --help
+cargo test -p wave-app-server -p wave-cli -p wave-tui
 ```
 
-For planning-only bootstrap work, validate the queue/status path first. If those commands disagree, the UI docs should be treated as stale until the control-plane model is fixed.
+If the TUI and `wave control ...` disagree about queue, proof, or control state, treat the snapshot or reducer path as authoritative and the UI as stale until it is fixed.

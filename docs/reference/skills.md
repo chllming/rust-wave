@@ -170,7 +170,7 @@ The Rust/Codex rewrite adds repo-specific bundles so waves do not have to restat
 ### TUI
 
 - `repo-ratatui-operator`
-  For the right-side operator panel, status tabs, and narrow-terminal fallback behavior.
+  For the operator shell, dashboard tabs, and one-column narrow-terminal layout behavior.
   Attach this for `ratatui` operator surfaces and status rendering behavior.
 
 - `app-design`

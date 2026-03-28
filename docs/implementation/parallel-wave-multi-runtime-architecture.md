@@ -6,6 +6,11 @@ It is intentionally architecture-first.
 
 It does **not** claim that the current Rust repo already ships this end state.
 
+It now stops at the parallel-wave boundary. True concurrent agents inside one wave are covered separately in:
+
+- [true-multi-agent-wave-architecture.md](./true-multi-agent-wave-architecture.md)
+- [../plans/true-multi-agent-wave-rollout.md](../plans/true-multi-agent-wave-rollout.md)
+
 For live behavior today, read:
 
 - [rust-codex-refactor.md](./rust-codex-refactor.md)
@@ -18,6 +23,10 @@ For the broader 0.2 cutover architecture that this document extends, read:
 - [rust-wave-0.2-architecture.md](./rust-wave-0.2-architecture.md)
 - [rust-wave-0.3-notes.md](./rust-wave-0.3-notes.md)
 - [../plans/full-cycle-waves.md](../plans/full-cycle-waves.md)
+
+For the detailed target-state design for true concurrent agents inside one wave, read:
+
+- [true-multi-agent-wave-architecture.md](./true-multi-agent-wave-architecture.md)
 
 ## Wave 14 And Wave 15 Live Boundary
 
@@ -41,9 +50,19 @@ What is still later work:
 
 - a richer runtime policy engine and operator policy controls
 - more runtimes beyond Codex and Claude
-- portfolio or release-layer delivery state
+- hosted or richer portfolio-delivery policy above the now-landed repo-local delivery layer
 - decision, contradiction, and invalidation lineage
-- per-agent worktrees
+- true concurrent intra-wave MAS execution with per-agent sandboxes, merge queue authority, and invalidation control
+
+Wave 18 now partially lands that later MAS step on top of the Wave 14 and Wave 15 baseline:
+
+- MAS-authored waves can opt into `execution_model = "multi-agent"`
+- the control plane can persist orchestrator mode and MAS control directives for MAS waves
+- the runtime now has a separate MAS path with per-agent sandboxes, ready-set computation, parallel-safe concurrent launch, merge sidecars, and invalidation sidecars
+- MAS waves now also have runtime-backed operator/autonomous head control, durable MAS control actions, steering-delivery transport semantics, and recovery-required visibility
+- CLI, app-server, and TUI surfaces can now inspect MAS agent sandbox, merge, invalidation, and barrier detail
+
+That does not change the purpose of this document. This file still defines the parallel-wave boundary. The full intra-wave MAS operating model remains tracked in the Wave 18 rollout and end-state docs, and it is not yet fully ratified in repo-local proof.
 
 ## Architectural Readout
 
@@ -60,12 +79,14 @@ The current Rust repo is a stronger architectural base than the older launcher-c
 
 That is the right direction.
 
-The main remaining gap is richer runtime policy breadth above the landed adapter seam. The live runtime is now:
+The main remaining gaps are richer runtime policy breadth above the landed adapter seam plus completion of the still-open Wave 18 MAS proof cut. The live runtime is now:
 
 - parallel for up to two non-conflicting repo-local waves at a time
-- one agent at a time inside each wave, sharing that wave's worktree
+- one agent at a time inside each non-MAS wave, sharing that wave's worktree
 - runtime-neutral at the boundary with Codex and Claude adapters
 - scheduler-enforced and lease-aware, with FIFO fairness inside claimable implementation admission plus reserved closure capacity and lease-level preemption above that lane, but still not yet a multi-runtime policy engine
+
+For opt-in MAS waves only, the repo now also has an in-progress intra-wave runtime path with per-agent sandboxes, concurrent launch of parallel-safe agents, runtime-backed operator and autonomous head control, directive-delivery transport semantics, and recovery-required handling that preserves accepted sibling work when one agent conflicts or is rejected. That path is not yet the fully closed live boundary because one real end-to-end Wave 18 proof run is still open.
 
 So the target architecture should not be “make the current launcher slightly smarter.”
 
@@ -169,17 +190,13 @@ Projections should render:
 
 The TUI, CLI, and app-server should remain consumers of that projection spine.
 
-## 6. Isolate execution per parallel wave
+## 6. Isolate execution per active wave
 
 True parallel implementation waves need filesystem isolation.
 
-The isolation unit should be:
+The live and near-term isolation unit should be:
 
 - one worktree per active parallel wave
-
-It should **not** be:
-
-- one worktree per agent
 
 Agents participating in the same wave should share that wave-local worktree so they are collaborating on one coherent wave state, while different active waves stay isolated from one another.
 
@@ -191,6 +208,8 @@ That implies the target architecture needs:
 - conflict detection before closure
 
 Without wave-level workspace isolation, true parallel waves are operationally unsafe even if claims and leases exist on paper.
+
+This section describes the active parallel-wave boundary only. The later true-MAS architecture adds per-agent sandboxes inside the admitted wave while retaining the wave-scoped integration lineage. See [true-multi-agent-wave-architecture.md](./true-multi-agent-wave-architecture.md).
 
 ## The Intended End-State Model
 
@@ -398,8 +417,10 @@ Design/spec/product tasks may run in parallel where ownership and artifacts do n
 Across waves, the scheduler should assume:
 
 - each active parallel wave gets its own isolated worktree
-- agents inside that wave operate against the same wave-local filesystem view
+- today, agents inside that wave operate against the same wave-local filesystem view
 - merge or promotion back to the shared line is an explicit step, not an accidental side effect of concurrent root-workspace edits
+
+The follow-on MAS cut keeps the first and third bullets, but replaces the shared wave-local agent view with per-agent sandboxes derived from the current accepted integration head.
 
 ## Result And Gate Model
 

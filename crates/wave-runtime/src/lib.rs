@@ -5,6 +5,8 @@
 //! under the project-scoped paths declared in `wave.toml`, and launched agents
 //! persist structured result envelopes through the `wave-results` boundary.
 
+mod adhoc;
+
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
@@ -12,6 +14,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::env;
@@ -30,13 +33,69 @@ use std::thread;
 use std::time::Duration;
 use wave_config::ProjectConfig;
 use wave_control_plane::PlanningStatus;
+use wave_coordination::CoordinationLog;
+use wave_coordination::CoordinationRecord;
+use wave_coordination::CoordinationRecordKind;
+use wave_domain::AgentSandboxId;
+use wave_domain::AgentSandboxRecord;
 use wave_domain::AttemptId;
 use wave_domain::AttemptRecord;
 use wave_domain::AttemptState;
 use wave_domain::ClosureDisposition;
+use wave_domain::ContradictionRecord;
+use wave_domain::ContradictionState;
+use wave_domain::ControlDirectiveId;
+use wave_domain::ControlDirectiveKind;
+use wave_domain::ControlDirectiveRecord;
 use wave_domain::ControlEventPayload;
+use wave_domain::DesignAuthority;
+use wave_domain::DirectiveDeliveryMethod;
+use wave_domain::DirectiveDeliveryRecord;
+use wave_domain::DirectiveDeliveryState;
+use wave_domain::DirectiveOrigin;
+use wave_domain::FactRecord;
+use wave_domain::FactState;
+use wave_domain::HeadProposalActionKind;
+use wave_domain::HeadProposalId;
+use wave_domain::HeadProposalRecord;
+use wave_domain::HeadProposalResolution;
+use wave_domain::HeadProposalResolutionKind;
+use wave_domain::HeadProposalState;
+use wave_domain::HumanInputRequest;
+use wave_domain::HumanInputState;
+use wave_domain::HumanInputWorkflowKind;
+use wave_domain::InvalidationId;
+use wave_domain::InvalidationRecord;
+use wave_domain::LineageRecord;
+use wave_domain::LineageRecordSubject;
+use wave_domain::LineageRef;
+use wave_domain::LineageState;
+use wave_domain::MergeDisposition;
+use wave_domain::MergeIntentId;
+use wave_domain::MergeIntentRecord;
+use wave_domain::MergeResultId;
+use wave_domain::MergeResultRecord;
+use wave_domain::OperatorShellScope;
+use wave_domain::OperatorShellSessionId;
+use wave_domain::OperatorShellSessionRecord;
+use wave_domain::OperatorShellTurnId;
+use wave_domain::OperatorShellTurnOrigin;
+use wave_domain::OperatorShellTurnRecord;
+use wave_domain::OperatorShellTurnStatus;
+use wave_domain::OrchestratorMode;
+use wave_domain::OrchestratorSessionId;
+use wave_domain::OrchestratorSessionRecord;
+use wave_domain::RecoveryActionId;
+use wave_domain::RecoveryActionKind;
+use wave_domain::RecoveryActionRecord;
+use wave_domain::RecoveryAgentPlan;
+use wave_domain::RecoveryCause;
+use wave_domain::RecoveryPlanId;
+use wave_domain::RecoveryPlanRecord;
+use wave_domain::RecoveryPlanStatus;
 use wave_domain::RerunRequest;
 use wave_domain::RerunRequestId;
+use wave_domain::RerunScope;
 use wave_domain::RerunState;
 use wave_domain::ResultEnvelope;
 use wave_domain::RuntimeExecutionIdentity;
@@ -45,12 +104,12 @@ use wave_domain::RuntimeFallbackRecord;
 use wave_domain::RuntimeId;
 use wave_domain::RuntimeSelectionPolicy;
 use wave_domain::RuntimeSkillProjection;
-use wave_domain::RerunScope;
 use wave_domain::SchedulerBudget;
 use wave_domain::SchedulerBudgetId;
 use wave_domain::SchedulerBudgetRecord;
 use wave_domain::SchedulerEventPayload;
 use wave_domain::SchedulerOwner;
+use wave_domain::TaskId;
 use wave_domain::TaskLeaseId;
 use wave_domain::TaskLeaseRecord;
 use wave_domain::TaskLeaseState;
@@ -94,6 +153,18 @@ use wave_trace::now_epoch_ms;
 use wave_trace::write_run_record;
 use wave_trace::write_trace_bundle;
 
+pub use adhoc::AdhocPlanReport;
+pub use adhoc::AdhocPromotionReport;
+pub use adhoc::AdhocResult;
+pub use adhoc::AdhocRunRecord;
+pub use adhoc::AdhocRunReport;
+pub use adhoc::AdhocRunStatus;
+pub use adhoc::list_adhoc_runs;
+pub use adhoc::plan_adhoc;
+pub use adhoc::promote_adhoc;
+pub use adhoc::run_adhoc;
+pub use adhoc::show_adhoc_run;
+
 /// Stable label for the runtime landing zone.
 pub const RUNTIME_LANDING_ZONE: &str = "launch-and-replay-bootstrap";
 
@@ -132,6 +203,15 @@ pub struct DogfoodEvidenceReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DesignAuthorityProofSeedReport {
+    pub wave_id: u32,
+    pub correlation_id: String,
+    pub event_log_path: PathBuf,
+    pub event_ids: Vec<String>,
+    pub already_present: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AutonomousWaveSelection {
     pub wave_id: u32,
     pub slug: String,
@@ -144,6 +224,24 @@ struct FifoOrderedClaimableWave {
     selection: AutonomousWaveSelection,
     claimable_order: usize,
     waiting_since_ms: u128,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct WaveLaunchDesignState {
+    unresolved_question_ids: Vec<String>,
+    unresolved_assumption_ids: Vec<String>,
+    pending_human_input_request_ids: Vec<String>,
+    invalidated_fact_ids: Vec<String>,
+    invalidated_decision_ids: Vec<String>,
+    selectively_invalidated_task_ids: Vec<String>,
+    ambiguous_dependency_wave_ids: Vec<u32>,
+    blocker_reasons: Vec<String>,
+}
+
+impl WaveLaunchDesignState {
+    fn is_blocked(&self) -> bool {
+        !self.blocker_reasons.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +261,8 @@ const DEFAULT_LEASE_TTL_MS: u64 = 20_000;
 const DEFAULT_AGENT_POLL_INTERVAL_MS: u64 = 250;
 const DEFAULT_RUNTIME_CHECK_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_RUNTIME_CHECK_POLL_INTERVAL_MS: u64 = 25;
+const AUTONOMOUS_HEAD_SESSION_ID: &str = "shell-session-autonomous-head";
+const AUTONOMOUS_HEAD_THROTTLE_MS: u128 = 5_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LeaseTiming {
@@ -193,6 +293,7 @@ pub struct RuntimeAvailability {
     pub binary: String,
     pub available: bool,
     pub detail: String,
+    pub directive_capabilities: RuntimeDirectiveCapabilities,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -201,6 +302,13 @@ pub struct RuntimeBoundaryStatus {
     pub selection_policy: &'static str,
     pub fallback_policy: &'static str,
     pub runtimes: Vec<RuntimeAvailability>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct RuntimeDirectiveCapabilities {
+    pub live_injection: bool,
+    pub checkpoint_overlay: bool,
+    pub ack_support: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -295,6 +403,7 @@ struct RuntimeExecutionRequest {
 
 trait RuntimeAdapter {
     fn availability(&self) -> RuntimeAvailability;
+    fn directive_capabilities(&self) -> RuntimeDirectiveCapabilities;
     fn execute(&self, request: RuntimeExecutionRequest) -> Result<SpawnedRuntimeChild>;
 }
 
@@ -359,6 +468,25 @@ pub struct RerunIntentRecord {
     pub status: RerunIntentStatus,
     pub requested_at_ms: u128,
     pub cleared_at_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OperatorHeadTurnOutcome {
+    pub session: OperatorShellSessionRecord,
+    pub operator_turn: OperatorShellTurnRecord,
+    pub head_turns: Vec<OperatorShellTurnRecord>,
+    pub proposals: Vec<HeadProposalRecord>,
+    pub applied_proposals: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ClosureOverridePreview {
+    pub wave_id: u32,
+    pub source_run_id: String,
+    pub source_run_status: WaveRunStatus,
+    pub source_run_error: Option<String>,
+    pub source_promotion_detail: Option<String>,
+    pub evidence_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -548,6 +676,16 @@ impl RuntimeAdapterRegistry {
         runtimes.sort_by_key(|entry| entry.runtime);
         runtimes
     }
+
+    fn directive_capabilities(&self, runtime: RuntimeId) -> RuntimeDirectiveCapabilities {
+        self.adapter(runtime)
+            .map(|adapter| adapter.directive_capabilities())
+            .unwrap_or(RuntimeDirectiveCapabilities {
+                live_injection: false,
+                checkpoint_overlay: false,
+                ack_support: false,
+            })
+    }
 }
 
 impl RuntimeAdapter for CodexRuntimeAdapter {
@@ -555,6 +693,7 @@ impl RuntimeAdapter for CodexRuntimeAdapter {
         runtime_availability_from_checks(
             RuntimeId::Codex,
             self.binary.clone(),
+            self.directive_capabilities(),
             vec![
                 runtime_check(self.binary.as_str(), &["--version"], |status, _, _| status),
                 runtime_check(
@@ -566,6 +705,14 @@ impl RuntimeAdapter for CodexRuntimeAdapter {
                 ),
             ],
         )
+    }
+
+    fn directive_capabilities(&self) -> RuntimeDirectiveCapabilities {
+        RuntimeDirectiveCapabilities {
+            live_injection: false,
+            checkpoint_overlay: true,
+            ack_support: false,
+        }
     }
 
     fn execute(&self, request: RuntimeExecutionRequest) -> Result<SpawnedRuntimeChild> {
@@ -628,6 +775,7 @@ impl RuntimeAdapter for ClaudeRuntimeAdapter {
         runtime_availability_from_checks(
             RuntimeId::Claude,
             self.binary.clone(),
+            self.directive_capabilities(),
             vec![
                 runtime_check(self.binary.as_str(), &["--version"], |status, _, _| status),
                 runtime_check(
@@ -645,6 +793,14 @@ impl RuntimeAdapter for ClaudeRuntimeAdapter {
                 ),
             ],
         )
+    }
+
+    fn directive_capabilities(&self) -> RuntimeDirectiveCapabilities {
+        RuntimeDirectiveCapabilities {
+            live_injection: false,
+            checkpoint_overlay: true,
+            ack_support: false,
+        }
     }
 
     fn execute(&self, request: RuntimeExecutionRequest) -> Result<SpawnedRuntimeChild> {
@@ -731,6 +887,7 @@ impl RuntimeAdapter for ClaudeRuntimeAdapter {
 fn runtime_availability_from_checks(
     runtime: RuntimeId,
     binary: String,
+    directive_capabilities: RuntimeDirectiveCapabilities,
     checks: Vec<(bool, String)>,
 ) -> RuntimeAvailability {
     if let Some((_, detail)) = checks.iter().find(|(ok, _)| !*ok) {
@@ -739,6 +896,7 @@ fn runtime_availability_from_checks(
             binary,
             available: false,
             detail: detail.clone(),
+            directive_capabilities,
         };
     }
     RuntimeAvailability {
@@ -746,6 +904,7 @@ fn runtime_availability_from_checks(
         binary,
         available: true,
         detail: "available".to_string(),
+        directive_capabilities,
     }
 }
 
@@ -1146,6 +1305,401 @@ pub fn clear_rerun(
     clear_rerun_with_state(root, config, wave_id, RerunState::Cancelled)
 }
 
+pub fn seed_design_authority_live_proof(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+) -> Result<DesignAuthorityProofSeedReport> {
+    let control_log = control_event_log(root, config);
+    let event_log_path = control_log.wave_path(wave_id);
+    let correlation_id = format!("proof-wave-{wave_id:02}-design-authority-live");
+    let existing_events = control_log.load_wave(wave_id)?;
+    let existing_event_ids = existing_events
+        .iter()
+        .filter(|event| event.correlation_id.as_deref() == Some(correlation_id.as_str()))
+        .map(|event| event.event_id.clone())
+        .collect::<Vec<_>>();
+    if !existing_event_ids.is_empty() {
+        return Ok(DesignAuthorityProofSeedReport {
+            wave_id,
+            correlation_id,
+            event_log_path,
+            event_ids: existing_event_ids,
+            already_present: true,
+        });
+    }
+
+    let created_at_ms = now_epoch_ms()?;
+    let dependency_wave = wave_id.saturating_sub(1);
+    let downstream_wave = wave_id + 1;
+    let task_a1 = task_id_for_agent(wave_id, "A1");
+    let task_a2 = task_id_for_agent(wave_id, "A2");
+    let downstream_task = task_id_for_agent(downstream_wave, "A1");
+
+    let fact_id = wave_domain::FactId::new(format!("fact-wave-{wave_id:02}-proof-api-shape"));
+    let question_id =
+        wave_domain::QuestionId::new(format!("question-wave-{wave_id:02}-proof-open-api"));
+    let human_input_id =
+        wave_domain::HumanInputRequestId::new(format!("human-wave-{wave_id:02}-proof-dependency"));
+    let decision_v1_id =
+        wave_domain::DecisionId::new(format!("decision-wave-{wave_id:02}-proof-api-v1"));
+    let decision_v2_id =
+        wave_domain::DecisionId::new(format!("decision-wave-{wave_id:02}-proof-api-v2"));
+    let contradiction_id =
+        wave_domain::ContradictionId::new(format!("contradiction-wave-{wave_id:02}-proof-api"));
+
+    let event_specs = vec![
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-fact"),
+            ControlEventKind::FactObserved,
+            wave_id,
+        )
+        .with_task_id(task_a1.clone())
+        .with_created_at_ms(created_at_ms)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::FactObserved {
+            fact: FactRecord {
+                fact_id: fact_id.clone(),
+                wave_id,
+                task_id: Some(task_a1.clone()),
+                attempt_id: None,
+                state: FactState::Active,
+                summary: "Observed initial dependency API shape".to_string(),
+                detail: Some("Wave 16 live-proof seed: initial fact before contradiction repair"
+                    .to_string()),
+                source_artifact: Some(".wave/live-proofs/wave-16-design-authority.md".to_string()),
+                introduced_by_event_id: None,
+                citations: Vec::new(),
+                contradiction_ids: Vec::new(),
+                superseded_by_fact_id: None,
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-question-open"),
+            ControlEventKind::LineageUpdated,
+            wave_id,
+        )
+        .with_task_id(task_a1.clone())
+        .with_created_at_ms(created_at_ms + 1)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::LineageUpdated {
+            lineage: LineageRecord {
+                record_id: wave_domain::LineageRecordId::new(format!(
+                    "lineage-wave-{wave_id:02}-question-open"
+                )),
+                wave_id,
+                task_id: Some(task_a1.clone()),
+                subject: LineageRecordSubject::Question {
+                    question_id: question_id.clone(),
+                },
+                authority: DesignAuthority::Review,
+                state: LineageState::Open,
+                summary: "Question whether the dependency API shape is still valid".to_string(),
+                detail: Some(
+                    "Wave 16 live-proof seed: unresolved question before dependency reply"
+                        .to_string(),
+                ),
+                citations: Vec::new(),
+                upstream_refs: vec![LineageRef::Fact(fact_id.clone())],
+                supporting_fact_ids: vec![fact_id.clone()],
+                downstream_task_ids: vec![downstream_task.clone()],
+                downstream_wave_ids: vec![downstream_wave],
+                required_human_input_request_ids: Vec::new(),
+                introduced_by_event_id: None,
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-human-pending"),
+            ControlEventKind::HumanInputUpdated,
+            wave_id,
+        )
+        .with_task_id(task_a2.clone())
+        .with_created_at_ms(created_at_ms + 2)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::HumanInputUpdated {
+            request: HumanInputRequest {
+                request_id: human_input_id.clone(),
+                wave_id,
+                task_id: Some(task_a2.clone()),
+                state: HumanInputState::Pending,
+                workflow_kind: HumanInputWorkflowKind::DependencyHandshake,
+                prompt: "Confirm which dependency API revision Wave 16 should trust".to_string(),
+                route: format!("dependency:wave-{dependency_wave}"),
+                requested_by: "A2".to_string(),
+                answer: None,
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-decision-pending-human"),
+            ControlEventKind::LineageUpdated,
+            wave_id,
+        )
+        .with_task_id(task_a2.clone())
+        .with_created_at_ms(created_at_ms + 3)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::LineageUpdated {
+            lineage: LineageRecord {
+                record_id: wave_domain::LineageRecordId::new(format!(
+                    "lineage-wave-{wave_id:02}-decision-v1-pending-human"
+                )),
+                wave_id,
+                task_id: Some(task_a2.clone()),
+                subject: LineageRecordSubject::Decision {
+                    decision_id: decision_v1_id.clone(),
+                },
+                authority: DesignAuthority::Dependency,
+                state: LineageState::PendingHuman,
+                summary: "Decision v1 waits on dependency confirmation".to_string(),
+                detail: Some(
+                    "Wave 16 live-proof seed: pending human-input route blocks downstream work"
+                        .to_string(),
+                ),
+                citations: Vec::new(),
+                upstream_refs: vec![
+                    LineageRef::Fact(fact_id.clone()),
+                    LineageRef::Question(question_id.clone()),
+                ],
+                supporting_fact_ids: vec![fact_id.clone()],
+                downstream_task_ids: vec![downstream_task.clone()],
+                downstream_wave_ids: vec![downstream_wave],
+                required_human_input_request_ids: vec![human_input_id.clone()],
+                introduced_by_event_id: None,
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-contradiction-detected"),
+            ControlEventKind::ContradictionUpdated,
+            wave_id,
+        )
+        .with_created_at_ms(created_at_ms + 4)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::ContradictionUpdated {
+            contradiction: ContradictionRecord {
+                contradiction_id: contradiction_id.clone(),
+                wave_id,
+                task_ids: vec![task_a1.clone(), task_a2.clone()],
+                fact_ids: vec![fact_id.clone()],
+                state: ContradictionState::Detected,
+                summary: "Dependency response contradicts the initial API fact".to_string(),
+                detail: Some(
+                    "Wave 16 live-proof seed: contradiction invalidates the first decision"
+                        .to_string(),
+                ),
+                introduced_by_event_id: None,
+                invalidated_refs: vec![
+                    LineageRef::Fact(fact_id.clone()),
+                    LineageRef::Decision(decision_v1_id.clone()),
+                ],
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-human-answered"),
+            ControlEventKind::HumanInputUpdated,
+            wave_id,
+        )
+        .with_task_id(task_a2.clone())
+        .with_created_at_ms(created_at_ms + 5)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::HumanInputUpdated {
+            request: HumanInputRequest {
+                request_id: human_input_id.clone(),
+                wave_id,
+                task_id: Some(task_a2.clone()),
+                state: HumanInputState::Answered,
+                workflow_kind: HumanInputWorkflowKind::DependencyHandshake,
+                prompt: "Confirm which dependency API revision Wave 16 should trust".to_string(),
+                route: format!("dependency:wave-{dependency_wave}"),
+                requested_by: "A2".to_string(),
+                answer: Some("Dependency owner confirmed the v2 API contract.".to_string()),
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-question-resolved"),
+            ControlEventKind::LineageUpdated,
+            wave_id,
+        )
+        .with_task_id(task_a1.clone())
+        .with_created_at_ms(created_at_ms + 6)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::LineageUpdated {
+            lineage: LineageRecord {
+                record_id: wave_domain::LineageRecordId::new(format!(
+                    "lineage-wave-{wave_id:02}-question-resolved"
+                )),
+                wave_id,
+                task_id: Some(task_a1.clone()),
+                subject: LineageRecordSubject::Question {
+                    question_id: question_id.clone(),
+                },
+                authority: DesignAuthority::Review,
+                state: LineageState::Resolved,
+                summary: "Question resolved after dependency confirmation".to_string(),
+                detail: Some(
+                    "Wave 16 live-proof seed: the blocking question is now resolved".to_string(),
+                ),
+                citations: Vec::new(),
+                upstream_refs: vec![LineageRef::HumanInput(human_input_id.clone())],
+                supporting_fact_ids: vec![fact_id.clone()],
+                downstream_task_ids: vec![downstream_task.clone()],
+                downstream_wave_ids: vec![downstream_wave],
+                required_human_input_request_ids: vec![human_input_id.clone()],
+                introduced_by_event_id: None,
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-decision-v1-superseded"),
+            ControlEventKind::LineageUpdated,
+            wave_id,
+        )
+        .with_task_id(task_a2.clone())
+        .with_created_at_ms(created_at_ms + 7)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::LineageUpdated {
+            lineage: LineageRecord {
+                record_id: wave_domain::LineageRecordId::new(format!(
+                    "lineage-wave-{wave_id:02}-decision-v1-superseded"
+                )),
+                wave_id,
+                task_id: Some(task_a2.clone()),
+                subject: LineageRecordSubject::SupersededDecision {
+                    decision_id: decision_v1_id.clone(),
+                    superseded_by_decision_id: Some(decision_v2_id.clone()),
+                },
+                authority: DesignAuthority::Review,
+                state: LineageState::Superseded,
+                summary: "Decision v1 is superseded by the confirmed dependency contract"
+                    .to_string(),
+                detail: Some(
+                    "Wave 16 live-proof seed: superseded decision invalidates the original downstream plan"
+                        .to_string(),
+                ),
+                citations: Vec::new(),
+                upstream_refs: vec![LineageRef::Decision(decision_v1_id.clone())],
+                supporting_fact_ids: vec![fact_id.clone()],
+                downstream_task_ids: vec![downstream_task.clone()],
+                downstream_wave_ids: vec![downstream_wave],
+                required_human_input_request_ids: vec![human_input_id.clone()],
+                introduced_by_event_id: None,
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-decision-v1-resolved"),
+            ControlEventKind::LineageUpdated,
+            wave_id,
+        )
+        .with_task_id(task_a2.clone())
+        .with_created_at_ms(created_at_ms + 8)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::LineageUpdated {
+            lineage: LineageRecord {
+                record_id: wave_domain::LineageRecordId::new(format!(
+                    "lineage-wave-{wave_id:02}-decision-v1-resolved"
+                )),
+                wave_id,
+                task_id: Some(task_a2.clone()),
+                subject: LineageRecordSubject::Decision {
+                    decision_id: decision_v1_id.clone(),
+                },
+                authority: DesignAuthority::Review,
+                state: LineageState::Resolved,
+                summary: "Decision v1 is retired after the repair walkthrough".to_string(),
+                detail: Some(
+                    "Wave 16 live-proof seed: the old decision remains in history but is no longer active"
+                        .to_string(),
+                ),
+                citations: Vec::new(),
+                upstream_refs: vec![LineageRef::Decision(decision_v2_id.clone())],
+                supporting_fact_ids: vec![fact_id.clone()],
+                downstream_task_ids: vec![downstream_task.clone()],
+                downstream_wave_ids: vec![downstream_wave],
+                required_human_input_request_ids: Vec::new(),
+                introduced_by_event_id: None,
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-decision-v2-decided"),
+            ControlEventKind::LineageUpdated,
+            wave_id,
+        )
+        .with_task_id(task_a2.clone())
+        .with_created_at_ms(created_at_ms + 9)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::LineageUpdated {
+            lineage: LineageRecord {
+                record_id: wave_domain::LineageRecordId::new(format!(
+                    "lineage-wave-{wave_id:02}-decision-v2-decided"
+                )),
+                wave_id,
+                task_id: Some(task_a2.clone()),
+                subject: LineageRecordSubject::Decision {
+                    decision_id: decision_v2_id.clone(),
+                },
+                authority: DesignAuthority::Review,
+                state: LineageState::Decided,
+                summary: "Decision v2 becomes the accepted dependency contract".to_string(),
+                detail: Some(
+                    "Wave 16 live-proof seed: replacement decision restores clean downstream state"
+                        .to_string(),
+                ),
+                citations: Vec::new(),
+                upstream_refs: vec![
+                    LineageRef::Fact(fact_id.clone()),
+                    LineageRef::HumanInput(human_input_id.clone()),
+                ],
+                supporting_fact_ids: vec![fact_id.clone()],
+                downstream_task_ids: vec![downstream_task.clone()],
+                downstream_wave_ids: vec![downstream_wave],
+                required_human_input_request_ids: Vec::new(),
+                introduced_by_event_id: None,
+            },
+        }),
+        ControlEvent::new(
+            format!("evt-proof-wave-{wave_id:02}-contradiction-resolved"),
+            ControlEventKind::ContradictionUpdated,
+            wave_id,
+        )
+        .with_created_at_ms(created_at_ms + 10)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(ControlEventPayload::ContradictionUpdated {
+            contradiction: ContradictionRecord {
+                contradiction_id,
+                wave_id,
+                task_ids: vec![task_a1, task_a2],
+                fact_ids: vec![fact_id],
+                state: ContradictionState::Resolved,
+                summary: "Dependency contradiction resolved after decision repair".to_string(),
+                detail: Some(
+                    "Wave 16 live-proof seed: contradiction history remains durable after resolution"
+                        .to_string(),
+                ),
+                introduced_by_event_id: None,
+                invalidated_refs: vec![
+                    LineageRef::Fact(wave_domain::FactId::new(format!(
+                        "fact-wave-{wave_id:02}-proof-api-shape"
+                    ))),
+                    LineageRef::Decision(decision_v1_id),
+                ],
+            },
+        }),
+    ];
+
+    let event_ids = event_specs
+        .iter()
+        .map(|event| event.event_id.clone())
+        .collect::<Vec<_>>();
+    for event in event_specs {
+        append_control_event(root, config, event)?;
+    }
+
+    Ok(DesignAuthorityProofSeedReport {
+        wave_id,
+        correlation_id,
+        event_log_path,
+        event_ids,
+        already_present: false,
+    })
+}
+
 pub fn apply_closure_override(
     root: &Path,
     config: &ProjectConfig,
@@ -1160,67 +1714,97 @@ pub fn apply_closure_override(
         bail!("closure override reason must not be empty");
     }
 
-    let latest_runs = load_latest_runs(root, config)?;
-    if latest_runs
-        .get(&wave_id)
-        .map(|run| run.status)
-        .is_some_and(|status| matches!(status, WaveRunStatus::Running | WaveRunStatus::Planned))
-    {
-        bail!("wave {wave_id} has an active run; clear it before applying a closure override");
-    }
-
-    let source_run_id = match source_run_id {
-        Some(source_run_id) => {
-            let run_path = state_runs_dir(root, config).join(format!("{source_run_id}.json"));
-            if !run_path.exists() {
-                bail!("source run {source_run_id} does not exist");
-            }
-            let run = load_run_record(&run_path)?;
-            if run.wave_id != wave_id {
-                bail!("source run {source_run_id} belongs to wave {}", run.wave_id);
-            }
-            if matches!(run.status, WaveRunStatus::Running | WaveRunStatus::Planned) {
-                bail!("source run {source_run_id} is still active");
-            }
-            source_run_id.to_string()
-        }
-        None => latest_runs
-            .get(&wave_id)
-            .filter(|run| !matches!(run.status, WaveRunStatus::Running | WaveRunStatus::Planned))
-            .map(|run| run.run_id.clone())
-            .with_context(|| format!("wave {wave_id} has no terminal run to use as override evidence"))?,
-    };
-
-    let applied_at_ms = now_epoch_ms()?;
-    let record = WaveClosureOverrideRecord {
-        override_id: format!("closure-override-wave-{wave_id:02}-{applied_at_ms}"),
-        wave_id,
-        status: WaveClosureOverrideStatus::Applied,
-        reason,
-        requested_by: "operator".to_string(),
-        source_run_id,
-        evidence_paths,
-        detail,
-        applied_at_ms,
-        cleared_at_ms: None,
-    };
-    write_closure_override(root, config, &record)?;
-    let _ = clear_rerun_with_state(root, config, wave_id, RerunState::Cancelled);
-    append_control_event(
-        root,
-        config,
-        ControlEvent::new(
-            format!("evt-closure-override-applied-{wave_id:02}-{applied_at_ms}"),
-            ControlEventKind::ClosureOverrideApplied,
+    with_control_mutation(root, config, || {
+        let preview =
+            preview_closure_override(root, config, wave_id, source_run_id, evidence_paths)?;
+        let applied_at_ms = now_epoch_ms()?;
+        let record = WaveClosureOverrideRecord {
+            override_id: format!("closure-override-wave-{wave_id:02}-{applied_at_ms}"),
             wave_id,
-        )
-        .with_created_at_ms(applied_at_ms)
-        .with_correlation_id(record.override_id.clone())
-        .with_payload(ControlEventPayload::ClosureOverrideUpdated {
-            closure_override: record.clone(),
-        }),
-    )?;
-    Ok(record)
+            status: WaveClosureOverrideStatus::Applied,
+            reason,
+            requested_by: "operator".to_string(),
+            source_run_id: preview.source_run_id,
+            evidence_paths: preview.evidence_paths,
+            detail,
+            applied_at_ms,
+            cleared_at_ms: None,
+        };
+
+        let rerun_path = rerun_intent_path(root, config, wave_id);
+        let override_path = closure_override_path(root, config, wave_id);
+        let rerun_snapshot = snapshot_control_file(&rerun_path)?;
+        let override_snapshot = snapshot_control_file(&override_path)?;
+
+        let result = (|| {
+            if let Some(snapshot) = rerun_snapshot.as_ref() {
+                let mut rerun_record: RerunIntentRecord = serde_json::from_slice(snapshot)
+                    .with_context(|| {
+                        format!("failed to parse rerun intent {}", rerun_path.display())
+                    })?;
+                rerun_record.status = RerunIntentStatus::Cleared;
+                rerun_record.cleared_at_ms = Some(applied_at_ms);
+                write_rerun_intent(root, config, &rerun_record)?;
+            }
+            write_closure_override(root, config, &record)?;
+            append_control_event(
+                root,
+                config,
+                ControlEvent::new(
+                    format!("evt-closure-override-applied-{wave_id:02}-{applied_at_ms}"),
+                    ControlEventKind::ClosureOverrideApplied,
+                    wave_id,
+                )
+                .with_created_at_ms(applied_at_ms)
+                .with_correlation_id(record.override_id.clone())
+                .with_payload(ControlEventPayload::ClosureOverrideUpdated {
+                    closure_override: record.clone(),
+                }),
+            )?;
+            Ok(())
+        })();
+
+        if let Err(error) = result {
+            if let Err(restore_error) = restore_control_file(&override_path, override_snapshot)
+                .and_then(|()| restore_control_file(&rerun_path, rerun_snapshot))
+            {
+                bail!(
+                    "failed to apply closure override: {error}; rollback also failed: {restore_error}"
+                );
+            }
+            return Err(error);
+        }
+
+        Ok(record)
+    })
+}
+
+pub fn preview_closure_override(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    source_run_id: Option<&str>,
+    evidence_paths: Vec<String>,
+) -> Result<ClosureOverridePreview> {
+    let (resolved_source_run_id, source_run, source_run_path) =
+        resolve_closure_override_source_run(root, config, wave_id, source_run_id)?;
+    let evidence_paths = if evidence_paths.is_empty() {
+        derive_closure_override_evidence_paths(root, &source_run_path, &source_run)?
+    } else {
+        validate_explicit_closure_override_evidence_paths(root, evidence_paths)?
+    };
+
+    Ok(ClosureOverridePreview {
+        wave_id,
+        source_run_id: resolved_source_run_id,
+        source_run_status: source_run.status,
+        source_run_error: source_run.error.clone(),
+        source_promotion_detail: source_run
+            .promotion
+            .as_ref()
+            .and_then(|promotion| promotion.detail.clone()),
+        evidence_paths,
+    })
 }
 
 pub fn clear_closure_override(
@@ -1256,6 +1840,1616 @@ pub fn clear_closure_override(
     Ok(Some(record))
 }
 
+pub fn approve_human_input_request(
+    root: &Path,
+    config: &ProjectConfig,
+    request_id: &str,
+) -> Result<HumanInputRequest> {
+    update_human_input_request(
+        root,
+        config,
+        request_id,
+        HumanInputState::Answered,
+        "Approved by operator from the Wave TUI",
+    )
+}
+
+pub fn reject_human_input_request(
+    root: &Path,
+    config: &ProjectConfig,
+    request_id: &str,
+) -> Result<HumanInputRequest> {
+    update_human_input_request(
+        root,
+        config,
+        request_id,
+        HumanInputState::Resolved,
+        "Rejected by operator from the Wave TUI",
+    )
+}
+
+pub fn acknowledge_escalation(
+    root: &Path,
+    config: &ProjectConfig,
+    escalation_id: &str,
+) -> Result<CoordinationRecord> {
+    resolve_escalation(
+        root,
+        config,
+        escalation_id,
+        CoordinationRecordKind::Decision,
+        "acknowledged",
+        "Operator acknowledged escalation from the Wave TUI",
+    )
+}
+
+pub fn dismiss_escalation(
+    root: &Path,
+    config: &ProjectConfig,
+    escalation_id: &str,
+) -> Result<CoordinationRecord> {
+    resolve_escalation(
+        root,
+        config,
+        escalation_id,
+        CoordinationRecordKind::Clarification,
+        "dismissed",
+        "Operator dismissed escalation from the Wave TUI",
+    )
+}
+
+pub fn list_control_directives(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<ControlDirectiveRecord>> {
+    let dir = control_mas_directives_dir(root, config);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut directives = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let directive = serde_json::from_str::<ControlDirectiveRecord>(&raw)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        if wave_id.is_none_or(|candidate| candidate == directive.wave_id) {
+            directives.push(directive);
+        }
+    }
+    directives.sort_by_key(|record| {
+        (
+            record.requested_at_ms,
+            record.directive_id.as_str().to_string(),
+        )
+    });
+    Ok(directives)
+}
+
+pub fn list_directive_deliveries(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<DirectiveDeliveryRecord>> {
+    let dir = control_mas_deliveries_dir(root, config);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut deliveries = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let delivery = serde_json::from_str::<DirectiveDeliveryRecord>(&raw)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        if wave_id.is_none_or(|candidate| candidate == delivery.wave_id) {
+            deliveries.push(delivery);
+        }
+    }
+    deliveries.sort_by_key(|record| {
+        (
+            record.updated_at_ms,
+            record.directive_id.as_str().to_string(),
+        )
+    });
+    Ok(deliveries)
+}
+
+pub fn list_agent_sandboxes(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<AgentSandboxRecord>> {
+    let dir = control_mas_sandboxes_dir(root, config);
+    load_control_json_records::<AgentSandboxRecord, _, _>(
+        &dir,
+        wave_id,
+        |record| record.wave_id,
+        |record| {
+            (
+                record.allocated_at_ms,
+                record.sandbox_id.as_str().to_string(),
+            )
+        },
+    )
+}
+
+pub fn list_merge_intents(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<MergeIntentRecord>> {
+    let dir = control_mas_merge_intents_dir(root, config);
+    load_control_json_records::<MergeIntentRecord, _, _>(
+        &dir,
+        wave_id,
+        |record| record.wave_id,
+        |record| {
+            (
+                record.created_at_ms,
+                record.merge_intent_id.as_str().to_string(),
+            )
+        },
+    )
+}
+
+pub fn list_merge_results(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<MergeResultRecord>> {
+    let dir = control_mas_merge_results_dir(root, config);
+    load_control_json_records::<MergeResultRecord, _, _>(
+        &dir,
+        wave_id,
+        |record| record.wave_id,
+        |record| {
+            (
+                record.applied_at_ms,
+                record.merge_result_id.as_str().to_string(),
+            )
+        },
+    )
+}
+
+pub fn list_invalidations(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<InvalidationRecord>> {
+    let dir = control_mas_invalidations_dir(root, config);
+    load_control_json_records::<InvalidationRecord, _, _>(
+        &dir,
+        wave_id,
+        |record| record.wave_id,
+        |record| {
+            (
+                record.created_at_ms,
+                record.invalidation_id.as_str().to_string(),
+            )
+        },
+    )
+}
+
+pub fn list_recovery_plans(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<RecoveryPlanRecord>> {
+    let dir = control_mas_recovery_plans_dir(root, config);
+    load_control_json_records::<RecoveryPlanRecord, _, _>(
+        &dir,
+        wave_id,
+        |record| record.wave_id,
+        |record| {
+            (
+                record.updated_at_ms.max(record.created_at_ms),
+                record.recovery_plan_id.as_str().to_string(),
+            )
+        },
+    )
+}
+
+pub fn list_recovery_actions(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<RecoveryActionRecord>> {
+    let dir = control_mas_recovery_actions_dir(root, config);
+    load_control_json_records::<RecoveryActionRecord, _, _>(
+        &dir,
+        wave_id,
+        |record| record.wave_id,
+        |record| {
+            (
+                record.created_at_ms,
+                record.recovery_action_id.as_str().to_string(),
+            )
+        },
+    )
+}
+
+fn latest_recovery_plan(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+) -> Result<Option<RecoveryPlanRecord>> {
+    Ok(list_recovery_plans(root, config, Some(wave_id))?
+        .into_iter()
+        .last())
+}
+
+fn active_recovery_plan_for_wave(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+) -> Result<Option<RecoveryPlanRecord>> {
+    Ok(latest_recovery_plan(root, config, wave_id)?
+        .filter(|plan| !matches!(plan.status, RecoveryPlanStatus::Resolved)))
+}
+
+fn resolve_active_recovery_plan_for_wave(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    detail: impl Into<String>,
+) -> Result<Option<RecoveryPlanRecord>> {
+    let Some(mut recovery_plan) = active_recovery_plan_for_wave(root, config, wave_id)? else {
+        return Ok(None);
+    };
+    recovery_plan.status = RecoveryPlanStatus::Resolved;
+    recovery_plan.updated_at_ms = now_epoch_ms()?;
+    recovery_plan.detail = Some(detail.into());
+    persist_recovery_plan_record(root, config, &recovery_plan)?;
+    Ok(Some(recovery_plan))
+}
+
+fn build_recovery_plan_for_wave(
+    wave_id: u32,
+    run_id: &str,
+    record: &WaveRunRecord,
+    merge_results: &[MergeResultRecord],
+    invalidations: &[InvalidationRecord],
+    preserved_accepted_agent_ids: &HashSet<String>,
+    unresolved_agent_ids: &[String],
+    created_at_ms: u128,
+) -> RecoveryPlanRecord {
+    let invalidated_agent_ids = invalidations
+        .iter()
+        .flat_map(|record| record.invalidated_task_ids.iter())
+        .filter_map(task_id_agent_id)
+        .collect::<HashSet<_>>();
+    let latest_merge_by_agent = merge_results.iter().fold(
+        HashMap::<String, &MergeResultRecord>::new(),
+        |mut acc, record| {
+            if let Some(agent_id) = task_id_agent_id(&record.task_id) {
+                let replace = acc
+                    .get(&agent_id)
+                    .map(|current| {
+                        (record.applied_at_ms, record.merge_result_id.as_str())
+                            >= (
+                                (*current).applied_at_ms,
+                                (*current).merge_result_id.as_str(),
+                            )
+                    })
+                    .unwrap_or(true);
+                if replace {
+                    acc.insert(agent_id, record);
+                }
+            }
+            acc
+        },
+    );
+
+    let mut causes = BTreeSet::new();
+    let mut agent_plans = Vec::new();
+    for agent_id in unresolved_agent_ids {
+        let (cause, detail, required_actions) = if invalidated_agent_ids.contains(agent_id) {
+            (
+                RecoveryCause::Invalidated,
+                Some("accepted sibling work invalidated this agent's base state".to_string()),
+                vec![
+                    RecoveryActionKind::RebaseSandbox,
+                    RecoveryActionKind::RerunAgent,
+                ],
+            )
+        } else if let Some(merge_result) = latest_merge_by_agent.get(agent_id) {
+            match merge_result.disposition {
+                MergeDisposition::Conflicted => (
+                    RecoveryCause::MergeConflict,
+                    merge_result
+                        .detail
+                        .clone()
+                        .or_else(|| Some("integration merge reported conflicts".to_string())),
+                    vec![
+                        RecoveryActionKind::RebaseSandbox,
+                        RecoveryActionKind::RequestReconciliation,
+                        RecoveryActionKind::RerunAgent,
+                    ],
+                ),
+                MergeDisposition::Rejected => (
+                    RecoveryCause::MergeRejected,
+                    merge_result
+                        .detail
+                        .clone()
+                        .or_else(|| Some("integration merge was rejected".to_string())),
+                    vec![
+                        RecoveryActionKind::ApproveMerge,
+                        RecoveryActionKind::RejectMerge,
+                        RecoveryActionKind::RequestReconciliation,
+                        RecoveryActionKind::RerunAgent,
+                    ],
+                ),
+                _ => (
+                    RecoveryCause::Mixed,
+                    merge_result.detail.clone(),
+                    vec![
+                        RecoveryActionKind::RequestReconciliation,
+                        RecoveryActionKind::RerunAgent,
+                    ],
+                ),
+            }
+        } else {
+            let agent_error = record
+                .agents
+                .iter()
+                .find(|agent| agent.id == *agent_id)
+                .and_then(|agent| agent.error.clone());
+            (
+                RecoveryCause::AgentFailed,
+                agent_error.or_else(|| Some("agent ended without accepted recovery".to_string())),
+                vec![RecoveryActionKind::RerunAgent],
+            )
+        };
+        causes.insert(cause);
+        agent_plans.push(RecoveryAgentPlan {
+            agent_id: agent_id.clone(),
+            cause,
+            required_actions,
+            detail,
+        });
+    }
+
+    RecoveryPlanRecord {
+        recovery_plan_id: RecoveryPlanId::new(format!(
+            "recovery-plan-wave-{:02}-{}-{}",
+            wave_id, run_id, created_at_ms
+        )),
+        wave_id,
+        run_id: run_id.to_string(),
+        causes: causes.into_iter().collect(),
+        affected_agent_ids: unresolved_agent_ids.to_vec(),
+        preserved_accepted_agent_ids: {
+            let mut ids = preserved_accepted_agent_ids
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            ids.sort();
+            ids
+        },
+        agent_plans,
+        status: RecoveryPlanStatus::Open,
+        detail: record.error.clone(),
+        created_at_ms,
+        updated_at_ms: created_at_ms,
+    }
+}
+
+fn load_control_json_records<T, FWave, FKey>(
+    dir: &Path,
+    wave_id: Option<u32>,
+    wave_selector: FWave,
+    sort_key: FKey,
+) -> Result<Vec<T>>
+where
+    T: serde::de::DeserializeOwned,
+    FWave: Fn(&T) -> u32,
+    FKey: Fn(&T) -> (u128, String),
+{
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut records = Vec::new();
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let record = serde_json::from_str::<T>(&raw)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        if wave_id.is_none_or(|candidate| candidate == wave_selector(&record)) {
+            records.push(record);
+        }
+    }
+    records.sort_by_key(sort_key);
+    Ok(records)
+}
+
+pub fn latest_orchestrator_session(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+) -> Result<Option<OrchestratorSessionRecord>> {
+    let path = orchestrator_session_path(root, config, wave_id);
+    match fs::read_to_string(&path) {
+        Ok(raw) => {
+            let session = serde_json::from_str::<OrchestratorSessionRecord>(&raw)
+                .with_context(|| format!("failed to parse {}", path.display()))?;
+            Ok(Some(session))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+pub fn list_operator_shell_sessions(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<Vec<OperatorShellSessionRecord>> {
+    let dir = control_operator_shell_sessions_dir(root, config);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut sessions = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let session = serde_json::from_str::<OperatorShellSessionRecord>(&raw)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        sessions.push(session);
+    }
+    sessions.sort_by_key(|record| (record.updated_at_ms, record.session_id.as_str().to_string()));
+    Ok(sessions)
+}
+
+pub fn latest_operator_shell_session(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<Option<OperatorShellSessionRecord>> {
+    let sessions = list_operator_shell_sessions(root, config)?;
+    Ok(sessions
+        .iter()
+        .rev()
+        .find(|session| session.active)
+        .cloned()
+        .or_else(|| sessions.last().cloned()))
+}
+
+pub fn list_operator_shell_turns(
+    root: &Path,
+    config: &ProjectConfig,
+    session_id: Option<&str>,
+) -> Result<Vec<OperatorShellTurnRecord>> {
+    let dir = control_operator_shell_turns_dir(root, config);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut turns = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let turn = serde_json::from_str::<OperatorShellTurnRecord>(&raw)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        if session_id.is_none_or(|candidate| turn.session_id.as_str() == candidate) {
+            turns.push(turn);
+        }
+    }
+    turns.sort_by_key(|record| (record.created_at_ms, record.turn_id.as_str().to_string()));
+    Ok(turns)
+}
+
+pub fn list_head_proposals(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<HeadProposalRecord>> {
+    let dir = control_head_proposals_dir(root, config);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut proposals = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let proposal = serde_json::from_str::<HeadProposalRecord>(&raw)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        if wave_id.is_none_or(|candidate| candidate == proposal.wave_id) {
+            proposals.push(proposal);
+        }
+    }
+    proposals.sort_by_key(|record| {
+        (
+            record.updated_at_ms,
+            record.proposal_id.as_str().to_string(),
+        )
+    });
+    Ok(proposals)
+}
+
+pub fn upsert_operator_shell_session(
+    root: &Path,
+    config: &ProjectConfig,
+    scope: OperatorShellScope,
+    wave_id: Option<u32>,
+    agent_id: Option<&str>,
+    tab: &str,
+    follow_mode: &str,
+    mode: OrchestratorMode,
+    _requested_by: &str,
+) -> Result<OperatorShellSessionRecord> {
+    let created_at_ms = now_epoch_ms()?;
+    let mut session =
+        latest_operator_shell_session(root, config)?.unwrap_or(OperatorShellSessionRecord {
+            session_id: OperatorShellSessionId::new(format!("shell-session-{created_at_ms}")),
+            scope,
+            wave_id,
+            agent_id: agent_id.map(|value| value.to_string()),
+            tab: tab.to_string(),
+            follow_mode: follow_mode.to_string(),
+            mode,
+            active: true,
+            started_at_ms: created_at_ms,
+            updated_at_ms: created_at_ms,
+        });
+    session.scope = scope;
+    session.wave_id = wave_id;
+    session.agent_id = agent_id.map(|value| value.to_string());
+    session.tab = tab.to_string();
+    session.follow_mode = follow_mode.to_string();
+    session.mode = mode;
+    session.active = true;
+    session.updated_at_ms = created_at_ms;
+    write_operator_shell_session(root, config, &session)?;
+    append_shell_session_event(root, config, &session, wave_id.unwrap_or_default())?;
+    Ok(session)
+}
+
+pub fn start_operator_shell_session(
+    root: &Path,
+    config: &ProjectConfig,
+    scope: OperatorShellScope,
+    wave_id: Option<u32>,
+    agent_id: Option<&str>,
+    tab: &str,
+    follow_mode: &str,
+    mode: OrchestratorMode,
+    _requested_by: &str,
+) -> Result<OperatorShellSessionRecord> {
+    let created_at_ms = now_epoch_ms()?;
+    let mut sessions = list_operator_shell_sessions(root, config)?;
+    for existing in sessions.iter_mut().filter(|session| session.active) {
+        existing.active = false;
+        existing.updated_at_ms = created_at_ms;
+        write_operator_shell_session(root, config, existing)?;
+        append_shell_session_event(root, config, existing, existing.wave_id.unwrap_or_default())?;
+    }
+
+    let session = OperatorShellSessionRecord {
+        session_id: OperatorShellSessionId::new(format!("shell-session-{created_at_ms}")),
+        scope,
+        wave_id,
+        agent_id: agent_id.map(|value| value.to_string()),
+        tab: tab.to_string(),
+        follow_mode: follow_mode.to_string(),
+        mode,
+        active: true,
+        started_at_ms: created_at_ms,
+        updated_at_ms: created_at_ms,
+    };
+    write_operator_shell_session(root, config, &session)?;
+    append_shell_session_event(root, config, &session, wave_id.unwrap_or_default())?;
+    Ok(session)
+}
+
+fn append_shell_session_event(
+    root: &Path,
+    config: &ProjectConfig,
+    session: &OperatorShellSessionRecord,
+    wave_id: u32,
+) -> Result<()> {
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-shell-session-{}", session.updated_at_ms),
+            ControlEventKind::OperatorActionRecorded,
+            wave_id,
+        )
+        .with_created_at_ms(session.updated_at_ms)
+        .with_correlation_id(session.session_id.as_str().to_string())
+        .with_payload(ControlEventPayload::OperatorShellSessionUpdated {
+            session: session.clone(),
+        }),
+    )
+}
+
+fn persist_operator_shell_turn_record(
+    root: &Path,
+    config: &ProjectConfig,
+    turn: &OperatorShellTurnRecord,
+) -> Result<()> {
+    write_operator_shell_turn(root, config, turn)?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-shell-turn-{}", turn.turn_id.as_str()),
+            ControlEventKind::OperatorActionRecorded,
+            turn.wave_id.unwrap_or_default(),
+        )
+        .with_created_at_ms(turn.created_at_ms)
+        .with_correlation_id(turn.turn_id.as_str().to_string())
+        .with_payload(ControlEventPayload::OperatorShellTurnRecorded { turn: turn.clone() }),
+    )
+}
+
+fn persist_head_proposal_record(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal: &HeadProposalRecord,
+) -> Result<()> {
+    write_head_proposal(root, config, proposal)?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-head-proposal-{}", proposal.updated_at_ms),
+            ControlEventKind::OperatorActionRecorded,
+            proposal.wave_id,
+        )
+        .with_created_at_ms(proposal.updated_at_ms)
+        .with_correlation_id(proposal.proposal_id.as_str().to_string())
+        .with_payload(ControlEventPayload::HeadProposalUpdated {
+            proposal: proposal.clone(),
+        }),
+    )
+}
+
+fn persist_recovery_plan_record(
+    root: &Path,
+    config: &ProjectConfig,
+    recovery_plan: &RecoveryPlanRecord,
+) -> Result<()> {
+    write_recovery_plan(root, config, recovery_plan)?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-recovery-plan-{}", recovery_plan.updated_at_ms),
+            ControlEventKind::OperatorActionRecorded,
+            recovery_plan.wave_id,
+        )
+        .with_created_at_ms(recovery_plan.updated_at_ms)
+        .with_correlation_id(recovery_plan.recovery_plan_id.as_str().to_string())
+        .with_payload(ControlEventPayload::RecoveryPlanUpdated {
+            recovery_plan: recovery_plan.clone(),
+        }),
+    )
+}
+
+fn persist_recovery_action_record(
+    root: &Path,
+    config: &ProjectConfig,
+    recovery_action: &RecoveryActionRecord,
+) -> Result<()> {
+    write_recovery_action(root, config, recovery_action)?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!(
+                "evt-recovery-action-{}",
+                recovery_action.recovery_action_id.as_str()
+            ),
+            ControlEventKind::OperatorActionRecorded,
+            recovery_action.wave_id,
+        )
+        .with_created_at_ms(recovery_action.created_at_ms)
+        .with_correlation_id(recovery_action.recovery_action_id.as_str().to_string())
+        .with_payload(ControlEventPayload::RecoveryActionRecorded {
+            recovery_action: recovery_action.clone(),
+        }),
+    )
+}
+
+fn update_head_proposal_resolution(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal: &mut HeadProposalRecord,
+    state: HeadProposalState,
+    resolution_kind: HeadProposalResolutionKind,
+    requested_by: &str,
+) -> Result<()> {
+    let resolved_at_ms = now_epoch_ms()?;
+    proposal.state = state;
+    proposal.updated_at_ms = resolved_at_ms;
+    proposal.resolution = Some(HeadProposalResolution {
+        kind: resolution_kind,
+        resolved_by: requested_by.to_string(),
+        resolved_at_ms,
+    });
+    persist_head_proposal_record(root, config, proposal)
+}
+
+fn persist_proposal_resolution_turn(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal: &HeadProposalRecord,
+    status: OperatorShellTurnStatus,
+    input: String,
+    output: String,
+    failed_reason: Option<String>,
+) -> Result<()> {
+    let created_at_ms = proposal.updated_at_ms;
+    let turn = OperatorShellTurnRecord {
+        turn_id: OperatorShellTurnId::new(format!(
+            "shell-turn-system-{}",
+            proposal.proposal_id.as_str()
+        )),
+        session_id: proposal.session_id.clone(),
+        origin: OperatorShellTurnOrigin::System,
+        scope: if proposal.agent_id.is_some() {
+            OperatorShellScope::Agent
+        } else {
+            OperatorShellScope::Wave
+        },
+        cycle_id: proposal.cycle_id.clone(),
+        wave_id: Some(proposal.wave_id),
+        agent_id: proposal.agent_id.clone(),
+        input,
+        output: Some(output),
+        status,
+        created_at_ms,
+        failed_reason,
+    };
+    persist_operator_shell_turn_record(root, config, &turn)
+}
+
+fn active_wave_ids_from_latest_runs(root: &Path, config: &ProjectConfig) -> Result<Vec<u32>> {
+    let mut wave_ids = load_latest_runs(root, config)?
+        .into_values()
+        .filter(|run| matches!(run.status, WaveRunStatus::Planned | WaveRunStatus::Running))
+        .map(|run| run.wave_id)
+        .collect::<Vec<_>>();
+    wave_ids.sort_unstable();
+    wave_ids.dedup();
+    Ok(wave_ids)
+}
+
+fn target_wave_ids_for_shell_turn(
+    root: &Path,
+    config: &ProjectConfig,
+    scope: OperatorShellScope,
+    wave_id: Option<u32>,
+) -> Result<Vec<u32>> {
+    if let Some(wave_id) = wave_id {
+        return Ok(vec![wave_id]);
+    }
+    if matches!(scope, OperatorShellScope::Head) {
+        return active_wave_ids_from_latest_runs(root, config);
+    }
+    Ok(Vec::new())
+}
+
+fn ensure_background_operator_shell_session(
+    root: &Path,
+    config: &ProjectConfig,
+    mode: OrchestratorMode,
+) -> Result<OperatorShellSessionRecord> {
+    let created_at_ms = now_epoch_ms()?;
+    let mut session = list_operator_shell_sessions(root, config)?
+        .into_iter()
+        .find(|record| record.session_id.as_str() == AUTONOMOUS_HEAD_SESSION_ID)
+        .unwrap_or(OperatorShellSessionRecord {
+            session_id: OperatorShellSessionId::new(AUTONOMOUS_HEAD_SESSION_ID.to_string()),
+            scope: OperatorShellScope::Head,
+            wave_id: None,
+            agent_id: None,
+            tab: "overview".to_string(),
+            follow_mode: "run".to_string(),
+            mode,
+            active: false,
+            started_at_ms: created_at_ms,
+            updated_at_ms: created_at_ms,
+        });
+    session.scope = OperatorShellScope::Head;
+    session.wave_id = None;
+    session.agent_id = None;
+    session.tab = "overview".to_string();
+    session.follow_mode = "run".to_string();
+    session.mode = mode;
+    session.active = false;
+    session.updated_at_ms = created_at_ms;
+    write_operator_shell_session(root, config, &session)?;
+    append_shell_session_event(root, config, &session, 0)?;
+    Ok(session)
+}
+
+pub fn record_operator_shell_guidance_turn(
+    root: &Path,
+    config: &ProjectConfig,
+    scope: OperatorShellScope,
+    wave_id: Option<u32>,
+    agent_id: Option<&str>,
+    input: &str,
+    output: &str,
+    tab: &str,
+    follow_mode: &str,
+    mode: OrchestratorMode,
+    requested_by: &str,
+) -> Result<(OperatorShellSessionRecord, OperatorShellTurnRecord)> {
+    let session = upsert_operator_shell_session(
+        root,
+        config,
+        scope,
+        wave_id,
+        agent_id,
+        tab,
+        follow_mode,
+        mode,
+        requested_by,
+    )?;
+    let created_at_ms = now_epoch_ms()?;
+    let turn = OperatorShellTurnRecord {
+        turn_id: OperatorShellTurnId::new(format!("shell-turn-{created_at_ms}")),
+        session_id: session.session_id.clone(),
+        origin: OperatorShellTurnOrigin::Operator,
+        scope,
+        cycle_id: None,
+        wave_id,
+        agent_id: agent_id.map(|value| value.to_string()),
+        input: input.to_string(),
+        output: Some(output.to_string()),
+        status: OperatorShellTurnStatus::Succeeded,
+        created_at_ms,
+        failed_reason: None,
+    };
+    persist_operator_shell_turn_record(root, config, &turn)?;
+    Ok((session, turn))
+}
+
+pub fn submit_operator_shell_head_turn(
+    root: &Path,
+    config: &ProjectConfig,
+    scope: OperatorShellScope,
+    wave_id: Option<u32>,
+    agent_id: Option<&str>,
+    input: &str,
+    tab: &str,
+    follow_mode: &str,
+    mode: OrchestratorMode,
+    requested_by: &str,
+) -> Result<OperatorHeadTurnOutcome> {
+    let session = upsert_operator_shell_session(
+        root,
+        config,
+        scope,
+        wave_id,
+        agent_id,
+        tab,
+        follow_mode,
+        mode,
+        requested_by,
+    )?;
+    let created_at_ms = now_epoch_ms()?;
+    let cycle_id = Some(format!("shell-head-cycle-{created_at_ms}"));
+    let operator_turn = OperatorShellTurnRecord {
+        turn_id: OperatorShellTurnId::new(format!("shell-turn-operator-{created_at_ms}")),
+        session_id: session.session_id.clone(),
+        origin: OperatorShellTurnOrigin::Operator,
+        scope,
+        cycle_id: cycle_id.clone(),
+        wave_id,
+        agent_id: agent_id.map(|value| value.to_string()),
+        input: input.to_string(),
+        output: Some("requested head review".to_string()),
+        status: OperatorShellTurnStatus::Succeeded,
+        created_at_ms,
+        failed_reason: None,
+    };
+    persist_operator_shell_turn_record(root, config, &operator_turn)?;
+
+    let target_wave_ids = target_wave_ids_for_shell_turn(root, config, scope, wave_id)?;
+    let mut head_turns = Vec::new();
+    let mut proposals = Vec::new();
+    let mut applied_proposals = 0;
+
+    if target_wave_ids.is_empty() {
+        let head_turn_created_at_ms = now_epoch_ms()?;
+        let head_turn = OperatorShellTurnRecord {
+            turn_id: OperatorShellTurnId::new(format!("shell-turn-head-{head_turn_created_at_ms}")),
+            session_id: session.session_id.clone(),
+            origin: OperatorShellTurnOrigin::Head,
+            scope,
+            cycle_id: cycle_id.clone(),
+            wave_id: None,
+            agent_id: agent_id.map(|value| value.to_string()),
+            input: input.to_string(),
+            output: Some(
+                "Head could not prepare proposals because there are no active wave targets."
+                    .to_string(),
+            ),
+            status: OperatorShellTurnStatus::Succeeded,
+            created_at_ms: head_turn_created_at_ms,
+            failed_reason: None,
+        };
+        persist_operator_shell_turn_record(root, config, &head_turn)?;
+        head_turns.push(head_turn);
+    } else {
+        for target_wave_id in target_wave_ids {
+            let target_agent_id = if matches!(scope, OperatorShellScope::Agent) {
+                agent_id.map(|value| value.to_string())
+            } else {
+                None
+            };
+            let (summary, detail, mut target_proposals) = synthesize_head_proposals(
+                root,
+                config,
+                &session,
+                &operator_turn,
+                target_wave_id,
+                target_agent_id.as_deref(),
+                input,
+                cycle_id.as_deref(),
+                matches!(mode, OrchestratorMode::Autonomous),
+            )?;
+            let head_turn_created_at_ms = now_epoch_ms()?;
+            let head_turn = OperatorShellTurnRecord {
+                turn_id: OperatorShellTurnId::new(format!(
+                    "shell-turn-head-{target_wave_id}-{head_turn_created_at_ms}"
+                )),
+                session_id: session.session_id.clone(),
+                origin: OperatorShellTurnOrigin::Head,
+                scope,
+                cycle_id: cycle_id.clone(),
+                wave_id: Some(target_wave_id),
+                agent_id: target_agent_id.clone(),
+                input: input.to_string(),
+                output: Some(match detail {
+                    Some(detail) => format!("{summary}\n\n{detail}"),
+                    None => summary,
+                }),
+                status: OperatorShellTurnStatus::Succeeded,
+                created_at_ms: head_turn_created_at_ms,
+                failed_reason: None,
+            };
+            persist_operator_shell_turn_record(root, config, &head_turn)?;
+            head_turns.push(head_turn);
+
+            if matches!(mode, OrchestratorMode::Autonomous) {
+                for proposal in target_proposals.drain(..) {
+                    let proposal_id = proposal.proposal_id.as_str().to_string();
+                    match apply_head_proposal_internal(
+                        root,
+                        config,
+                        proposal.clone(),
+                        requested_by,
+                        HeadProposalResolutionKind::AutonomousApplied,
+                        DirectiveOrigin::AutonomousHead,
+                    ) {
+                        Ok(proposal) => {
+                            applied_proposals += 1;
+                            proposals.push(proposal);
+                        }
+                        Err(error) => {
+                            let failed_at_ms = now_epoch_ms()?;
+                            let mut failed =
+                                read_head_proposal(root, config, &proposal_id)?.unwrap_or(proposal);
+                            failed.updated_at_ms = failed_at_ms;
+                            failed.state = HeadProposalState::Rejected;
+                            failed.resolution = Some(HeadProposalResolution {
+                                kind: HeadProposalResolutionKind::Rejected,
+                                resolved_by: requested_by.to_string(),
+                                resolved_at_ms: failed_at_ms,
+                            });
+                            persist_head_proposal_record(root, config, &failed)?;
+                            persist_proposal_resolution_turn(
+                                root,
+                                config,
+                                &failed,
+                                OperatorShellTurnStatus::Failed,
+                                format!("autonomously apply proposal {}", failed.proposal_id),
+                                format!("autonomous apply failed: {error}"),
+                                Some(error.to_string()),
+                            )?;
+                            proposals.push(failed);
+                        }
+                    }
+                }
+            } else {
+                proposals.extend(target_proposals);
+            }
+        }
+    }
+
+    Ok(OperatorHeadTurnOutcome {
+        session,
+        operator_turn,
+        head_turns,
+        proposals,
+        applied_proposals,
+    })
+}
+
+pub fn apply_head_proposal(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal_id: &str,
+    requested_by: &str,
+) -> Result<HeadProposalRecord> {
+    let proposal = read_head_proposal(root, config, proposal_id)?
+        .with_context(|| format!("head proposal {proposal_id} not found"))?;
+    apply_head_proposal_internal(
+        root,
+        config,
+        proposal,
+        requested_by,
+        HeadProposalResolutionKind::OperatorApplied,
+        DirectiveOrigin::Operator,
+    )
+}
+
+pub fn dismiss_head_proposal(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal_id: &str,
+    requested_by: &str,
+) -> Result<HeadProposalRecord> {
+    let mut proposal = read_head_proposal(root, config, proposal_id)?
+        .with_context(|| format!("head proposal {proposal_id} not found"))?;
+    if proposal.state != HeadProposalState::Pending {
+        return Ok(proposal);
+    }
+    update_head_proposal_resolution(
+        root,
+        config,
+        &mut proposal,
+        HeadProposalState::Dismissed,
+        HeadProposalResolutionKind::Dismissed,
+        requested_by,
+    )?;
+    persist_proposal_resolution_turn(
+        root,
+        config,
+        &proposal,
+        OperatorShellTurnStatus::Succeeded,
+        format!("dismiss proposal {}", proposal.proposal_id),
+        format!("dismissed proposal {}", proposal.summary),
+        None,
+    )?;
+    Ok(proposal)
+}
+
+fn apply_head_proposal_internal(
+    root: &Path,
+    config: &ProjectConfig,
+    mut proposal: HeadProposalRecord,
+    requested_by: &str,
+    resolution_kind: HeadProposalResolutionKind,
+    directive_origin: DirectiveOrigin,
+) -> Result<HeadProposalRecord> {
+    if proposal.state != HeadProposalState::Pending {
+        return Ok(proposal);
+    }
+    let action_message =
+        apply_head_proposal_action(root, config, &proposal, requested_by, directive_origin)?;
+    update_head_proposal_resolution(
+        root,
+        config,
+        &mut proposal,
+        HeadProposalState::Applied,
+        resolution_kind,
+        requested_by,
+    )?;
+    persist_proposal_resolution_turn(
+        root,
+        config,
+        &proposal,
+        OperatorShellTurnStatus::Succeeded,
+        format!("apply proposal {}", proposal.proposal_id),
+        action_message,
+        None,
+    )?;
+    Ok(proposal)
+}
+
+pub fn set_orchestrator_mode(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    mode: OrchestratorMode,
+    requested_by: &str,
+) -> Result<OrchestratorSessionRecord> {
+    set_orchestrator_mode_with_origin(
+        root,
+        config,
+        wave_id,
+        mode,
+        DirectiveOrigin::Operator,
+        requested_by,
+    )
+}
+
+fn set_orchestrator_mode_with_origin(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    mode: OrchestratorMode,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<OrchestratorSessionRecord> {
+    let created_at_ms = now_epoch_ms()?;
+    let mut session =
+        latest_orchestrator_session(root, config, wave_id)?.unwrap_or(OrchestratorSessionRecord {
+            session_id: OrchestratorSessionId::new(format!(
+                "orchestrator-wave-{wave_id:02}-{created_at_ms}"
+            )),
+            wave_id,
+            mode,
+            active: matches!(mode, OrchestratorMode::Autonomous),
+            runtime: None,
+            detail: None,
+            started_at_ms: created_at_ms,
+            updated_at_ms: created_at_ms,
+        });
+    session.mode = mode;
+    session.active = matches!(mode, OrchestratorMode::Autonomous);
+    session.updated_at_ms = created_at_ms;
+    session.detail = Some(format!("mode set to {}", orchestrator_mode_label(mode)));
+    write_orchestrator_session(root, config, &session)?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-orchestrator-mode-{wave_id:02}-{created_at_ms}"),
+            ControlEventKind::OperatorActionRecorded,
+            wave_id,
+        )
+        .with_created_at_ms(created_at_ms)
+        .with_correlation_id(session.session_id.as_str().to_string())
+        .with_payload(ControlEventPayload::OrchestratorSessionUpdated {
+            session: session.clone(),
+        }),
+    )?;
+    let directive = ControlDirectiveRecord {
+        directive_id: ControlDirectiveId::new(format!(
+            "directive-mode-wave-{wave_id:02}-{created_at_ms}"
+        )),
+        wave_id,
+        task_id: None,
+        agent_id: None,
+        sandbox_id: None,
+        kind: ControlDirectiveKind::SetOrchestratorMode,
+        origin,
+        message: Some(orchestrator_mode_label(mode).to_string()),
+        requested_by: requested_by.to_string(),
+        requested_at_ms: created_at_ms,
+    };
+    write_control_directive(root, config, &directive)?;
+    let _ = update_directive_delivery(
+        root,
+        config,
+        &directive,
+        DirectiveDeliveryState::Acked,
+        format!(
+            "orchestrator mode updated to {}",
+            orchestrator_mode_label(mode)
+        ),
+    )?;
+    Ok(session)
+}
+
+fn steer_prompt_directive(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: Option<&str>,
+    message: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+    delivery_detail: &str,
+) -> Result<ControlDirectiveRecord> {
+    let created_at_ms = now_epoch_ms()?;
+    let directive_id = match agent_id {
+        Some(agent_id) => format!(
+            "directive-steer-wave-{wave_id:02}-{}-{created_at_ms}",
+            agent_id.to_ascii_lowercase()
+        ),
+        None => format!("directive-steer-wave-{wave_id:02}-head-{created_at_ms}"),
+    };
+    let directive = ControlDirectiveRecord {
+        directive_id: ControlDirectiveId::new(directive_id),
+        wave_id,
+        task_id: agent_id.map(|agent_id| task_id_for_agent(wave_id, agent_id)),
+        agent_id: agent_id.map(|agent_id| agent_id.to_string()),
+        sandbox_id: None,
+        kind: ControlDirectiveKind::SteerPrompt,
+        origin,
+        message: Some(message.to_string()),
+        requested_by: requested_by.to_string(),
+        requested_at_ms: created_at_ms,
+    };
+    write_control_directive(root, config, &directive)?;
+    write_directive_delivery(
+        root,
+        config,
+        &DirectiveDeliveryRecord {
+            directive_id: directive.directive_id.clone(),
+            wave_id,
+            agent_id: agent_id.map(|agent_id| agent_id.to_string()),
+            state: DirectiveDeliveryState::Pending,
+            method: None,
+            runtime: None,
+            ack_supported: false,
+            detail: Some(delivery_detail.to_string()),
+            updated_at_ms: created_at_ms,
+        },
+    )?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-directive-steer-{wave_id:02}-{created_at_ms}"),
+            ControlEventKind::OperatorActionRecorded,
+            wave_id,
+        )
+        .with_created_at_ms(created_at_ms)
+        .with_correlation_id(directive.directive_id.as_str().to_string())
+        .with_payload(ControlEventPayload::ControlDirectiveRecorded {
+            directive: directive.clone(),
+        }),
+    )?;
+    Ok(directive)
+}
+
+fn record_control_directive(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: Option<&str>,
+    kind: ControlDirectiveKind,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+    message: Option<&str>,
+    delivery_detail: &str,
+) -> Result<ControlDirectiveRecord> {
+    let created_at_ms = now_epoch_ms()?;
+    let target = agent_id
+        .map(|agent_id| agent_id.to_ascii_lowercase())
+        .unwrap_or_else(|| "wave".to_string());
+    let kind_label = format!("{kind:?}").to_ascii_lowercase();
+    let directive = ControlDirectiveRecord {
+        directive_id: ControlDirectiveId::new(format!(
+            "directive-{kind_label}-wave-{wave_id:02}-{target}-{created_at_ms}"
+        )),
+        wave_id,
+        task_id: agent_id.map(|agent_id| task_id_for_agent(wave_id, agent_id)),
+        agent_id: agent_id.map(|agent_id| agent_id.to_string()),
+        sandbox_id: None,
+        kind,
+        origin,
+        message: message.map(|message| message.to_string()),
+        requested_by: requested_by.to_string(),
+        requested_at_ms: created_at_ms,
+    };
+    write_control_directive(root, config, &directive)?;
+    write_directive_delivery(
+        root,
+        config,
+        &DirectiveDeliveryRecord {
+            directive_id: directive.directive_id.clone(),
+            wave_id,
+            agent_id: directive.agent_id.clone(),
+            state: DirectiveDeliveryState::Pending,
+            method: None,
+            runtime: None,
+            ack_supported: false,
+            detail: Some(delivery_detail.to_string()),
+            updated_at_ms: created_at_ms,
+        },
+    )?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-directive-control-{wave_id:02}-{created_at_ms}"),
+            ControlEventKind::OperatorActionRecorded,
+            wave_id,
+        )
+        .with_created_at_ms(created_at_ms)
+        .with_correlation_id(directive.directive_id.as_str().to_string())
+        .with_payload(ControlEventPayload::ControlDirectiveRecorded {
+            directive: directive.clone(),
+        }),
+    )?;
+    maybe_record_recovery_action_for_directive(root, config, &directive, requested_by)?;
+    Ok(directive)
+}
+
+fn maybe_record_recovery_action_for_directive(
+    root: &Path,
+    config: &ProjectConfig,
+    directive: &ControlDirectiveRecord,
+    requested_by: &str,
+) -> Result<()> {
+    let Some(action_kind) = recovery_action_kind_for_directive(directive.kind) else {
+        return Ok(());
+    };
+    let Some(mut recovery_plan) = active_recovery_plan_for_wave(root, config, directive.wave_id)?
+    else {
+        return Ok(());
+    };
+    if let Some(agent_id) = directive.agent_id.as_deref() {
+        if !recovery_plan
+            .affected_agent_ids
+            .iter()
+            .any(|candidate| candidate == agent_id)
+        {
+            return Ok(());
+        }
+    }
+    let recovery_action = RecoveryActionRecord {
+        recovery_action_id: RecoveryActionId::new(format!(
+            "recovery-action-wave-{:02}-{}-{}",
+            directive.wave_id,
+            format!("{action_kind:?}").to_ascii_lowercase(),
+            directive.requested_at_ms
+        )),
+        recovery_plan_id: recovery_plan.recovery_plan_id.clone(),
+        wave_id: directive.wave_id,
+        run_id: recovery_plan.run_id.clone(),
+        agent_id: directive.agent_id.clone(),
+        action_kind,
+        requested_by: requested_by.to_string(),
+        detail: Some(format!(
+            "recorded from directive {}",
+            directive.directive_id.as_str()
+        )),
+        created_at_ms: directive.requested_at_ms,
+    };
+    persist_recovery_action_record(root, config, &recovery_action)?;
+    if matches!(recovery_plan.status, RecoveryPlanStatus::Open) {
+        recovery_plan.status = RecoveryPlanStatus::InProgress;
+        recovery_plan.updated_at_ms = directive.requested_at_ms;
+        recovery_plan.detail = Some(format!(
+            "recovery action {} recorded",
+            format!("{action_kind:?}").to_ascii_lowercase()
+        ));
+        persist_recovery_plan_record(root, config, &recovery_plan)?;
+    }
+    Ok(())
+}
+
+fn recovery_action_kind_for_directive(kind: ControlDirectiveKind) -> Option<RecoveryActionKind> {
+    match kind {
+        ControlDirectiveKind::PauseAgent => Some(RecoveryActionKind::PauseAgent),
+        ControlDirectiveKind::ResumeAgent => Some(RecoveryActionKind::ResumeAgent),
+        ControlDirectiveKind::RerunAgent => Some(RecoveryActionKind::RerunAgent),
+        ControlDirectiveKind::RebaseSandbox => Some(RecoveryActionKind::RebaseSandbox),
+        ControlDirectiveKind::ApproveMerge => Some(RecoveryActionKind::ApproveMerge),
+        ControlDirectiveKind::RejectMerge => Some(RecoveryActionKind::RejectMerge),
+        ControlDirectiveKind::RequestReconciliation => {
+            Some(RecoveryActionKind::RequestReconciliation)
+        }
+        ControlDirectiveKind::SteerPrompt | ControlDirectiveKind::SetOrchestratorMode => None,
+    }
+}
+
+pub fn steer_agent(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    message: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    steer_prompt_directive(
+        root,
+        config,
+        wave_id,
+        Some(agent_id),
+        message,
+        origin,
+        requested_by,
+        "persisted for runtime delivery; current adapters use interrupt-and-resume semantics",
+    )
+}
+
+pub fn steer_wave(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    message: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    steer_prompt_directive(
+        root,
+        config,
+        wave_id,
+        None,
+        message,
+        origin,
+        requested_by,
+        "persisted for orchestrator delivery; current adapters apply wave-level guidance at the next safe checkpoint",
+    )
+}
+
+pub fn pause_agent(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    record_control_directive(
+        root,
+        config,
+        wave_id,
+        Some(agent_id),
+        ControlDirectiveKind::PauseAgent,
+        origin,
+        requested_by,
+        None,
+        "pause recorded for runtime application",
+    )
+}
+
+pub fn resume_agent(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    record_control_directive(
+        root,
+        config,
+        wave_id,
+        Some(agent_id),
+        ControlDirectiveKind::ResumeAgent,
+        origin,
+        requested_by,
+        None,
+        "resume recorded for runtime application",
+    )
+}
+
+pub fn rerun_agent(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    record_control_directive(
+        root,
+        config,
+        wave_id,
+        Some(agent_id),
+        ControlDirectiveKind::RerunAgent,
+        origin,
+        requested_by,
+        None,
+        "agent rerun recorded for runtime application",
+    )
+}
+
+pub fn rebase_agent_sandbox(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    record_control_directive(
+        root,
+        config,
+        wave_id,
+        Some(agent_id),
+        ControlDirectiveKind::RebaseSandbox,
+        origin,
+        requested_by,
+        None,
+        "sandbox rebase recorded for runtime application",
+    )
+}
+
+pub fn request_agent_reconciliation(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    record_control_directive(
+        root,
+        config,
+        wave_id,
+        Some(agent_id),
+        ControlDirectiveKind::RequestReconciliation,
+        origin,
+        requested_by,
+        None,
+        "reconciliation recorded for runtime application",
+    )
+}
+
+pub fn approve_agent_merge(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    record_control_directive(
+        root,
+        config,
+        wave_id,
+        Some(agent_id),
+        ControlDirectiveKind::ApproveMerge,
+        origin,
+        requested_by,
+        None,
+        "merge approval recorded for runtime application",
+    )
+}
+
+pub fn reject_agent_merge(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    record_control_directive(
+        root,
+        config,
+        wave_id,
+        Some(agent_id),
+        ControlDirectiveKind::RejectMerge,
+        origin,
+        requested_by,
+        None,
+        "merge rejection recorded for runtime application",
+    )
+}
+
 fn clear_rerun_with_state(
     root: &Path,
     config: &ProjectConfig,
@@ -1285,6 +3479,328 @@ fn clear_rerun_with_state(
         }),
     )?;
     Ok(Some(record))
+}
+
+fn update_human_input_request(
+    root: &Path,
+    config: &ProjectConfig,
+    request_id: &str,
+    next_state: HumanInputState,
+    answer: &str,
+) -> Result<HumanInputRequest> {
+    let mut request = latest_human_input_request(root, config, request_id)?;
+    if request.state.is_resolved() {
+        bail!("human input request {request_id} is already resolved");
+    }
+    request.state = next_state;
+    request.answer = Some(answer.to_string());
+    let created_at_ms = now_epoch_ms()?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!(
+                "evt-human-input-updated-{}-{created_at_ms}",
+                request.request_id
+            ),
+            ControlEventKind::HumanInputUpdated,
+            request.wave_id,
+        )
+        .with_created_at_ms(created_at_ms)
+        .with_correlation_id(request.request_id.as_str().to_string())
+        .with_payload(ControlEventPayload::HumanInputUpdated {
+            request: request.clone(),
+        }),
+    )?;
+    Ok(request)
+}
+
+fn latest_human_input_request(
+    root: &Path,
+    config: &ProjectConfig,
+    request_id: &str,
+) -> Result<HumanInputRequest> {
+    let mut control_events = control_event_log(root, config).load_all()?;
+    control_events.sort_by_key(|event| (event.created_at_ms, event.event_id.clone()));
+    control_events
+        .into_iter()
+        .rev()
+        .find_map(|event| match event.payload {
+            ControlEventPayload::HumanInputUpdated { request }
+                if request.request_id.as_str() == request_id =>
+            {
+                Some(request)
+            }
+            _ => None,
+        })
+        .with_context(|| format!("human input request {request_id} does not exist"))
+}
+
+fn resolve_escalation(
+    root: &Path,
+    config: &ProjectConfig,
+    escalation_id: &str,
+    kind: CoordinationRecordKind,
+    action: &str,
+    detail_prefix: &str,
+) -> Result<CoordinationRecord> {
+    let coordination_log = CoordinationLog::new(
+        config
+            .resolved_paths(root)
+            .authority
+            .state_events_coordination_dir,
+    );
+    let records = coordination_log.load_all()?;
+    let escalation = records
+        .iter()
+        .find(|record| {
+            record.kind == CoordinationRecordKind::Escalation && record.record_id == escalation_id
+        })
+        .cloned()
+        .with_context(|| format!("escalation {escalation_id} does not exist"))?;
+    if records.iter().any(|record| {
+        record.kind != CoordinationRecordKind::Escalation
+            && record
+                .related_record_ids
+                .iter()
+                .any(|id| id == escalation_id)
+    }) {
+        bail!("escalation {escalation_id} is already resolved");
+    }
+
+    let created_at_ms = now_epoch_ms()?;
+    let mut record = CoordinationRecord::new(
+        format!("operator-escalation-{}-{created_at_ms}", action),
+        kind,
+        escalation.wave_id,
+        format!("Operator {action} escalation {escalation_id}"),
+    )
+    .with_created_at_ms(created_at_ms)
+    .with_agent_id("operator/tui")
+    .with_related_record_ids(vec![escalation.record_id.clone()]);
+    if let Some(task_id) = escalation.task_id.clone() {
+        record = record.with_task_id(task_id);
+    }
+    if let Some(request_id) = escalation.human_input_request_id.clone() {
+        record = record.with_human_input_request_id(request_id);
+    }
+    let detail = match escalation.detail.as_deref() {
+        Some(existing) => format!("{detail_prefix}: {existing}"),
+        None => format!("{detail_prefix}: {}", escalation.summary),
+    };
+    record = record.with_detail(detail);
+    coordination_log.append(&record)?;
+    Ok(record)
+}
+
+fn resolve_closure_override_source_run(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    source_run_id: Option<&str>,
+) -> Result<(String, WaveRunRecord, PathBuf)> {
+    let latest_runs = load_latest_runs(root, config)?;
+    if latest_runs
+        .get(&wave_id)
+        .map(|run| run.status)
+        .is_some_and(|status| matches!(status, WaveRunStatus::Running | WaveRunStatus::Planned))
+    {
+        bail!("wave {wave_id} has an active run; clear it before applying a closure override");
+    }
+    if load_closure_override(root, config, wave_id)?
+        .as_ref()
+        .is_some_and(WaveClosureOverrideRecord::is_active)
+    {
+        bail!("wave {wave_id} already has an active closure override");
+    }
+
+    match source_run_id {
+        Some(source_run_id) => {
+            let run_path = state_runs_dir(root, config).join(format!("{source_run_id}.json"));
+            if !run_path.exists() {
+                bail!("source run {source_run_id} does not exist");
+            }
+            let run = load_run_record(&run_path)?;
+            if run.wave_id != wave_id {
+                bail!("source run {source_run_id} belongs to wave {}", run.wave_id);
+            }
+            if matches!(run.status, WaveRunStatus::Running | WaveRunStatus::Planned) {
+                bail!("source run {source_run_id} is still active");
+            }
+            Ok((source_run_id.to_string(), run, run_path))
+        }
+        None => {
+            let run = latest_runs
+                .get(&wave_id)
+                .filter(|run| {
+                    !matches!(run.status, WaveRunStatus::Running | WaveRunStatus::Planned)
+                })
+                .cloned()
+                .with_context(|| {
+                    format!("wave {wave_id} has no terminal run to use as override evidence")
+                })?;
+            let run_path = state_runs_dir(root, config).join(format!("{}.json", run.run_id));
+            Ok((run.run_id.clone(), run, run_path))
+        }
+    }
+}
+
+fn derive_closure_override_evidence_paths(
+    root: &Path,
+    source_run_path: &Path,
+    source_run: &WaveRunRecord,
+) -> Result<Vec<String>> {
+    let mut evidence_paths = Vec::new();
+    let mut seen = HashSet::new();
+    push_derived_closure_override_evidence_path(
+        root,
+        source_run_path,
+        &mut evidence_paths,
+        &mut seen,
+    )?;
+    push_derived_closure_override_evidence_path(
+        root,
+        &source_run.trace_path,
+        &mut evidence_paths,
+        &mut seen,
+    )?;
+    for agent in &source_run.agents {
+        if let Some(result_envelope_path) = agent.result_envelope_path.as_ref() {
+            push_derived_closure_override_evidence_path(
+                root,
+                result_envelope_path,
+                &mut evidence_paths,
+                &mut seen,
+            )?;
+        }
+        if let Some(runtime_detail_path) = agent.runtime_detail_path.as_ref() {
+            push_derived_closure_override_evidence_path(
+                root,
+                runtime_detail_path,
+                &mut evidence_paths,
+                &mut seen,
+            )?;
+        }
+    }
+    if evidence_paths.is_empty() {
+        bail!(
+            "wave {} source run {} produced no inspectable evidence files",
+            source_run.wave_id,
+            source_run.run_id
+        );
+    }
+    Ok(evidence_paths)
+}
+
+fn validate_explicit_closure_override_evidence_paths(
+    root: &Path,
+    evidence_paths: Vec<String>,
+) -> Result<Vec<String>> {
+    let mut normalized_paths = Vec::new();
+    let mut seen = HashSet::new();
+    for raw_path in evidence_paths {
+        let normalized = normalize_explicit_closure_override_evidence_path(&raw_path)?;
+        let display = normalized.to_string_lossy().into_owned();
+        if !seen.insert(display.clone()) {
+            bail!("closure override evidence path {display} is duplicated");
+        }
+        ensure_closure_override_evidence_file(root, &normalized)?;
+        normalized_paths.push(display);
+    }
+    Ok(normalized_paths)
+}
+
+fn normalize_explicit_closure_override_evidence_path(raw_path: &str) -> Result<PathBuf> {
+    let trimmed = raw_path.trim();
+    if trimmed.is_empty() {
+        bail!("closure override evidence path must not be empty");
+    }
+    let candidate = Path::new(trimmed);
+    if candidate.is_absolute() {
+        bail!("closure override evidence path {trimmed} must be repo-relative");
+    }
+    normalize_repo_relative_path(candidate)
+        .with_context(|| format!("invalid closure override evidence path {trimmed}"))
+}
+
+fn normalize_repo_relative_path(path: &Path) -> Result<PathBuf> {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::ParentDir => {
+                bail!("path must not escape the repo root");
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                bail!("path must be repo-relative");
+            }
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        bail!("path must point to a file");
+    }
+    Ok(normalized)
+}
+
+fn ensure_closure_override_evidence_file(root: &Path, relative_path: &Path) -> Result<()> {
+    let resolved_path = root.join(relative_path);
+    let metadata = fs::metadata(&resolved_path).with_context(|| {
+        format!(
+            "closure override evidence {} does not exist",
+            relative_path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        bail!(
+            "closure override evidence {} must point to a file",
+            relative_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn push_derived_closure_override_evidence_path(
+    root: &Path,
+    candidate_path: &Path,
+    evidence_paths: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+) -> Result<()> {
+    let Some(relative_path) = repo_relative_existing_evidence_path(root, candidate_path)? else {
+        return Ok(());
+    };
+    let display = relative_path.to_string_lossy().into_owned();
+    if seen.insert(display.clone()) {
+        evidence_paths.push(display);
+    }
+    Ok(())
+}
+
+fn repo_relative_existing_evidence_path(root: &Path, path: &Path) -> Result<Option<PathBuf>> {
+    let resolved_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    if !resolved_path.exists() {
+        return Ok(None);
+    }
+    let metadata = fs::metadata(&resolved_path)
+        .with_context(|| format!("failed to inspect {}", resolved_path.display()))?;
+    if !metadata.is_file() {
+        bail!(
+            "closure override evidence {} must point to a file",
+            resolved_path.display()
+        );
+    }
+    let relative_path = resolved_path.strip_prefix(root).with_context(|| {
+        format!(
+            "closure override evidence {} is outside the repo root {}",
+            resolved_path.display(),
+            root.display()
+        )
+    })?;
+    Ok(Some(normalize_repo_relative_path(relative_path)?))
 }
 
 pub fn select_wave<'a>(
@@ -1319,6 +3835,44 @@ pub fn select_wave<'a>(
         .iter()
         .find(|wave| wave.metadata.id == wave_id)
         .with_context(|| format!("missing wave definition for ready wave {}", wave_id))
+}
+
+fn select_launchable_wave<'a>(
+    waves: &'a [WaveDocument],
+    status: &PlanningStatus,
+    requested_wave_id: Option<u32>,
+    design_states: &HashMap<u32, WaveLaunchDesignState>,
+) -> Result<&'a WaveDocument> {
+    if let Some(wave_id) = requested_wave_id {
+        let wave = select_wave(waves, status, Some(wave_id))?;
+        if let Some(design) = design_states
+            .get(&wave_id)
+            .filter(|state| state.is_blocked())
+        {
+            bail!(
+                "wave {} is blocked by design authority: {}",
+                wave_id,
+                design.blocker_reasons.join(", ")
+            );
+        }
+        return Ok(wave);
+    }
+
+    let Some(selection) = next_claimable_wave_selection_with_design(status, design_states) else {
+        bail!(
+            "{}",
+            queue_unavailable_reason_with_design(status, design_states)
+        );
+    };
+    waves
+        .iter()
+        .find(|wave| wave.metadata.id == selection.wave_id)
+        .with_context(|| {
+            format!(
+                "missing wave definition for launchable wave {}",
+                selection.wave_id
+            )
+        })
 }
 
 pub fn compile_wave_bundle(
@@ -1391,15 +3945,385 @@ fn requested_rerun_intent(
         .filter(|record| record.status == RerunIntentStatus::Requested))
 }
 
+#[derive(Debug, Clone, Default)]
+struct LaunchDesignIndex {
+    waves: BTreeMap<u32, LaunchDesignWaveState>,
+    impacted_tasks: BTreeMap<String, BTreeSet<String>>,
+    impacted_waves: BTreeMap<u32, BTreeSet<String>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct LaunchDesignWaveState {
+    unresolved_question_ids: BTreeSet<String>,
+    unresolved_assumption_ids: BTreeSet<String>,
+    pending_human_input_request_ids: BTreeSet<String>,
+    invalidated_fact_ids: BTreeSet<String>,
+    invalidated_decision_ids: BTreeSet<String>,
+}
+
+fn load_wave_launch_design_states(
+    root: &Path,
+    config: &ProjectConfig,
+    waves: &[WaveDocument],
+) -> Result<HashMap<u32, WaveLaunchDesignState>> {
+    let control_events = control_event_log(root, config).load_all()?;
+    Ok(build_wave_launch_design_states(waves, &control_events))
+}
+
+fn build_wave_launch_design_states(
+    waves: &[WaveDocument],
+    control_events: &[ControlEvent],
+) -> HashMap<u32, WaveLaunchDesignState> {
+    let mut sorted_events = control_events.to_vec();
+    sorted_events.sort_by_key(|event| (event.created_at_ms, event.event_id.clone()));
+
+    let mut contradictions = BTreeMap::new();
+    let mut facts = BTreeMap::new();
+    let mut human_inputs = BTreeMap::new();
+    let mut lineages = BTreeMap::new();
+
+    for event in sorted_events {
+        match event.payload {
+            ControlEventPayload::ContradictionUpdated { contradiction } => {
+                contradictions.insert(contradiction.contradiction_id.clone(), contradiction);
+            }
+            ControlEventPayload::FactObserved { fact } => {
+                facts.insert(fact.fact_id.clone(), fact);
+            }
+            ControlEventPayload::HumanInputUpdated { request } => {
+                human_inputs.insert(request.request_id.clone(), request);
+            }
+            ControlEventPayload::LineageUpdated { lineage } => {
+                lineages.insert(lineage_subject_key(&lineage), lineage);
+            }
+            _ => {}
+        }
+    }
+
+    let mut index = LaunchDesignIndex::default();
+    let mut invalidated_facts = BTreeSet::<String>::new();
+    let mut invalidated_decisions = BTreeSet::<String>::new();
+    let mut invalidated_by_fact = BTreeSet::<String>::new();
+    let mut decision_records = BTreeMap::<String, LineageRecord>::new();
+
+    for contradiction in contradictions
+        .values()
+        .filter(|record| record.state.is_active())
+    {
+        for invalidated in &contradiction.invalidated_refs {
+            match invalidated {
+                LineageRef::Fact(fact_id) => {
+                    invalidated_facts.insert(fact_id.as_str().to_string());
+                }
+                LineageRef::Decision(decision_id) => {
+                    invalidated_decisions.insert(decision_id.as_str().to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for lineage in lineages.values() {
+        if let Some(decision_id) = lineage.decision_id() {
+            decision_records.insert(decision_id.as_str().to_string(), lineage.clone());
+        }
+    }
+
+    for lineage in decision_records.values() {
+        if let Some(decision_id) = lineage.decision_id() {
+            if matches!(
+                lineage.subject,
+                LineageRecordSubject::SupersededDecision { .. }
+            ) || matches!(
+                lineage.state,
+                LineageState::Superseded | LineageState::Invalidated
+            ) {
+                invalidated_decisions.insert(decision_id.as_str().to_string());
+            }
+
+            let depends_on_invalidated_fact = lineage
+                .supporting_fact_ids
+                .iter()
+                .any(|fact_id| invalidated_facts.contains(fact_id.as_str()))
+                || lineage
+                    .upstream_refs
+                    .iter()
+                    .any(|reference| match reference {
+                        LineageRef::Fact(fact_id) => invalidated_facts.contains(fact_id.as_str()),
+                        _ => false,
+                    });
+            if depends_on_invalidated_fact {
+                invalidated_by_fact.insert(decision_id.as_str().to_string());
+            }
+        }
+    }
+
+    invalidated_decisions.extend(invalidated_by_fact);
+
+    for request in human_inputs
+        .values()
+        .filter(|request| !request.state.is_resolved())
+    {
+        index
+            .waves
+            .entry(request.wave_id)
+            .or_default()
+            .pending_human_input_request_ids
+            .insert(request.request_id.as_str().to_string());
+    }
+
+    for fact in facts.values() {
+        if invalidated_facts.contains(fact.fact_id.as_str()) {
+            index
+                .waves
+                .entry(fact.wave_id)
+                .or_default()
+                .invalidated_fact_ids
+                .insert(fact.fact_id.as_str().to_string());
+        }
+    }
+
+    for lineage in lineages.values() {
+        let wave_state = index.waves.entry(lineage.wave_id).or_default();
+        let required_human_input = lineage
+            .required_human_input_request_ids
+            .iter()
+            .filter(|request_id| {
+                human_inputs
+                    .get(*request_id)
+                    .map(|request| !request.state.is_resolved())
+                    .unwrap_or(true)
+            })
+            .map(|request_id| request_id.as_str().to_string())
+            .collect::<Vec<_>>();
+        for request_id in required_human_input {
+            wave_state
+                .pending_human_input_request_ids
+                .insert(request_id);
+        }
+
+        if let Some(question_id) = lineage.question_id() {
+            if matches!(
+                lineage.state,
+                LineageState::Open | LineageState::PendingHuman
+            ) {
+                wave_state
+                    .unresolved_question_ids
+                    .insert(question_id.as_str().to_string());
+            }
+        }
+
+        if let Some(assumption_id) = lineage.assumption_id() {
+            if matches!(
+                lineage.state,
+                LineageState::Open | LineageState::PendingHuman
+            ) {
+                wave_state
+                    .unresolved_assumption_ids
+                    .insert(assumption_id.as_str().to_string());
+            }
+        }
+
+        if let Some(decision_id) = lineage.decision_id() {
+            let decision_id = decision_id.as_str().to_string();
+            if invalidated_decisions.contains(&decision_id) {
+                wave_state
+                    .invalidated_decision_ids
+                    .insert(decision_id.clone());
+                for task_id in &lineage.downstream_task_ids {
+                    index
+                        .impacted_tasks
+                        .entry(task_id.as_str().to_string())
+                        .or_default()
+                        .insert(decision_id.clone());
+                }
+                for wave_id in &lineage.downstream_wave_ids {
+                    index
+                        .impacted_waves
+                        .entry(*wave_id)
+                        .or_default()
+                        .insert(decision_id.clone());
+                }
+            }
+        }
+    }
+
+    waves
+        .iter()
+        .map(|wave| {
+            (
+                wave.metadata.id,
+                build_wave_launch_design_state(&index, wave),
+            )
+        })
+        .collect()
+}
+
+fn build_wave_launch_design_state(
+    index: &LaunchDesignIndex,
+    wave: &WaveDocument,
+) -> WaveLaunchDesignState {
+    let wave_state = index
+        .waves
+        .get(&wave.metadata.id)
+        .cloned()
+        .unwrap_or_default();
+    let wave_task_ids = wave
+        .agents
+        .iter()
+        .map(|agent| task_id_for_agent(wave.metadata.id, agent.id.as_str()))
+        .map(|task_id| task_id.as_str().to_string())
+        .collect::<BTreeSet<_>>();
+
+    let selectively_invalidated_task_ids = wave_task_ids
+        .iter()
+        .filter(|task_id| index.impacted_tasks.contains_key(*task_id))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut invalidated_decision_ids = wave_state.invalidated_decision_ids.clone();
+    for task_id in &selectively_invalidated_task_ids {
+        if let Some(decision_ids) = index.impacted_tasks.get(task_id) {
+            invalidated_decision_ids.extend(decision_ids.iter().cloned());
+        }
+    }
+    if let Some(decision_ids) = index.impacted_waves.get(&wave.metadata.id) {
+        invalidated_decision_ids.extend(decision_ids.iter().cloned());
+    }
+
+    let ambiguous_dependency_wave_ids = wave
+        .metadata
+        .depends_on
+        .iter()
+        .copied()
+        .filter(|wave_id| launch_wave_has_ambiguity(index, *wave_id))
+        .collect::<Vec<_>>();
+
+    let mut blocker_reasons = Vec::new();
+    blocker_reasons.extend(
+        wave_state
+            .unresolved_question_ids
+            .iter()
+            .map(|question_id| format!("design:open-question:{question_id}")),
+    );
+    blocker_reasons.extend(
+        wave_state
+            .unresolved_assumption_ids
+            .iter()
+            .map(|assumption_id| format!("design:open-assumption:{assumption_id}")),
+    );
+    blocker_reasons.extend(
+        wave_state
+            .pending_human_input_request_ids
+            .iter()
+            .map(|request_id| format!("design:human-input:{request_id}")),
+    );
+    blocker_reasons.extend(
+        wave_state
+            .invalidated_fact_ids
+            .iter()
+            .map(|fact_id| format!("design:invalidated-fact:{fact_id}")),
+    );
+    blocker_reasons.extend(
+        invalidated_decision_ids
+            .iter()
+            .map(|decision_id| format!("design:invalidated-decision:{decision_id}")),
+    );
+    blocker_reasons.extend(
+        selectively_invalidated_task_ids
+            .iter()
+            .map(|task_id| format!("design:downstream-task-invalidated:{task_id}")),
+    );
+    blocker_reasons.extend(
+        ambiguous_dependency_wave_ids
+            .iter()
+            .map(|wave_id| format!("design:dependency-ambiguity:wave-{wave_id}")),
+    );
+    blocker_reasons.sort();
+    blocker_reasons.dedup();
+
+    WaveLaunchDesignState {
+        unresolved_question_ids: wave_state.unresolved_question_ids.into_iter().collect(),
+        unresolved_assumption_ids: wave_state.unresolved_assumption_ids.into_iter().collect(),
+        pending_human_input_request_ids: wave_state
+            .pending_human_input_request_ids
+            .into_iter()
+            .collect(),
+        invalidated_fact_ids: wave_state.invalidated_fact_ids.into_iter().collect(),
+        invalidated_decision_ids: invalidated_decision_ids.into_iter().collect(),
+        selectively_invalidated_task_ids,
+        ambiguous_dependency_wave_ids,
+        blocker_reasons,
+    }
+}
+
+fn launch_wave_has_ambiguity(index: &LaunchDesignIndex, wave_id: u32) -> bool {
+    index
+        .waves
+        .get(&wave_id)
+        .map(|wave| {
+            !wave.unresolved_question_ids.is_empty()
+                || !wave.unresolved_assumption_ids.is_empty()
+                || !wave.pending_human_input_request_ids.is_empty()
+                || !wave.invalidated_fact_ids.is_empty()
+                || !wave.invalidated_decision_ids.is_empty()
+        })
+        .unwrap_or(false)
+}
+
+fn lineage_subject_key(lineage: &LineageRecord) -> String {
+    match &lineage.subject {
+        LineageRecordSubject::Question { question_id } => {
+            format!("question:{}", question_id.as_str())
+        }
+        LineageRecordSubject::Assumption { assumption_id } => {
+            format!("assumption:{}", assumption_id.as_str())
+        }
+        LineageRecordSubject::Decision { decision_id } => {
+            format!("decision:{}", decision_id.as_str())
+        }
+        LineageRecordSubject::SupersededDecision { decision_id, .. } => {
+            format!("decision:{}", decision_id.as_str())
+        }
+    }
+}
+
 fn planned_execution_indices(
     ordered_agents: &[&WaveAgent],
     prior_run: Option<&WaveRunRecord>,
     scope: RerunScope,
+    wave_id: u32,
+    selectively_invalidated_task_ids: &[String],
 ) -> Result<Vec<usize>> {
+    if prior_run.is_some()
+        && !matches!(scope, RerunScope::ClosureOnly | RerunScope::PromotionOnly)
+        && !selectively_invalidated_task_ids.is_empty()
+    {
+        let selective_task_ids = selectively_invalidated_task_ids
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        let mut indices = ordered_agents
+            .iter()
+            .enumerate()
+            .filter(|(_, agent)| {
+                selective_task_ids.contains(task_id_for_agent(wave_id, agent.id.as_str()).as_str())
+                    || is_closure_followup_agent(agent.id.as_str())
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        indices.sort_unstable();
+        indices.dedup();
+        if !indices.is_empty() {
+            return Ok(indices);
+        }
+    }
+
     match scope {
         RerunScope::Full => Ok((0..ordered_agents.len()).collect()),
         RerunScope::FromFirstIncomplete => {
-            let prior_run = prior_run.context("from-first-incomplete rerun requires a prior run")?;
+            let prior_run =
+                prior_run.context("from-first-incomplete rerun requires a prior run")?;
             let Some(start_index) = ordered_agents.iter().position(|agent| {
                 prior_run
                     .agents
@@ -1446,7 +4370,7 @@ fn seed_reused_agent_records(
     execution_indices: &[usize],
     scope: RerunScope,
 ) -> Result<()> {
-    if matches!(scope, RerunScope::Full) {
+    if matches!(scope, RerunScope::Full) && execution_indices.len() == ordered_agents.len() {
         return Ok(());
     }
     let prior_run = prior_run.with_context(|| {
@@ -1502,13 +4426,12 @@ fn prepare_closure_artifact_placeholders(execution_root: &Path, wave: &WaveDocum
             if artifact_path.exists() {
                 continue;
             }
-            let placeholder = if artifact_path.extension().and_then(|ext| ext.to_str())
-                == Some("json")
-            {
-                "{}\n"
-            } else {
-                ""
-            };
+            let placeholder =
+                if artifact_path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                    "{}\n"
+                } else {
+                    ""
+                };
             fs::write(&artifact_path, placeholder)
                 .with_context(|| format!("failed to seed {}", artifact_path.display()))?;
         }
@@ -1529,6 +4452,1529 @@ fn normalize_owned_relative_path(path: &str) -> Option<PathBuf> {
         return None;
     }
     Some(normalized)
+}
+
+#[derive(Debug)]
+struct RunningMasAgent {
+    index: usize,
+    agent: WaveAgent,
+    sandbox: AgentSandboxRecord,
+    lease: TaskLeaseRecord,
+    selected_runtime: RuntimeId,
+    base_integration_ref: String,
+    join: thread::JoinHandle<Result<ExecutedAgent>>,
+}
+
+fn maybe_run_autonomous_head_cycle(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    running: &[RunningMasAgent],
+    pending_indices: &BTreeSet<usize>,
+    ordered_agents: &[&WaveAgent],
+) -> Result<usize> {
+    let Some(session) = latest_orchestrator_session(root, config, wave_id)? else {
+        return Ok(0);
+    };
+    if !matches!(session.mode, OrchestratorMode::Autonomous) || !session.active {
+        return Ok(0);
+    }
+    let now = now_epoch_ms()?;
+    let recently_issued = list_operator_shell_turns(root, config, None)?
+        .into_iter()
+        .rev()
+        .any(|turn| {
+            matches!(
+                turn.origin,
+                OperatorShellTurnOrigin::Head | OperatorShellTurnOrigin::System
+            ) && turn.wave_id == Some(wave_id)
+                && turn.created_at_ms <= now
+                && now.saturating_sub(turn.created_at_ms) < AUTONOMOUS_HEAD_THROTTLE_MS
+        });
+    if recently_issued {
+        return Ok(0);
+    }
+
+    let (scope, target_agent_id, guidance) = if let Some(active) = running.first() {
+        (
+            OperatorShellScope::Agent,
+            Some(active.agent.id.as_str()),
+            format!(
+                "Autonomous head: continue on {}, prefer accepted-state consistency, and summarize blockers before exit.",
+                active.agent.id
+            ),
+        )
+    } else if let Some(index) = pending_indices.iter().next().copied() {
+        let next_agent = ordered_agents[index];
+        (
+            OperatorShellScope::Wave,
+            None,
+            format!(
+                "Autonomous head: prioritize the next ready frontier around {} and keep merge-safe progress explicit.",
+                next_agent.id
+            ),
+        )
+    } else {
+        return Ok(0);
+    };
+
+    let shell_session =
+        ensure_background_operator_shell_session(root, config, OrchestratorMode::Autonomous)?;
+    let created_at_ms = now_epoch_ms()?;
+    let cycle_id = Some(format!(
+        "autonomous-head-cycle-wave-{wave_id}-{created_at_ms}"
+    ));
+    let trigger_turn = OperatorShellTurnRecord {
+        turn_id: OperatorShellTurnId::new(format!(
+            "shell-turn-autonomous-trigger-{wave_id}-{created_at_ms}"
+        )),
+        session_id: shell_session.session_id.clone(),
+        origin: OperatorShellTurnOrigin::System,
+        scope,
+        cycle_id: cycle_id.clone(),
+        wave_id: Some(wave_id),
+        agent_id: target_agent_id.map(str::to_string),
+        input: "autonomous cycle".to_string(),
+        output: Some(guidance.clone()),
+        status: OperatorShellTurnStatus::Succeeded,
+        created_at_ms,
+        failed_reason: None,
+    };
+    persist_operator_shell_turn_record(root, config, &trigger_turn)?;
+
+    let (summary, detail, proposals) = synthesize_head_proposals(
+        root,
+        config,
+        &shell_session,
+        &trigger_turn,
+        wave_id,
+        target_agent_id,
+        &guidance,
+        cycle_id.as_deref(),
+        true,
+    )?;
+    let head_turn_created_at_ms = now_epoch_ms()?;
+    let head_turn = OperatorShellTurnRecord {
+        turn_id: OperatorShellTurnId::new(format!(
+            "shell-turn-autonomous-head-{wave_id}-{head_turn_created_at_ms}"
+        )),
+        session_id: shell_session.session_id.clone(),
+        origin: OperatorShellTurnOrigin::Head,
+        scope,
+        cycle_id: cycle_id.clone(),
+        wave_id: Some(wave_id),
+        agent_id: target_agent_id.map(str::to_string),
+        input: guidance.clone(),
+        output: Some(match detail {
+            Some(detail) => format!("{summary}\n\n{detail}"),
+            None => summary,
+        }),
+        status: OperatorShellTurnStatus::Succeeded,
+        created_at_ms: head_turn_created_at_ms,
+        failed_reason: None,
+    };
+    persist_operator_shell_turn_record(root, config, &head_turn)?;
+
+    let mut applied = 0;
+    for proposal in proposals {
+        let proposal_id = proposal.proposal_id.as_str().to_string();
+        match apply_head_proposal_internal(
+            root,
+            config,
+            proposal.clone(),
+            "wave-autonomous-head",
+            HeadProposalResolutionKind::AutonomousApplied,
+            DirectiveOrigin::AutonomousHead,
+        ) {
+            Ok(_) => {
+                applied += 1;
+            }
+            Err(error) => {
+                let failed_at_ms = now_epoch_ms()?;
+                let mut failed =
+                    read_head_proposal(root, config, &proposal_id)?.unwrap_or(proposal);
+                failed.updated_at_ms = failed_at_ms;
+                failed.state = HeadProposalState::Rejected;
+                failed.resolution = Some(HeadProposalResolution {
+                    kind: HeadProposalResolutionKind::Rejected,
+                    resolved_by: "wave-autonomous-head".to_string(),
+                    resolved_at_ms: failed_at_ms,
+                });
+                persist_head_proposal_record(root, config, &failed)?;
+                persist_proposal_resolution_turn(
+                    root,
+                    config,
+                    &failed,
+                    OperatorShellTurnStatus::Failed,
+                    format!("autonomously apply proposal {}", failed.proposal_id),
+                    format!("autonomous apply failed: {error}"),
+                    Some(error.to_string()),
+                )?;
+            }
+        }
+    }
+    Ok(applied)
+}
+
+#[derive(Debug, Default)]
+struct MasDirectiveEffects {
+    paused_agents: HashSet<String>,
+    resumed_agents: HashSet<String>,
+    rerun_agents: HashSet<String>,
+    rebase_agents: HashSet<String>,
+    reconciliation_agents: HashSet<String>,
+    approved_agents: HashSet<String>,
+    rejected_agents: HashSet<String>,
+}
+
+fn process_pending_directives(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    running: &[RunningMasAgent],
+) -> Result<MasDirectiveEffects> {
+    let runtime_registry = RuntimeAdapterRegistry::new();
+    let directives = list_control_directives(root, config, Some(wave_id))?;
+    let deliveries = list_directive_deliveries(root, config, Some(wave_id))?
+        .into_iter()
+        .map(|delivery| (delivery.directive_id.clone(), delivery))
+        .collect::<HashMap<_, _>>();
+    let mut effects = MasDirectiveEffects::default();
+
+    for directive in directives {
+        let current_state = deliveries
+            .get(&directive.directive_id)
+            .map(|delivery| delivery.state)
+            .unwrap_or(DirectiveDeliveryState::Pending);
+        if matches!(
+            current_state,
+            DirectiveDeliveryState::Acked | DirectiveDeliveryState::Rejected
+        ) {
+            continue;
+        }
+        match directive.kind {
+            ControlDirectiveKind::SetOrchestratorMode => {
+                let _ = update_directive_delivery(
+                    root,
+                    config,
+                    &directive,
+                    DirectiveDeliveryState::Acked,
+                    "orchestrator session state already persisted",
+                )?;
+            }
+            ControlDirectiveKind::SteerPrompt => {
+                if let Some(agent_id) = directive.agent_id.as_deref() {
+                    if let Some(entry) = running.iter().find(|entry| entry.agent.id == agent_id) {
+                        let capabilities =
+                            runtime_registry.directive_capabilities(entry.selected_runtime);
+                        if capabilities.live_injection {
+                            let state = if capabilities.ack_support {
+                                DirectiveDeliveryState::Acked
+                            } else {
+                                DirectiveDeliveryState::Delivered
+                            };
+                            let _ = update_directive_delivery_with_transport(
+                                root,
+                                config,
+                                &directive,
+                                state,
+                                Some(DirectiveDeliveryMethod::LiveInjection),
+                                Some(entry.selected_runtime),
+                                capabilities.ack_support,
+                                "running agent supports live directive injection",
+                            )?;
+                        } else if capabilities.checkpoint_overlay {
+                            let sandbox_note = Path::new(entry.sandbox.path.as_str())
+                                .join(".wave")
+                                .join("steering-overlay.md");
+                            append_guidance_message(
+                                &sandbox_note,
+                                "Running agent steering",
+                                directive.message.as_deref().unwrap_or(""),
+                            )?;
+                            append_guidance_message(
+                                &agent_guidance_path(root, config, wave_id, agent_id),
+                                "Running agent steering",
+                                directive.message.as_deref().unwrap_or(""),
+                            )?;
+                            let _ = update_directive_delivery_with_transport(
+                                root,
+                                config,
+                                &directive,
+                                DirectiveDeliveryState::Delivered,
+                                Some(DirectiveDeliveryMethod::CheckpointOverlay),
+                                Some(entry.selected_runtime),
+                                capabilities.ack_support,
+                                "sandbox overlay written for safe-checkpoint delivery",
+                            )?;
+                        } else {
+                            let _ = update_directive_delivery_with_transport(
+                                root,
+                                config,
+                                &directive,
+                                DirectiveDeliveryState::Deferred,
+                                Some(DirectiveDeliveryMethod::Deferred),
+                                Some(entry.selected_runtime),
+                                capabilities.ack_support,
+                                "runtime does not support live or checkpoint directive delivery",
+                            )?;
+                        }
+                    } else {
+                        append_guidance_message(
+                            &agent_guidance_path(root, config, wave_id, agent_id),
+                            "Agent steering",
+                            directive.message.as_deref().unwrap_or(""),
+                        )?;
+                        let _ = update_directive_delivery_with_transport(
+                            root,
+                            config,
+                            &directive,
+                            DirectiveDeliveryState::Deferred,
+                            Some(DirectiveDeliveryMethod::Deferred),
+                            None,
+                            false,
+                            "agent guidance persisted for the next launch or resume",
+                        )?;
+                    }
+                } else {
+                    append_guidance_message(
+                        &wave_guidance_path(root, config, wave_id),
+                        "Wave steering",
+                        directive.message.as_deref().unwrap_or(""),
+                    )?;
+                    let _ = update_directive_delivery_with_transport(
+                        root,
+                        config,
+                        &directive,
+                        DirectiveDeliveryState::Deferred,
+                        Some(DirectiveDeliveryMethod::Deferred),
+                        None,
+                        false,
+                        "wave guidance persisted for future MAS launches",
+                    )?;
+                }
+            }
+            ControlDirectiveKind::PauseAgent => {
+                let Some(agent_id) = directive.agent_id.as_ref() else {
+                    let _ = update_directive_delivery(
+                        root,
+                        config,
+                        &directive,
+                        DirectiveDeliveryState::Rejected,
+                        "pause requires an agent target",
+                    )?;
+                    continue;
+                };
+                effects.paused_agents.insert(agent_id.clone());
+                let is_running = running.iter().any(|entry| entry.agent.id == *agent_id);
+                let state = if is_running {
+                    DirectiveDeliveryState::Delivered
+                } else {
+                    DirectiveDeliveryState::Acked
+                };
+                let _ = update_directive_delivery(
+                    root,
+                    config,
+                    &directive,
+                    state,
+                    if is_running {
+                        "pause recorded for the running agent; runtime will stop relaunching it after the current checkpoint"
+                    } else {
+                        "agent marked paused until an explicit resume arrives"
+                    },
+                )?;
+            }
+            ControlDirectiveKind::ResumeAgent => {
+                let Some(agent_id) = directive.agent_id.as_ref() else {
+                    let _ = update_directive_delivery(
+                        root,
+                        config,
+                        &directive,
+                        DirectiveDeliveryState::Rejected,
+                        "resume requires an agent target",
+                    )?;
+                    continue;
+                };
+                effects.resumed_agents.insert(agent_id.clone());
+                let _ = update_directive_delivery(
+                    root,
+                    config,
+                    &directive,
+                    DirectiveDeliveryState::Acked,
+                    "agent resume recorded for the MAS scheduler",
+                )?;
+            }
+            ControlDirectiveKind::RerunAgent => {
+                let Some(agent_id) = directive.agent_id.as_ref() else {
+                    let _ = update_directive_delivery(
+                        root,
+                        config,
+                        &directive,
+                        DirectiveDeliveryState::Rejected,
+                        "rerun requires an agent target",
+                    )?;
+                    continue;
+                };
+                effects.rerun_agents.insert(agent_id.clone());
+                let _ = update_directive_delivery(
+                    root,
+                    config,
+                    &directive,
+                    DirectiveDeliveryState::Acked,
+                    "agent rerun request recorded for the MAS scheduler",
+                )?;
+            }
+            ControlDirectiveKind::RebaseSandbox => {
+                let Some(agent_id) = directive.agent_id.as_ref() else {
+                    let _ = update_directive_delivery(
+                        root,
+                        config,
+                        &directive,
+                        DirectiveDeliveryState::Rejected,
+                        "rebase requires an agent target",
+                    )?;
+                    continue;
+                };
+                effects.rebase_agents.insert(agent_id.clone());
+                let _ = update_directive_delivery(
+                    root,
+                    config,
+                    &directive,
+                    DirectiveDeliveryState::Acked,
+                    "sandbox rebase request recorded for the MAS scheduler",
+                )?;
+            }
+            ControlDirectiveKind::ApproveMerge => {
+                let Some(agent_id) = directive.agent_id.as_ref() else {
+                    let _ = update_directive_delivery(
+                        root,
+                        config,
+                        &directive,
+                        DirectiveDeliveryState::Rejected,
+                        "merge approval requires an agent target",
+                    )?;
+                    continue;
+                };
+                effects.approved_agents.insert(agent_id.clone());
+                let _ = update_directive_delivery(
+                    root,
+                    config,
+                    &directive,
+                    DirectiveDeliveryState::Acked,
+                    "merge approval recorded for the MAS scheduler",
+                )?;
+            }
+            ControlDirectiveKind::RejectMerge => {
+                let Some(agent_id) = directive.agent_id.as_ref() else {
+                    let _ = update_directive_delivery(
+                        root,
+                        config,
+                        &directive,
+                        DirectiveDeliveryState::Rejected,
+                        "merge rejection requires an agent target",
+                    )?;
+                    continue;
+                };
+                effects.rejected_agents.insert(agent_id.clone());
+                let _ = update_directive_delivery(
+                    root,
+                    config,
+                    &directive,
+                    DirectiveDeliveryState::Acked,
+                    "merge rejection recorded for the MAS scheduler",
+                )?;
+            }
+            ControlDirectiveKind::RequestReconciliation => {
+                let Some(agent_id) = directive.agent_id.as_ref() else {
+                    let _ = update_directive_delivery(
+                        root,
+                        config,
+                        &directive,
+                        DirectiveDeliveryState::Rejected,
+                        "reconciliation requires an agent target",
+                    )?;
+                    continue;
+                };
+                effects.reconciliation_agents.insert(agent_id.clone());
+                let _ = update_directive_delivery(
+                    root,
+                    config,
+                    &directive,
+                    DirectiveDeliveryState::Acked,
+                    "reconciliation request recorded for the MAS scheduler",
+                )?;
+            }
+        }
+    }
+    Ok(effects)
+}
+
+fn current_workspace_head(workspace_root: &Path) -> Result<String> {
+    git_output(workspace_root, &["rev-parse", "HEAD"])
+}
+
+fn agent_sandbox_worktree_path(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    run_id: &str,
+    agent_id: &str,
+) -> PathBuf {
+    state_worktrees_dir(root, config).join(format!(
+        "wave-{wave_id:02}-{run_id}-agent-{}",
+        agent_id.to_ascii_lowercase()
+    ))
+}
+
+fn allocate_agent_sandbox(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    run_id: &str,
+    agent_id: &str,
+    base_integration_ref: &str,
+    allocated_at_ms: u128,
+) -> Result<AgentSandboxRecord> {
+    let sandbox_path = agent_sandbox_worktree_path(root, config, wave_id, run_id, agent_id);
+    if let Some(parent) = sandbox_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    if sandbox_path.exists() {
+        let _ = run_git(
+            root,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                sandbox_path.to_string_lossy().as_ref(),
+            ],
+        );
+        let _ = fs::remove_dir_all(&sandbox_path);
+    }
+    run_git(
+        root,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            sandbox_path.to_string_lossy().as_ref(),
+            base_integration_ref,
+        ],
+    )?;
+    let sandbox = AgentSandboxRecord {
+        sandbox_id: AgentSandboxId::new(format!(
+            "sandbox-wave-{wave_id:02}-{}-{}",
+            agent_id.to_ascii_lowercase(),
+            allocated_at_ms
+        )),
+        wave_id,
+        task_id: task_id_for_agent(wave_id, agent_id),
+        agent_id: agent_id.to_string(),
+        path: sandbox_path.to_string_lossy().into_owned(),
+        base_integration_ref: Some(base_integration_ref.to_string()),
+        allocated_at_ms,
+        released_at_ms: None,
+        detail: Some("isolated MAS agent sandbox".to_string()),
+    };
+    write_agent_sandbox(root, config, &sandbox)?;
+    Ok(sandbox)
+}
+
+fn release_agent_sandbox(
+    root: &Path,
+    config: &ProjectConfig,
+    sandbox: &AgentSandboxRecord,
+    detail: impl Into<String>,
+) -> Result<AgentSandboxRecord> {
+    let sandbox_path = Path::new(sandbox.path.as_str());
+    if git_worktree_registered(root, sandbox_path)? {
+        run_git(
+            root,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                sandbox_path.to_string_lossy().as_ref(),
+            ],
+        )?;
+    }
+    if sandbox_path.exists() {
+        fs::remove_dir_all(sandbox_path)
+            .with_context(|| format!("failed to remove {}", sandbox_path.display()))?;
+    }
+    let released = AgentSandboxRecord {
+        released_at_ms: Some(now_epoch_ms()?),
+        detail: Some(detail.into()),
+        ..sandbox.clone()
+    };
+    write_agent_sandbox(root, config, &released)?;
+    Ok(released)
+}
+
+fn read_agent_base_prompt(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    agent_record: &AgentRunRecord,
+) -> Result<String> {
+    let base_prompt = fs::read_to_string(&agent_record.prompt_path)
+        .with_context(|| format!("failed to read {}", agent_record.prompt_path.display()))?;
+    let mut guidance_blocks = Vec::new();
+    if let Some(wave_guidance) = read_optional_text(&wave_guidance_path(root, config, wave_id))? {
+        if !wave_guidance.trim().is_empty() {
+            guidance_blocks.push(format!("### Wave guidance\n{}", wave_guidance.trim()));
+        }
+    }
+    if let Some(agent_guidance) =
+        read_optional_text(&agent_guidance_path(root, config, wave_id, agent_id))?
+    {
+        if !agent_guidance.trim().is_empty() {
+            guidance_blocks.push(format!("### Agent guidance\n{}", agent_guidance.trim()));
+        }
+    }
+    Ok(append_prompt_guidance(base_prompt, &guidance_blocks))
+}
+
+fn ownership_overlaps(left: &WaveAgent, right: &WaveAgent) -> bool {
+    wave_spec::agent_ownership_overlaps(left, right)
+}
+
+fn exclusive_resources_overlap(left: &WaveAgent, right: &WaveAgent) -> bool {
+    left.exclusive_resources.iter().any(|resource| {
+        right
+            .exclusive_resources
+            .iter()
+            .any(|other| other == resource)
+    })
+}
+
+fn agent_parallelism_blocked(candidate: &WaveAgent, running: &[RunningMasAgent]) -> bool {
+    running.iter().any(|running_agent| {
+        let active = &running_agent.agent;
+        matches!(
+            candidate.parallel_safety,
+            wave_spec::ParallelSafetyClass::Serialized
+        ) || matches!(
+            active.parallel_safety,
+            wave_spec::ParallelSafetyClass::Serialized
+        ) || exclusive_resources_overlap(candidate, active)
+            || ownership_overlaps(candidate, active)
+    })
+}
+
+fn load_invalidated_agents(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+) -> Result<HashSet<String>> {
+    Ok(list_invalidations(root, config, Some(wave_id))?
+        .into_iter()
+        .flat_map(|record| {
+            record
+                .invalidated_task_ids
+                .into_iter()
+                .filter_map(|task_id| task_id_agent_id(&task_id))
+        })
+        .collect())
+}
+
+fn task_id_agent_id(task_id: &TaskId) -> Option<String> {
+    task_id
+        .as_str()
+        .rsplit_once(':')
+        .map(|(_, agent_id)| agent_id.to_string())
+}
+
+fn reconcile_agent_control_state(
+    record: &mut WaveRunRecord,
+    ordered_agents: &[&WaveAgent],
+    execution_index_set: &BTreeSet<usize>,
+    pending_indices: &mut BTreeSet<usize>,
+    completed_agents: &mut HashSet<String>,
+    invalidated_agents: &mut HashSet<String>,
+    paused_agents: &mut HashSet<String>,
+    blocked_agents: &mut HashSet<String>,
+    effects: &MasDirectiveEffects,
+) {
+    for agent_id in &effects.paused_agents {
+        paused_agents.insert(agent_id.clone());
+    }
+    for agent_id in &effects.resumed_agents {
+        paused_agents.remove(agent_id);
+    }
+    for agent_id in effects
+        .rerun_agents
+        .iter()
+        .chain(effects.rebase_agents.iter())
+        .chain(effects.reconciliation_agents.iter())
+        .chain(effects.approved_agents.iter())
+    {
+        if let Some(index) = ordered_agents
+            .iter()
+            .position(|agent| agent.id == *agent_id)
+        {
+            if !execution_index_set.contains(&index) {
+                continue;
+            }
+            pending_indices.insert(index);
+            completed_agents.remove(agent_id);
+            invalidated_agents.remove(agent_id);
+            blocked_agents.remove(agent_id);
+            record.agents[index].status = WaveRunStatus::Planned;
+            record.agents[index].error = None;
+            record.agents[index].exit_code = None;
+        }
+    }
+    for agent_id in &effects.rejected_agents {
+        blocked_agents.insert(agent_id.clone());
+    }
+}
+
+fn barrier_satisfied_for_agent(
+    candidate: &WaveAgent,
+    completed_agents: &HashSet<String>,
+    running: &[RunningMasAgent],
+    compiled_mas_dependencies: &BTreeMap<String, wave_spec::CompiledMasAgentDependencies>,
+) -> bool {
+    let dependencies_ready = compiled_mas_dependencies
+        .get(&candidate.id)
+        .iter()
+        .flat_map(|compiled| compiled.dependencies.iter())
+        .all(|dependency| completed_agents.contains(&dependency.upstream_agent_id));
+    if !dependencies_ready {
+        return false;
+    }
+    if compiled_mas_dependencies
+        .get(&candidate.id)
+        .is_some_and(|compiled| compiled.has_unresolved_artifact_reads())
+    {
+        return false;
+    }
+    match candidate.barrier_class {
+        wave_spec::BarrierClass::Independent
+        | wave_spec::BarrierClass::MergeAfter
+        | wave_spec::BarrierClass::ReportOnly
+        | wave_spec::BarrierClass::IntegrationBarrier => true,
+        wave_spec::BarrierClass::ClosureBarrier => running.is_empty(),
+    }
+}
+
+fn ready_multi_agent_indices(
+    wave: &WaveDocument,
+    ordered_agents: &[&WaveAgent],
+    execution_indices: &BTreeSet<usize>,
+    completed_agents: &HashSet<String>,
+    invalidated_agents: &HashSet<String>,
+    paused_agents: &HashSet<String>,
+    running: &[RunningMasAgent],
+) -> Vec<usize> {
+    let compiled_mas_dependencies = wave_spec::compiled_multi_agent_dependencies(wave);
+    let implementation_limit = wave
+        .metadata
+        .concurrency_budget
+        .max_concurrent_implementation_agents
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(usize::MAX);
+    let report_only_limit = wave
+        .metadata
+        .concurrency_budget
+        .max_concurrent_report_only_agents
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(usize::MAX);
+    let running_implementation = running
+        .iter()
+        .filter(|entry| {
+            !matches!(
+                entry.agent.barrier_class,
+                wave_spec::BarrierClass::ReportOnly
+            )
+        })
+        .count();
+    let running_report_only = running
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.agent.barrier_class,
+                wave_spec::BarrierClass::ReportOnly
+            )
+        })
+        .count();
+
+    execution_indices
+        .iter()
+        .copied()
+        .filter(|index| {
+            let candidate = ordered_agents[*index];
+            !completed_agents.contains(&candidate.id)
+                && !invalidated_agents.contains(&candidate.id)
+                && !paused_agents.contains(&candidate.id)
+                && barrier_satisfied_for_agent(
+                    candidate,
+                    completed_agents,
+                    running,
+                    &compiled_mas_dependencies,
+                )
+                && !agent_parallelism_blocked(candidate, running)
+                && if matches!(candidate.barrier_class, wave_spec::BarrierClass::ReportOnly) {
+                    running_report_only < report_only_limit
+                } else {
+                    running_implementation < implementation_limit
+                }
+        })
+        .collect()
+}
+
+fn mark_multi_agent_invalidation_if_needed(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    source_agent: &WaveAgent,
+    running: &[RunningMasAgent],
+    current_integration_ref: &str,
+) -> Result<Vec<InvalidationRecord>> {
+    let created_at_ms = now_epoch_ms()?;
+    let mut records = Vec::new();
+    for entry in running {
+        let downstream = &entry.agent;
+        if downstream.id == source_agent.id {
+            continue;
+        }
+        let reads_from_source = downstream.reads_artifacts_from.iter().any(|artifact| {
+            source_agent
+                .writes_artifacts
+                .iter()
+                .any(|produced| produced == artifact)
+        });
+        let depends_on_source = downstream
+            .depends_on_agents
+            .iter()
+            .any(|dependency| dependency == &source_agent.id);
+        let rebased = entry
+            .sandbox
+            .base_integration_ref
+            .as_deref()
+            .map(|base| base != current_integration_ref)
+            .unwrap_or(false);
+        if !(reads_from_source || depends_on_source) || !rebased {
+            continue;
+        }
+        let record = InvalidationRecord {
+            invalidation_id: InvalidationId::new(format!(
+                "invalidation-wave-{wave_id:02}-{}-{}",
+                source_agent.id.to_ascii_lowercase(),
+                downstream.id.to_ascii_lowercase()
+            )),
+            wave_id,
+            source_task_id: task_id_for_agent(wave_id, source_agent.id.as_str()),
+            invalidated_task_ids: vec![task_id_for_agent(wave_id, downstream.id.as_str())],
+            reasons: vec![format!(
+                "{} merged new accepted state while {} was still based on {}",
+                source_agent.id, downstream.id, entry.base_integration_ref
+            )],
+            created_at_ms,
+        };
+        write_invalidation(root, config, &record)?;
+        records.push(record);
+    }
+    Ok(records)
+}
+
+fn merge_agent_sandbox_into_integration(
+    root: &Path,
+    config: &ProjectConfig,
+    run: &WaveRunRecord,
+    agent: &WaveAgent,
+    sandbox: &AgentSandboxRecord,
+    integration_root: &Path,
+) -> Result<MergeResultRecord> {
+    let created_at_ms = now_epoch_ms()?;
+    let merge_intent = MergeIntentRecord {
+        merge_intent_id: MergeIntentId::new(format!(
+            "merge-intent-wave-{:02}-{}-{}",
+            run.wave_id,
+            agent.id.to_ascii_lowercase(),
+            created_at_ms
+        )),
+        wave_id: run.wave_id,
+        task_id: task_id_for_agent(run.wave_id, agent.id.as_str()),
+        sandbox_id: sandbox.sandbox_id.clone(),
+        ownership_paths: agent.file_ownership.clone(),
+        produced_artifacts: agent.writes_artifacts.clone(),
+        invalidation_hints: agent.reads_artifacts_from.clone(),
+        created_at_ms,
+        detail: Some("queued for integration merge".to_string()),
+    };
+    write_merge_intent(root, config, &merge_intent)?;
+
+    let candidate_ref = create_workspace_snapshot_commit(
+        root,
+        Path::new(sandbox.path.as_str()),
+        config,
+        run.run_id.as_str(),
+        agent.id.as_str(),
+    )?;
+    let output = Command::new("git")
+        .current_dir(integration_root)
+        .args(["merge", "--no-commit", "--no-ff", candidate_ref.as_str()])
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to run git merge for agent {} in {}",
+                agent.id,
+                integration_root.display()
+            )
+        })?;
+    let conflict_paths = git_output(
+        integration_root,
+        &["diff", "--name-only", "--diff-filter=U"],
+    )
+    .unwrap_or_default()
+    .lines()
+    .map(str::trim)
+    .filter(|line| !line.is_empty())
+    .map(ToOwned::to_owned)
+    .collect::<Vec<_>>();
+    let applied_at_ms = now_epoch_ms()?;
+    if output.status.success() {
+        let staged = Command::new("git")
+            .current_dir(integration_root)
+            .args(["diff", "--cached", "--quiet"])
+            .status()
+            .context("failed to inspect staged merge result")?;
+        if !staged.success() {
+            run_git(
+                integration_root,
+                &[
+                    "commit",
+                    "-m",
+                    &format!("wave {} merge {}", run.wave_id, agent.id),
+                ],
+            )?;
+        }
+        return Ok(MergeResultRecord {
+            merge_result_id: MergeResultId::new(format!(
+                "merge-result-wave-{:02}-{}-{}",
+                run.wave_id,
+                agent.id.to_ascii_lowercase(),
+                applied_at_ms
+            )),
+            merge_intent_id: merge_intent.merge_intent_id,
+            wave_id: run.wave_id,
+            task_id: task_id_for_agent(run.wave_id, agent.id.as_str()),
+            disposition: MergeDisposition::Accepted,
+            conflict_paths: Vec::new(),
+            applied_at_ms,
+            detail: Some("candidate accepted into integration head".to_string()),
+        });
+    }
+
+    let _ = run_git(integration_root, &["merge", "--abort"]);
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Ok(MergeResultRecord {
+        merge_result_id: MergeResultId::new(format!(
+            "merge-result-wave-{:02}-{}-{}",
+            run.wave_id,
+            agent.id.to_ascii_lowercase(),
+            applied_at_ms
+        )),
+        merge_intent_id: merge_intent.merge_intent_id,
+        wave_id: run.wave_id,
+        task_id: task_id_for_agent(run.wave_id, agent.id.as_str()),
+        disposition: if conflict_paths.is_empty() {
+            MergeDisposition::Rejected
+        } else {
+            MergeDisposition::Conflicted
+        },
+        conflict_paths,
+        applied_at_ms,
+        detail: Some(if detail.is_empty() {
+            "candidate rejected during integration merge".to_string()
+        } else {
+            detail
+        }),
+    })
+}
+
+fn launch_multi_agent_wave_execution(
+    root: &Path,
+    config: &ProjectConfig,
+    wave: &WaveDocument,
+    bundle: &DraftBundle,
+    preflight_path: &Path,
+    state_path: &Path,
+    trace_path: &Path,
+    codex_home: &Path,
+    claim: &WaveClaimRecord,
+    record: &mut WaveRunRecord,
+    ordered_agents: &[&WaveAgent],
+    execution_indices: &[usize],
+) -> Result<LaunchReport> {
+    let lease_timing = LeaseTiming::default();
+    if let Some(plan) = active_recovery_plan_for_wave(root, config, record.wave_id)? {
+        if plan.run_id != record.run_id {
+            let _ = resolve_active_recovery_plan_for_wave(
+                root,
+                config,
+                record.wave_id,
+                format!("superseded by rerun {}", record.run_id),
+            )?;
+        }
+    }
+    let execution_root = PathBuf::from(
+        record
+            .worktree
+            .as_ref()
+            .context("missing worktree for MAS launch")?
+            .path
+            .clone(),
+    );
+    let execution_index_set = execution_indices.iter().copied().collect::<BTreeSet<_>>();
+    let mut completed_agents = record
+        .agents
+        .iter()
+        .filter(|agent| agent.status == WaveRunStatus::Succeeded)
+        .map(|agent| agent.id.clone())
+        .collect::<HashSet<_>>();
+    let mut pending_indices = execution_index_set.clone();
+    pending_indices.retain(|index| !completed_agents.contains(&ordered_agents[*index].id));
+    let mut invalidated_agents = load_invalidated_agents(root, config, record.wave_id)?;
+    let mut paused_agents = HashSet::<String>::new();
+    let mut blocked_agents = HashSet::<String>::new();
+    let mut running = Vec::<RunningMasAgent>::new();
+    let mut control_wait_reason = None::<String>;
+
+    while !pending_indices.is_empty() || !running.is_empty() {
+        let _ = maybe_run_autonomous_head_cycle(
+            root,
+            config,
+            record.wave_id,
+            &running,
+            &pending_indices,
+            ordered_agents,
+        )?;
+        let effects = process_pending_directives(root, config, record.wave_id, &running)?;
+        reconcile_agent_control_state(
+            record,
+            ordered_agents,
+            &execution_index_set,
+            &mut pending_indices,
+            &mut completed_agents,
+            &mut invalidated_agents,
+            &mut paused_agents,
+            &mut blocked_agents,
+            &effects,
+        );
+        let mut launched_any = false;
+        loop {
+            let ready = ready_multi_agent_indices(
+                wave,
+                ordered_agents,
+                &pending_indices,
+                &completed_agents,
+                &invalidated_agents,
+                &paused_agents,
+                &running,
+            );
+            if ready.is_empty() {
+                break;
+            }
+            let index = ready[0];
+            let agent = ordered_agents[index];
+            let base_prompt = match read_agent_base_prompt(
+                root,
+                config,
+                record.wave_id,
+                agent.id.as_str(),
+                &record.agents[index],
+            ) {
+                Ok(prompt) => prompt,
+                Err(error) => {
+                    return finish_failed_launch(
+                        root,
+                        config,
+                        bundle,
+                        preflight_path,
+                        state_path,
+                        trace_path,
+                        record,
+                        agent,
+                        index,
+                        error,
+                    );
+                }
+            };
+            let base_integration_ref = current_workspace_head(&execution_root)?;
+            let sandbox = allocate_agent_sandbox(
+                root,
+                config,
+                record.wave_id,
+                &record.run_id,
+                agent.id.as_str(),
+                &base_integration_ref,
+                now_epoch_ms()?,
+            )?;
+            let runtime_registry = RuntimeAdapterRegistry::new();
+            let runtime_plan = match resolve_runtime_plan(
+                root,
+                Path::new(sandbox.path.as_str()),
+                record,
+                agent,
+                &record.agents[index],
+                &base_prompt,
+                &runtime_registry,
+            ) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    return finish_failed_launch(
+                        root,
+                        config,
+                        bundle,
+                        preflight_path,
+                        state_path,
+                        trace_path,
+                        record,
+                        agent,
+                        index,
+                        error,
+                    );
+                }
+            };
+            record.agents[index].runtime = Some(runtime_plan.runtime.clone());
+            record.agents[index].runtime_detail_path =
+                artifact_path_from_runtime(&runtime_plan.runtime, "runtime_detail")
+                    .map(PathBuf::from);
+            write_run_record(state_path, record)?;
+            append_attempt_event(
+                root,
+                config,
+                record,
+                agent,
+                AttemptState::Planned,
+                record.created_at_ms,
+                None,
+                Some(runtime_plan.runtime.clone()),
+            )?;
+            let lease = match acquire_task_lease_for_agent(
+                root,
+                config,
+                state_path,
+                record,
+                agent,
+                claim,
+                lease_timing,
+            ) {
+                Ok(lease) => lease,
+                Err(error) => {
+                    return finish_failed_launch(
+                        root,
+                        config,
+                        bundle,
+                        preflight_path,
+                        state_path,
+                        trace_path,
+                        record,
+                        agent,
+                        index,
+                        error,
+                    );
+                }
+            };
+            record.agents[index].status = WaveRunStatus::Running;
+            if record.started_at_ms.is_none() {
+                record.status = WaveRunStatus::Running;
+                record.started_at_ms = Some(now_epoch_ms()?);
+            }
+            record.scheduling = Some(publish_scheduling_record(
+                root,
+                config,
+                WaveSchedulingRecord {
+                    wave_id: record.wave_id,
+                    phase: WaveExecutionPhase::Implementation,
+                    priority: WaveSchedulerPriority::Implementation,
+                    state: WaveSchedulingState::Running,
+                    fairness_rank: record
+                        .scheduling
+                        .as_ref()
+                        .map(|entry| entry.fairness_rank)
+                        .filter(|rank| *rank > 0)
+                        .unwrap_or(1),
+                    waiting_since_ms: record
+                        .scheduling
+                        .as_ref()
+                        .and_then(|entry| entry.waiting_since_ms),
+                    protected_closure_capacity: false,
+                    preemptible: true,
+                    last_decision: Some(format!(
+                        "running {} in isolated MAS sandbox {}",
+                        agent.id,
+                        sandbox.sandbox_id.as_str()
+                    )),
+                    updated_at_ms: now_epoch_ms()?,
+                },
+                &record.run_id,
+            )?);
+            write_run_record(state_path, record)?;
+            append_attempt_event(
+                root,
+                config,
+                record,
+                agent,
+                AttemptState::Running,
+                record.created_at_ms,
+                record.started_at_ms,
+                Some(runtime_plan.runtime.clone()),
+            )?;
+            let thread_root = root.to_path_buf();
+            let thread_config = config.clone();
+            let thread_run = record.clone();
+            let thread_agent = agent.clone();
+            let thread_record = record.agents[index].clone();
+            let thread_plan = runtime_plan.clone();
+            let thread_codex_home = codex_home.to_path_buf();
+            let thread_lease = lease.clone();
+            let join = thread::spawn(move || {
+                let registry = RuntimeAdapterRegistry::new();
+                execute_agent(
+                    &thread_root,
+                    &thread_config,
+                    &thread_run,
+                    &thread_agent,
+                    &thread_record,
+                    &thread_plan,
+                    &thread_codex_home,
+                    &thread_lease,
+                    lease_timing,
+                    &registry,
+                )
+            });
+            running.push(RunningMasAgent {
+                index,
+                agent: agent.clone(),
+                sandbox,
+                lease,
+                selected_runtime: runtime_plan.runtime.selected_runtime,
+                base_integration_ref,
+                join,
+            });
+            pending_indices.remove(&index);
+            launched_any = true;
+        }
+
+        if running.is_empty() {
+            let blocked_agents = pending_indices
+                .iter()
+                .map(|index| ordered_agents[*index].id.clone())
+                .collect::<Vec<_>>();
+            control_wait_reason = Some(format!(
+                "MAS wave is waiting on control or recovery actions for: {}",
+                blocked_agents.join(", ")
+            ));
+            break;
+        }
+        if !launched_any {
+            while running.iter().all(|entry| !entry.join.is_finished()) {
+                thread::sleep(Duration::from_millis(lease_timing.poll_interval_ms));
+            }
+        }
+        let finished_index = running
+            .iter()
+            .position(|entry| entry.join.is_finished())
+            .context("MAS runtime lost track of running agents")?;
+        let running_agent = running.swap_remove(finished_index);
+        let outcome = running_agent.join.join().map_err(|_| {
+            anyhow::anyhow!(format!("agent {} thread panicked", running_agent.agent.id))
+        })?;
+        let agent_record = match outcome {
+            Ok(executed) => match persist_agent_result_envelope(
+                root,
+                config,
+                record,
+                &running_agent.agent,
+                &executed.record,
+            ) {
+                Ok(agent_record) => agent_record,
+                Err(error) => {
+                    return finish_failed_launch(
+                        root,
+                        config,
+                        bundle,
+                        preflight_path,
+                        state_path,
+                        trace_path,
+                        record,
+                        &running_agent.agent,
+                        running_agent.index,
+                        error,
+                    );
+                }
+            },
+            Err(error) => {
+                return finish_failed_launch(
+                    root,
+                    config,
+                    bundle,
+                    preflight_path,
+                    state_path,
+                    trace_path,
+                    record,
+                    &running_agent.agent,
+                    running_agent.index,
+                    error,
+                );
+            }
+        };
+
+        let mut final_agent_record = agent_record.clone();
+        if final_agent_record.status == WaveRunStatus::Succeeded {
+            let merge_result = merge_agent_sandbox_into_integration(
+                root,
+                config,
+                record,
+                &running_agent.agent,
+                &running_agent.sandbox,
+                &execution_root,
+            )?;
+            write_merge_result(root, config, &merge_result)?;
+            match merge_result.disposition {
+                MergeDisposition::Accepted => {
+                    let _ = release_agent_sandbox(
+                        root,
+                        config,
+                        &running_agent.sandbox,
+                        format!("{} merged into integration head", running_agent.agent.id),
+                    )?;
+                    close_task_lease(
+                        root,
+                        config,
+                        &running_agent.lease,
+                        TaskLeaseState::Released,
+                        format!("agent {} completed and merged", running_agent.agent.id),
+                    )?;
+                    completed_agents.insert(running_agent.agent.id.clone());
+                    let integration_ref = current_workspace_head(&execution_root)?;
+                    let new_invalidations = mark_multi_agent_invalidation_if_needed(
+                        root,
+                        config,
+                        record.wave_id,
+                        &running_agent.agent,
+                        &running,
+                        &integration_ref,
+                    )?;
+                    for record in new_invalidations {
+                        for task_id in record.invalidated_task_ids {
+                            if let Some(agent_id) = task_id_agent_id(&task_id) {
+                                invalidated_agents.insert(agent_id);
+                            }
+                        }
+                    }
+                }
+                MergeDisposition::Conflicted
+                | MergeDisposition::Rejected
+                | MergeDisposition::Pending => {
+                    close_task_lease(
+                        root,
+                        config,
+                        &running_agent.lease,
+                        TaskLeaseState::Revoked,
+                        format!("agent {} requires reconciliation", running_agent.agent.id),
+                    )?;
+                    final_agent_record.status = WaveRunStatus::Failed;
+                    final_agent_record.error = merge_result.detail.clone().or_else(|| {
+                        Some(format!(
+                            "merge {} requires reconciliation",
+                            running_agent.agent.id
+                        ))
+                    });
+                    blocked_agents.insert(running_agent.agent.id.clone());
+                    if matches!(merge_result.disposition, MergeDisposition::Conflicted) {
+                        invalidated_agents.insert(running_agent.agent.id.clone());
+                    }
+                }
+            }
+        } else {
+            close_task_lease(
+                root,
+                config,
+                &running_agent.lease,
+                TaskLeaseState::Revoked,
+                format!("agent {} failed", running_agent.agent.id),
+            )?;
+        }
+        record.agents[running_agent.index] = final_agent_record.clone();
+        let effects = process_pending_directives(root, config, record.wave_id, &running)?;
+        reconcile_agent_control_state(
+            record,
+            ordered_agents,
+            &execution_index_set,
+            &mut pending_indices,
+            &mut completed_agents,
+            &mut invalidated_agents,
+            &mut paused_agents,
+            &mut blocked_agents,
+            &effects,
+        );
+        append_attempt_event(
+            root,
+            config,
+            record,
+            &running_agent.agent,
+            attempt_state_from_agent_status(final_agent_record.status),
+            record.created_at_ms,
+            record.started_at_ms,
+            final_agent_record.runtime.clone(),
+        )?;
+        write_run_record(state_path, record)?;
+    }
+
+    let unresolved_agents = ordered_agents
+        .iter()
+        .enumerate()
+        .filter_map(|(index, agent)| {
+            if completed_agents.contains(&agent.id) {
+                return None;
+            }
+            if !execution_index_set.contains(&index) {
+                return None;
+            }
+            let status = record.agents[index].status;
+            if status == WaveRunStatus::Succeeded {
+                None
+            } else {
+                Some(agent.id.clone())
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if !unresolved_agents.is_empty() {
+        let recovery_created_at_ms = now_epoch_ms()?;
+        record.status = WaveRunStatus::Failed;
+        record.error = Some(control_wait_reason.unwrap_or_else(|| {
+            format!(
+                "MAS wave requires recovery or approval for: {}",
+                unresolved_agents.join(", ")
+            )
+        }));
+        record.completed_at_ms = Some(now_epoch_ms()?);
+        if let Some(worktree) = record.worktree.clone() {
+            record.worktree = Some(release_wave_worktree(
+                root,
+                config,
+                &worktree,
+                &record.run_id,
+                "wave ended with MAS recovery-required state; worktree released",
+            )?);
+        }
+        record.scheduling = Some(publish_scheduling_record(
+            root,
+            config,
+            WaveSchedulingRecord {
+                wave_id: record.wave_id,
+                phase: WaveExecutionPhase::Implementation,
+                priority: WaveSchedulerPriority::Implementation,
+                state: WaveSchedulingState::Released,
+                fairness_rank: record
+                    .scheduling
+                    .as_ref()
+                    .map(|entry| entry.fairness_rank)
+                    .filter(|rank| *rank > 0)
+                    .unwrap_or(1),
+                waiting_since_ms: record
+                    .scheduling
+                    .as_ref()
+                    .and_then(|entry| entry.waiting_since_ms),
+                protected_closure_capacity: false,
+                preemptible: false,
+                last_decision: Some(record.error.clone().unwrap_or_default()),
+                updated_at_ms: now_epoch_ms()?,
+            },
+            &record.run_id,
+        )?);
+        write_run_record(state_path, record)?;
+        let recovery_plan = build_recovery_plan_for_wave(
+            record.wave_id,
+            &record.run_id,
+            record,
+            &list_merge_results(root, config, Some(record.wave_id))?,
+            &list_invalidations(root, config, Some(record.wave_id))?,
+            &completed_agents,
+            &unresolved_agents,
+            recovery_created_at_ms,
+        );
+        persist_recovery_plan_record(root, config, &recovery_plan)?;
+        write_trace_bundle(trace_path, record)?;
+        release_wave_claim(
+            root,
+            config,
+            claim,
+            "wave entered MAS recovery-required state",
+        )?;
+        return Ok(LaunchReport {
+            run_id: record.run_id.clone(),
+            wave_id: record.wave_id,
+            status: record.status,
+            state_path: state_path.to_path_buf(),
+            trace_path: trace_path.to_path_buf(),
+            bundle_dir: bundle.bundle_dir.clone(),
+            preflight_path: preflight_path.to_path_buf(),
+        });
+    }
+
+    if let Some(worktree) = record.worktree.clone() {
+        record.worktree = Some(release_wave_worktree(
+            root,
+            config,
+            &worktree,
+            &record.run_id,
+            "wave completed; worktree released",
+        )?);
+    }
+    record.scheduling = Some(publish_scheduling_record(
+        root,
+        config,
+        WaveSchedulingRecord {
+            wave_id: record.wave_id,
+            phase: WaveExecutionPhase::Closure,
+            priority: WaveSchedulerPriority::Closure,
+            state: WaveSchedulingState::Released,
+            fairness_rank: record
+                .scheduling
+                .as_ref()
+                .map(|entry| entry.fairness_rank)
+                .filter(|rank| *rank > 0)
+                .unwrap_or(1),
+            waiting_since_ms: record
+                .scheduling
+                .as_ref()
+                .and_then(|entry| entry.waiting_since_ms),
+            protected_closure_capacity: false,
+            preemptible: false,
+            last_decision: Some("MAS wave completed and released".to_string()),
+            updated_at_ms: now_epoch_ms()?,
+        },
+        &record.run_id,
+    )?);
+    release_wave_claim(root, config, claim, "wave completed; claim released")?;
+    record.status = WaveRunStatus::Succeeded;
+    record.completed_at_ms = Some(now_epoch_ms()?);
+    write_run_record(state_path, record)?;
+    let _ = resolve_active_recovery_plan_for_wave(
+        root,
+        config,
+        record.wave_id,
+        format!("wave {} completed successfully", record.wave_id),
+    )?;
+    write_trace_bundle(trace_path, record)?;
+    Ok(LaunchReport {
+        run_id: record.run_id.clone(),
+        wave_id: record.wave_id,
+        status: record.status,
+        state_path: state_path.to_path_buf(),
+        trace_path: trace_path.to_path_buf(),
+        bundle_dir: bundle.bundle_dir.clone(),
+        preflight_path: preflight_path.to_path_buf(),
+    })
 }
 
 fn rerun_scope_label(scope: RerunScope) -> &'static str {
@@ -1556,7 +6002,8 @@ pub fn launch_wave(
     } else {
         refresh_planning_status(root, config, waves)?
     };
-    let wave = select_wave(waves, &planning_status, options.wave_id)?;
+    let design_states = load_wave_launch_design_states(root, config, waves)?;
+    let wave = select_launchable_wave(waves, &planning_status, options.wave_id, &design_states)?;
     let rerun_intent = requested_rerun_intent(root, config, wave.metadata.id)?;
     let rerun_scope = rerun_intent
         .as_ref()
@@ -1564,7 +6011,16 @@ pub fn launch_wave(
         .unwrap_or(RerunScope::Full);
     let prior_run = load_latest_runs(root, config)?.remove(&wave.metadata.id);
     let ordered_agents = ordered_agents(wave);
-    let execution_indices = planned_execution_indices(&ordered_agents, prior_run.as_ref(), rerun_scope)?;
+    let execution_indices = planned_execution_indices(
+        &ordered_agents,
+        prior_run.as_ref(),
+        rerun_scope,
+        wave.metadata.id,
+        design_states
+            .get(&wave.metadata.id)
+            .map(|state| state.selectively_invalidated_task_ids.as_slice())
+            .unwrap_or(&[]),
+    )?;
     let run_id = format!("wave-{:02}-{}", wave.metadata.id, now_epoch_ms()?);
     let bundle = compile_wave_bundle(root, config, wave, &run_id)?;
     let mut agent_records = bundle
@@ -1794,6 +6250,23 @@ pub fn launch_wave(
             "launch aborted while clearing rerun intent",
         )?;
         return Err(error);
+    }
+
+    if wave.is_multi_agent() {
+        return launch_multi_agent_wave_execution(
+            root,
+            config,
+            wave,
+            &bundle,
+            &preflight_path,
+            &state_path,
+            &trace_path,
+            &codex_home,
+            &claim,
+            &mut record,
+            &ordered_agents,
+            &execution_indices,
+        );
     }
 
     let lease_timing = LeaseTiming::default();
@@ -2397,7 +6870,11 @@ pub fn autonomous_launch(
         }
     }
     if launched.is_empty() {
-        bail!("{}", queue_unavailable_reason(&status));
+        let design_states = load_wave_launch_design_states(root, config, waves)?;
+        bail!(
+            "{}",
+            queue_unavailable_reason_with_design(&status, &design_states)
+        );
     }
     Ok(launched)
 }
@@ -2413,6 +6890,21 @@ fn next_claimable_wave_selection(status: &PlanningStatus) -> Option<AutonomousWa
         .next()
 }
 
+fn next_claimable_wave_selection_with_design(
+    status: &PlanningStatus,
+    design_states: &HashMap<u32, WaveLaunchDesignState>,
+) -> Option<AutonomousWaveSelection> {
+    fifo_ordered_claimable_implementation_waves(status, now_epoch_ms().unwrap_or_default())
+        .into_iter()
+        .find(|candidate| {
+            !design_states
+                .get(&candidate.selection.wave_id)
+                .map(WaveLaunchDesignState::is_blocked)
+                .unwrap_or(false)
+        })
+        .map(|candidate| candidate.selection)
+}
+
 fn next_parallel_wave_batch(
     root: &Path,
     config: &ProjectConfig,
@@ -2425,10 +6917,18 @@ fn next_parallel_wave_batch(
     }
     let now_ms = now_epoch_ms()?;
     let effective_batch_size = effective_parallel_batch_size(status, max_batch_size);
+    let design_states = load_wave_launch_design_states(root, config, waves)?;
     let fairness_candidates = fifo_ordered_claimable_implementation_waves(status, now_ms);
     let mut selected = Vec::new();
     let mut waiting_updates = Vec::new();
     for (index, ordered) in fairness_candidates.iter().enumerate() {
+        if design_states
+            .get(&ordered.selection.wave_id)
+            .map(WaveLaunchDesignState::is_blocked)
+            .unwrap_or(false)
+        {
+            continue;
+        }
         let Some(entry) = status
             .waves
             .iter()
@@ -2654,6 +7154,44 @@ fn queue_unavailable_reason(status: &PlanningStatus) -> String {
     )
 }
 
+fn queue_unavailable_reason_with_design(
+    status: &PlanningStatus,
+    design_states: &HashMap<u32, WaveLaunchDesignState>,
+) -> String {
+    if let Some(selection) = next_claimable_wave_selection_with_design(status, design_states) {
+        return format!(
+            "wave {} is ready but could not be claimed: {}",
+            selection.wave_id,
+            queue_entry_reason_from_blockers(&selection.blocked_by)
+        );
+    }
+
+    let design_blocked_wave_ids = status
+        .queue
+        .claimable_wave_ids
+        .iter()
+        .copied()
+        .filter(|wave_id| {
+            design_states
+                .get(wave_id)
+                .map(WaveLaunchDesignState::is_blocked)
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    if !design_blocked_wave_ids.is_empty() {
+        return format!(
+            "design authority blocks launchable waves: {}",
+            design_blocked_wave_ids
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    queue_unavailable_reason(status)
+}
+
 fn refresh_planning_status(
     root: &Path,
     config: &ProjectConfig,
@@ -2763,6 +7301,23 @@ fn control_event_log(root: &Path, config: &ProjectConfig) -> ControlEventLog {
             .authority
             .state_events_control_dir,
     )
+}
+
+fn control_mutation_lock_path(root: &Path, config: &ProjectConfig) -> PathBuf {
+    config
+        .resolved_paths(root)
+        .authority
+        .state_derived_dir
+        .join("control")
+        .join("mutation.lock")
+}
+
+fn with_control_mutation<T>(
+    root: &Path,
+    config: &ProjectConfig,
+    f: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    wave_events::with_scheduler_mutation_lock(control_mutation_lock_path(root, config), f)
 }
 
 fn scheduler_event_log(root: &Path, config: &ProjectConfig) -> SchedulerEventLog {
@@ -4844,6 +9399,11 @@ fn runtime_availability_for(
             binary: runtime.as_str().to_string(),
             available: false,
             detail: error.to_string(),
+            directive_capabilities: RuntimeDirectiveCapabilities {
+                live_injection: false,
+                checkpoint_overlay: false,
+                ack_support: false,
+            },
         },
     }
 }
@@ -5187,13 +9747,14 @@ fn merge_json_value(target: &mut JsonValue, overlay: JsonValue) {
 fn ordered_agents(wave: &WaveDocument) -> Vec<&WaveAgent> {
     let mut agents = wave.agents.iter().collect::<Vec<_>>();
     agents.sort_by_key(|agent| match agent.id.as_str() {
-        "E0" => (1_u8, agent.id.as_str()),
-        "A6" => (2_u8, agent.id.as_str()),
-        "A7" => (3_u8, agent.id.as_str()),
-        "A8" => (4_u8, agent.id.as_str()),
-        "A9" => (5_u8, agent.id.as_str()),
-        "A0" => (6_u8, agent.id.as_str()),
-        _ => (0_u8, agent.id.as_str()),
+        _ if agent.is_design_worker() => (0_u8, agent.id.as_str()),
+        "E0" => (2_u8, agent.id.as_str()),
+        "A6" => (3_u8, agent.id.as_str()),
+        "A7" => (4_u8, agent.id.as_str()),
+        "A8" => (5_u8, agent.id.as_str()),
+        "A9" => (6_u8, agent.id.as_str()),
+        "A0" => (7_u8, agent.id.as_str()),
+        _ => (1_u8, agent.id.as_str()),
     });
     agents
 }
@@ -5375,6 +9936,11 @@ fn build_launch_preflight(
                 .to_string(),
         },
         LaunchPreflightCheck {
+            name: "design-gate",
+            ok: design_gate_preflight_ok(wave),
+            detail: design_gate_preflight_detail(wave),
+        },
+        LaunchPreflightCheck {
             name: "runtime-availability",
             ok: runtime_details.iter().all(|detail| detail.0),
             detail: if dry_run {
@@ -5468,6 +10034,42 @@ fn runtime_preflight_detail(
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+    )
+}
+
+fn design_gate_preflight_ok(wave: &WaveDocument) -> bool {
+    let Some(design_gate) = wave.metadata.design_gate.as_ref() else {
+        return true;
+    };
+    if design_gate.agent_ids.is_empty() {
+        return false;
+    }
+    if wave.code_implementation_agents().next().is_none() {
+        return false;
+    }
+    design_gate.agent_ids.iter().all(|agent_id| {
+        wave.agents
+            .iter()
+            .find(|agent| agent.id == *agent_id)
+            .map(|agent| agent.is_design_worker())
+            .unwrap_or(false)
+    })
+}
+
+fn design_gate_preflight_detail(wave: &WaveDocument) -> String {
+    let Some(design_gate) = wave.metadata.design_gate.as_ref() else {
+        return "no design gate declared".to_string();
+    };
+    let agent_labels = if design_gate.agent_ids.is_empty() {
+        "none".to_string()
+    } else {
+        design_gate.agent_ids.join(", ")
+    };
+    format!(
+        "design gate agents={} ready_marker={} code_agents={}",
+        agent_labels,
+        design_gate.ready_marker,
+        wave.code_implementation_agents().count()
     )
 }
 
@@ -5703,6 +10305,677 @@ fn closure_override_path(root: &Path, config: &ProjectConfig, wave_id: u32) -> P
     control_closure_overrides_dir(root, config).join(format!("wave-{wave_id:02}.json"))
 }
 
+fn control_mas_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    state_control_dir(root, config).join("mas")
+}
+
+fn control_mas_directives_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("directives")
+}
+
+fn control_mas_deliveries_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("deliveries")
+}
+
+fn control_mas_orchestrator_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("orchestrator")
+}
+
+fn control_mas_sandboxes_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("sandboxes")
+}
+
+fn control_mas_merge_intents_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("merge-intents")
+}
+
+fn control_mas_merge_results_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("merge-results")
+}
+
+fn control_mas_invalidations_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("invalidations")
+}
+
+fn control_mas_recovery_plans_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("recovery-plans")
+}
+
+fn control_mas_recovery_actions_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("recovery-actions")
+}
+
+fn control_mas_guidance_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("guidance")
+}
+
+fn control_operator_shell_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    state_control_dir(root, config).join("operator-shell")
+}
+
+fn control_operator_shell_sessions_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_operator_shell_dir(root, config).join("sessions")
+}
+
+fn control_operator_shell_turns_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_operator_shell_dir(root, config).join("turns")
+}
+
+fn control_head_proposals_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_operator_shell_dir(root, config).join("proposals")
+}
+
+fn wave_guidance_path(root: &Path, config: &ProjectConfig, wave_id: u32) -> PathBuf {
+    control_mas_guidance_dir(root, config).join(format!("wave-{wave_id:02}.md"))
+}
+
+fn agent_guidance_path(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+) -> PathBuf {
+    control_mas_guidance_dir(root, config).join(format!(
+        "wave-{wave_id:02}-{}.md",
+        agent_id.to_ascii_lowercase()
+    ))
+}
+
+fn control_directive_path(
+    root: &Path,
+    config: &ProjectConfig,
+    directive_id: &ControlDirectiveId,
+) -> PathBuf {
+    control_mas_directives_dir(root, config).join(format!("{}.json", directive_id.as_str()))
+}
+
+fn directive_delivery_path(
+    root: &Path,
+    config: &ProjectConfig,
+    directive_id: &ControlDirectiveId,
+) -> PathBuf {
+    control_mas_deliveries_dir(root, config).join(format!("{}.json", directive_id.as_str()))
+}
+
+fn orchestrator_session_path(root: &Path, config: &ProjectConfig, wave_id: u32) -> PathBuf {
+    control_mas_orchestrator_dir(root, config).join(format!("wave-{wave_id:02}.json"))
+}
+
+fn operator_shell_session_path(
+    root: &Path,
+    config: &ProjectConfig,
+    session_id: &OperatorShellSessionId,
+) -> PathBuf {
+    control_operator_shell_sessions_dir(root, config).join(format!("{}.json", session_id.as_str()))
+}
+
+fn operator_shell_turn_path(
+    root: &Path,
+    config: &ProjectConfig,
+    turn_id: &OperatorShellTurnId,
+) -> PathBuf {
+    control_operator_shell_turns_dir(root, config).join(format!("{}.json", turn_id.as_str()))
+}
+
+fn head_proposal_path(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal_id: &HeadProposalId,
+) -> PathBuf {
+    control_head_proposals_dir(root, config).join(format!("{}.json", proposal_id.as_str()))
+}
+
+fn agent_sandbox_path(root: &Path, config: &ProjectConfig, sandbox_id: &AgentSandboxId) -> PathBuf {
+    control_mas_sandboxes_dir(root, config).join(format!("{}.json", sandbox_id.as_str()))
+}
+
+fn merge_intent_path(
+    root: &Path,
+    config: &ProjectConfig,
+    merge_intent_id: &MergeIntentId,
+) -> PathBuf {
+    control_mas_merge_intents_dir(root, config).join(format!("{}.json", merge_intent_id.as_str()))
+}
+
+fn merge_result_path(
+    root: &Path,
+    config: &ProjectConfig,
+    merge_result_id: &MergeResultId,
+) -> PathBuf {
+    control_mas_merge_results_dir(root, config).join(format!("{}.json", merge_result_id.as_str()))
+}
+
+fn invalidation_path(
+    root: &Path,
+    config: &ProjectConfig,
+    invalidation_id: &InvalidationId,
+) -> PathBuf {
+    control_mas_invalidations_dir(root, config).join(format!("{}.json", invalidation_id.as_str()))
+}
+
+fn recovery_plan_path(
+    root: &Path,
+    config: &ProjectConfig,
+    recovery_plan_id: &RecoveryPlanId,
+) -> PathBuf {
+    control_mas_recovery_plans_dir(root, config).join(format!("{}.json", recovery_plan_id.as_str()))
+}
+
+fn recovery_action_path(
+    root: &Path,
+    config: &ProjectConfig,
+    recovery_action_id: &RecoveryActionId,
+) -> PathBuf {
+    control_mas_recovery_actions_dir(root, config)
+        .join(format!("{}.json", recovery_action_id.as_str()))
+}
+
+fn append_guidance_message(path: &Path, header: &str, message: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let created_at_ms = now_epoch_ms()?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    writeln!(file, "## {header} @ {created_at_ms}")?;
+    writeln!(file, "{}", message.trim())?;
+    writeln!(file)?;
+    Ok(())
+}
+
+fn read_optional_text(path: &Path) -> Result<Option<String>> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+fn append_prompt_guidance(base_prompt: String, guidance_blocks: &[String]) -> String {
+    if guidance_blocks.is_empty() {
+        return base_prompt;
+    }
+    let mut prompt = base_prompt;
+    prompt.push_str("\n\n## Control-plane guidance\n");
+    prompt.push_str(
+        "Apply the following durable operator/orchestrator guidance in addition to the authored assignment.\n",
+    );
+    for block in guidance_blocks {
+        prompt.push('\n');
+        prompt.push_str(block.trim());
+        prompt.push('\n');
+    }
+    prompt
+}
+
+fn synthesize_head_proposals(
+    root: &Path,
+    config: &ProjectConfig,
+    session: &OperatorShellSessionRecord,
+    operator_turn: &OperatorShellTurnRecord,
+    wave_id: u32,
+    agent_id: Option<&str>,
+    input: &str,
+    cycle_id: Option<&str>,
+    dedupe_existing: bool,
+) -> Result<(String, Option<String>, Vec<HeadProposalRecord>)> {
+    let input_lower = input.to_ascii_lowercase();
+    let mut risks = Vec::new();
+    if let Some(orchestrator) = latest_orchestrator_session(root, config, wave_id)? {
+        if matches!(orchestrator.mode, OrchestratorMode::Autonomous) && orchestrator.active {
+            risks.push("selected wave is still in autonomous mode".to_string());
+        }
+    }
+    let directives = list_control_directives(root, config, Some(wave_id))?;
+    let deliveries = list_directive_deliveries(root, config, Some(wave_id))?;
+    let delivered = deliveries
+        .iter()
+        .map(|delivery| delivery.directive_id.as_str().to_string())
+        .collect::<HashSet<_>>();
+    let pending_directives = directives
+        .iter()
+        .filter(|directive| !delivered.contains(directive.directive_id.as_str()))
+        .count();
+    if pending_directives > 0 {
+        risks.push(format!(
+            "{pending_directives} directives are still pending delivery"
+        ));
+    }
+
+    let action_kind = if operator_turn.scope == OperatorShellScope::Agent && agent_id.is_some() {
+        if input_lower.contains("pause") {
+            HeadProposalActionKind::PauseAgent
+        } else if input_lower.contains("resume") {
+            HeadProposalActionKind::ResumeAgent
+        } else if input_lower.contains("rerun") {
+            HeadProposalActionKind::RerunAgent
+        } else if input_lower.contains("rebase") {
+            HeadProposalActionKind::RebaseSandbox
+        } else if input_lower.contains("reconcile") {
+            HeadProposalActionKind::RequestReconciliation
+        } else if input_lower.contains("approve") && input_lower.contains("merge") {
+            HeadProposalActionKind::ApproveMerge
+        } else if input_lower.contains("reject") && input_lower.contains("merge") {
+            HeadProposalActionKind::RejectMerge
+        } else if input_lower.contains("operator") && input_lower.contains("mode") {
+            HeadProposalActionKind::SetOrchestratorMode
+        } else if input_lower.contains("autonomous") && input_lower.contains("mode") {
+            HeadProposalActionKind::SetOrchestratorMode
+        } else {
+            HeadProposalActionKind::SteerAgent
+        }
+    } else if input_lower.contains("closure-only") && input_lower.contains("rerun") {
+        HeadProposalActionKind::RequestWaveRerun
+    } else if input_lower.contains("promotion-only") && input_lower.contains("rerun") {
+        HeadProposalActionKind::RequestWaveRerun
+    } else if input_lower.contains("rerun") {
+        HeadProposalActionKind::RequestWaveRerun
+    } else if input_lower.contains("operator") && input_lower.contains("mode") {
+        HeadProposalActionKind::SetOrchestratorMode
+    } else if input_lower.contains("autonomous") && input_lower.contains("mode") {
+        HeadProposalActionKind::SetOrchestratorMode
+    } else {
+        HeadProposalActionKind::SteerWave
+    };
+
+    let created_at_ms = now_epoch_ms()?;
+    let mut action_payload = BTreeMap::new();
+    let summary = match action_kind {
+        HeadProposalActionKind::SteerWave => {
+            action_payload.insert("message".to_string(), input.to_string());
+            format!("Steer wave {wave_id} with updated guidance")
+        }
+        HeadProposalActionKind::SteerAgent => {
+            action_payload.insert("message".to_string(), input.to_string());
+            format!(
+                "Steer agent {} on wave {}",
+                agent_id.unwrap_or("unknown-agent"),
+                wave_id
+            )
+        }
+        HeadProposalActionKind::PauseAgent => format!(
+            "Pause agent {} on wave {}",
+            agent_id.unwrap_or("unknown-agent"),
+            wave_id
+        ),
+        HeadProposalActionKind::ResumeAgent => format!(
+            "Resume agent {} on wave {}",
+            agent_id.unwrap_or("unknown-agent"),
+            wave_id
+        ),
+        HeadProposalActionKind::RerunAgent => format!(
+            "Rerun agent {} on wave {}",
+            agent_id.unwrap_or("unknown-agent"),
+            wave_id
+        ),
+        HeadProposalActionKind::RebaseSandbox => format!(
+            "Rebase sandbox for agent {} on wave {}",
+            agent_id.unwrap_or("unknown-agent"),
+            wave_id
+        ),
+        HeadProposalActionKind::RequestReconciliation => format!(
+            "Request reconciliation for agent {} on wave {}",
+            agent_id.unwrap_or("unknown-agent"),
+            wave_id
+        ),
+        HeadProposalActionKind::ApproveMerge => format!(
+            "Approve merge for agent {} on wave {}",
+            agent_id.unwrap_or("unknown-agent"),
+            wave_id
+        ),
+        HeadProposalActionKind::RejectMerge => format!(
+            "Reject merge for agent {} on wave {}",
+            agent_id.unwrap_or("unknown-agent"),
+            wave_id
+        ),
+        HeadProposalActionKind::RequestWaveRerun => {
+            let scope = if input_lower.contains("closure-only") {
+                "closure_only"
+            } else if input_lower.contains("promotion-only") {
+                "promotion_only"
+            } else {
+                "full"
+            };
+            action_payload.insert("scope".to_string(), scope.to_string());
+            format!("Request {scope} rerun for wave {wave_id}")
+        }
+        HeadProposalActionKind::SetOrchestratorMode => {
+            let mode = if input_lower.contains("autonomous") {
+                "autonomous"
+            } else {
+                "operator"
+            };
+            action_payload.insert("mode".to_string(), mode.to_string());
+            format!("Set orchestrator mode to {mode} for wave {wave_id}")
+        }
+        HeadProposalActionKind::LaunchWave => format!("Launch wave {wave_id}"),
+    };
+
+    let detail = Some(match action_kind {
+        HeadProposalActionKind::SteerWave | HeadProposalActionKind::SteerAgent => {
+            format!("guidance: {}", input.trim())
+        }
+        _ => format!("requested by operator input: {}", input.trim()),
+    });
+    let proposal = HeadProposalRecord {
+        proposal_id: HeadProposalId::new(format!("head-proposal-{created_at_ms}")),
+        session_id: session.session_id.clone(),
+        turn_id: operator_turn.turn_id.clone(),
+        cycle_id: cycle_id.map(|value| value.to_string()),
+        wave_id,
+        agent_id: agent_id.map(|value| value.to_string()),
+        action_kind,
+        action_payload,
+        state: HeadProposalState::Pending,
+        resolution: None,
+        summary: summary.clone(),
+        detail: detail.clone(),
+        created_at_ms,
+        updated_at_ms: created_at_ms,
+    };
+    if dedupe_existing && proposal_has_equivalent_activity(root, config, &proposal)? {
+        let summary_text =
+            "Head reviewed the current target and skipped a duplicate autonomous action."
+                .to_string();
+        let mut detail_parts = vec![format!("duplicate: {}", proposal.summary)];
+        if !risks.is_empty() {
+            detail_parts.push(format!("risks: {}", risks.join(" | ")));
+        }
+        return Ok((summary_text, Some(detail_parts.join(" | ")), Vec::new()));
+    }
+    persist_head_proposal_record(root, config, &proposal)?;
+
+    let summary_text = format!(
+        "Head reviewed the current target and prepared {} proposal{}.",
+        1, ""
+    );
+    let mut detail_parts = vec![format!("proposal: {}", proposal.summary)];
+    if !risks.is_empty() {
+        detail_parts.push(format!("risks: {}", risks.join(" | ")));
+    }
+    Ok((summary_text, Some(detail_parts.join(" | ")), vec![proposal]))
+}
+
+fn proposal_has_equivalent_activity(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal: &HeadProposalRecord,
+) -> Result<bool> {
+    if list_head_proposals(root, config, Some(proposal.wave_id))?
+        .into_iter()
+        .any(|existing| {
+            existing.proposal_id != proposal.proposal_id
+                && existing.state == HeadProposalState::Pending
+                && existing.wave_id == proposal.wave_id
+                && existing.agent_id == proposal.agent_id
+                && existing.action_kind == proposal.action_kind
+                && existing.action_payload == proposal.action_payload
+        })
+    {
+        return Ok(true);
+    }
+
+    let now = now_epoch_ms()?;
+    let deliveries = list_directive_deliveries(root, config, Some(proposal.wave_id))?
+        .into_iter()
+        .map(|delivery| (delivery.directive_id.clone(), delivery))
+        .collect::<HashMap<_, _>>();
+    Ok(
+        list_control_directives(root, config, Some(proposal.wave_id))?
+            .into_iter()
+            .any(|directive| {
+                if now.saturating_sub(directive.requested_at_ms) > AUTONOMOUS_HEAD_THROTTLE_MS {
+                    return false;
+                }
+                if !proposal_matches_directive(proposal, &directive) {
+                    return false;
+                }
+                deliveries
+                    .get(&directive.directive_id)
+                    .map(|delivery| {
+                        matches!(
+                            delivery.state,
+                            DirectiveDeliveryState::Pending
+                                | DirectiveDeliveryState::Delivered
+                                | DirectiveDeliveryState::Acked
+                        )
+                    })
+                    .unwrap_or(true)
+            }),
+    )
+}
+
+fn proposal_matches_directive(
+    proposal: &HeadProposalRecord,
+    directive: &ControlDirectiveRecord,
+) -> bool {
+    let expected_kind = match proposal.action_kind {
+        HeadProposalActionKind::SteerWave | HeadProposalActionKind::SteerAgent => {
+            ControlDirectiveKind::SteerPrompt
+        }
+        HeadProposalActionKind::PauseAgent => ControlDirectiveKind::PauseAgent,
+        HeadProposalActionKind::ResumeAgent => ControlDirectiveKind::ResumeAgent,
+        HeadProposalActionKind::RerunAgent => ControlDirectiveKind::RerunAgent,
+        HeadProposalActionKind::RebaseSandbox => ControlDirectiveKind::RebaseSandbox,
+        HeadProposalActionKind::RequestReconciliation => {
+            ControlDirectiveKind::RequestReconciliation
+        }
+        HeadProposalActionKind::ApproveMerge => ControlDirectiveKind::ApproveMerge,
+        HeadProposalActionKind::RejectMerge => ControlDirectiveKind::RejectMerge,
+        HeadProposalActionKind::SetOrchestratorMode => ControlDirectiveKind::SetOrchestratorMode,
+        HeadProposalActionKind::RequestWaveRerun | HeadProposalActionKind::LaunchWave => {
+            return false;
+        }
+    };
+
+    if directive.kind != expected_kind
+        || directive.wave_id != proposal.wave_id
+        || directive.agent_id != proposal.agent_id
+    {
+        return false;
+    }
+
+    match proposal.action_kind {
+        HeadProposalActionKind::SteerWave | HeadProposalActionKind::SteerAgent => proposal
+            .action_payload
+            .get("message")
+            .is_none_or(|message| directive.message.as_deref() == Some(message.as_str())),
+        HeadProposalActionKind::SetOrchestratorMode => proposal
+            .action_payload
+            .get("mode")
+            .is_none_or(|mode| directive.message.as_deref() == Some(mode.as_str())),
+        _ => true,
+    }
+}
+
+fn apply_head_proposal_action(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal: &HeadProposalRecord,
+    requested_by: &str,
+    directive_origin: DirectiveOrigin,
+) -> Result<String> {
+    match proposal.action_kind {
+        HeadProposalActionKind::SteerWave => {
+            let message = proposal
+                .action_payload
+                .get("message")
+                .cloned()
+                .unwrap_or_else(|| proposal.summary.clone());
+            steer_wave(
+                root,
+                config,
+                proposal.wave_id,
+                &message,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::SteerAgent => {
+            let agent_id = proposal
+                .agent_id
+                .as_deref()
+                .context("agent proposal is missing agent id")?;
+            let message = proposal
+                .action_payload
+                .get("message")
+                .cloned()
+                .unwrap_or_else(|| proposal.summary.clone());
+            steer_agent(
+                root,
+                config,
+                proposal.wave_id,
+                agent_id,
+                &message,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::PauseAgent => {
+            let agent_id = proposal
+                .agent_id
+                .as_deref()
+                .context("pause proposal is missing agent id")?;
+            pause_agent(
+                root,
+                config,
+                proposal.wave_id,
+                agent_id,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::ResumeAgent => {
+            let agent_id = proposal
+                .agent_id
+                .as_deref()
+                .context("resume proposal is missing agent id")?;
+            resume_agent(
+                root,
+                config,
+                proposal.wave_id,
+                agent_id,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::RerunAgent => {
+            let agent_id = proposal
+                .agent_id
+                .as_deref()
+                .context("rerun proposal is missing agent id")?;
+            rerun_agent(
+                root,
+                config,
+                proposal.wave_id,
+                agent_id,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::RebaseSandbox => {
+            let agent_id = proposal
+                .agent_id
+                .as_deref()
+                .context("rebase proposal is missing agent id")?;
+            rebase_agent_sandbox(
+                root,
+                config,
+                proposal.wave_id,
+                agent_id,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::RequestReconciliation => {
+            let agent_id = proposal
+                .agent_id
+                .as_deref()
+                .context("reconciliation proposal is missing agent id")?;
+            request_agent_reconciliation(
+                root,
+                config,
+                proposal.wave_id,
+                agent_id,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::ApproveMerge => {
+            let agent_id = proposal
+                .agent_id
+                .as_deref()
+                .context("approve-merge proposal is missing agent id")?;
+            approve_agent_merge(
+                root,
+                config,
+                proposal.wave_id,
+                agent_id,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::RejectMerge => {
+            let agent_id = proposal
+                .agent_id
+                .as_deref()
+                .context("reject-merge proposal is missing agent id")?;
+            reject_agent_merge(
+                root,
+                config,
+                proposal.wave_id,
+                agent_id,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::RequestWaveRerun => {
+            let scope = match proposal.action_payload.get("scope").map(String::as_str) {
+                Some("closure_only") => RerunScope::ClosureOnly,
+                Some("promotion_only") => RerunScope::PromotionOnly,
+                _ => RerunScope::Full,
+            };
+            request_rerun(
+                root,
+                config,
+                proposal.wave_id,
+                &format!("Approved head proposal: {}", proposal.summary),
+                scope,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::SetOrchestratorMode => {
+            let mode = match proposal.action_payload.get("mode").map(String::as_str) {
+                Some("autonomous") => OrchestratorMode::Autonomous,
+                _ => OrchestratorMode::Operator,
+            };
+            set_orchestrator_mode_with_origin(
+                root,
+                config,
+                proposal.wave_id,
+                mode,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::LaunchWave => bail!("launch proposals are not supported yet"),
+    }
+}
+
 fn write_rerun_intent(
     root: &Path,
     config: &ProjectConfig,
@@ -5718,6 +10991,35 @@ fn write_rerun_intent(
     Ok(())
 }
 
+fn snapshot_control_file(path: &Path) -> Result<Option<Vec<u8>>> {
+    match fs::read(path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+fn restore_control_file(path: &Path, snapshot: Option<Vec<u8>>) -> Result<()> {
+    match snapshot {
+        Some(contents) => {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create {}", parent.display()))?;
+            }
+            fs::write(path, contents)
+                .with_context(|| format!("failed to restore {}", path.display()))?;
+            Ok(())
+        }
+        None => match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => {
+                Err(error).with_context(|| format!("failed to remove {}", path.display()))
+            }
+        },
+    }
+}
+
 fn write_closure_override(
     root: &Path,
     config: &ProjectConfig,
@@ -5731,6 +11033,333 @@ fn write_closure_override(
     fs::write(&path, serde_json::to_string_pretty(record)?)
         .with_context(|| format!("failed to write closure override {}", path.display()))?;
     Ok(())
+}
+
+fn write_control_directive(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &ControlDirectiveRecord,
+) -> Result<()> {
+    let path = control_directive_path(root, config, &record.directive_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write control directive {}", path.display()))?;
+    Ok(())
+}
+
+fn write_directive_delivery(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &DirectiveDeliveryRecord,
+) -> Result<()> {
+    let path = directive_delivery_path(root, config, &record.directive_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write directive delivery {}", path.display()))?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!(
+                "evt-directive-delivery-{}-{}",
+                record.wave_id, record.updated_at_ms
+            ),
+            ControlEventKind::OperatorActionRecorded,
+            record.wave_id,
+        )
+        .with_created_at_ms(record.updated_at_ms)
+        .with_correlation_id(record.directive_id.as_str().to_string())
+        .with_payload(ControlEventPayload::DirectiveDeliveryUpdated {
+            delivery: record.clone(),
+        }),
+    )?;
+    Ok(())
+}
+
+fn update_directive_delivery(
+    root: &Path,
+    config: &ProjectConfig,
+    directive: &ControlDirectiveRecord,
+    state: DirectiveDeliveryState,
+    detail: impl Into<String>,
+) -> Result<DirectiveDeliveryRecord> {
+    update_directive_delivery_with_transport(
+        root, config, directive, state, None, None, false, detail,
+    )
+}
+
+fn update_directive_delivery_with_transport(
+    root: &Path,
+    config: &ProjectConfig,
+    directive: &ControlDirectiveRecord,
+    state: DirectiveDeliveryState,
+    method: Option<DirectiveDeliveryMethod>,
+    runtime: Option<RuntimeId>,
+    ack_supported: bool,
+    detail: impl Into<String>,
+) -> Result<DirectiveDeliveryRecord> {
+    let record = DirectiveDeliveryRecord {
+        directive_id: directive.directive_id.clone(),
+        wave_id: directive.wave_id,
+        agent_id: directive.agent_id.clone(),
+        state,
+        method,
+        runtime,
+        ack_supported,
+        detail: Some(detail.into()),
+        updated_at_ms: now_epoch_ms()?,
+    };
+    write_directive_delivery(root, config, &record)?;
+    Ok(record)
+}
+
+fn write_orchestrator_session(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &OrchestratorSessionRecord,
+) -> Result<()> {
+    let path = orchestrator_session_path(root, config, record.wave_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write orchestrator session {}", path.display()))?;
+    Ok(())
+}
+
+fn write_operator_shell_session(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &OperatorShellSessionRecord,
+) -> Result<()> {
+    let path = operator_shell_session_path(root, config, &record.session_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write operator shell session {}", path.display()))?;
+    Ok(())
+}
+
+fn write_operator_shell_turn(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &OperatorShellTurnRecord,
+) -> Result<()> {
+    let path = operator_shell_turn_path(root, config, &record.turn_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write operator shell turn {}", path.display()))?;
+    Ok(())
+}
+
+fn write_head_proposal(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &HeadProposalRecord,
+) -> Result<()> {
+    let path = head_proposal_path(root, config, &record.proposal_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write head proposal {}", path.display()))?;
+    Ok(())
+}
+
+fn read_head_proposal(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal_id: &str,
+) -> Result<Option<HeadProposalRecord>> {
+    let path = head_proposal_path(root, config, &HeadProposalId::new(proposal_id));
+    match fs::read_to_string(&path) {
+        Ok(raw) => {
+            let proposal = serde_json::from_str::<HeadProposalRecord>(&raw)
+                .with_context(|| format!("failed to parse {}", path.display()))?;
+            Ok(Some(proposal))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+fn write_agent_sandbox(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &AgentSandboxRecord,
+) -> Result<()> {
+    let path = agent_sandbox_path(root, config, &record.sandbox_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write sandbox record {}", path.display()))?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-sandbox-{}-{}", record.wave_id, record.allocated_at_ms),
+            ControlEventKind::OperatorActionRecorded,
+            record.wave_id,
+        )
+        .with_task_id(record.task_id.clone())
+        .with_created_at_ms(record.allocated_at_ms)
+        .with_correlation_id(record.sandbox_id.as_str().to_string())
+        .with_payload(ControlEventPayload::AgentSandboxUpdated {
+            sandbox: record.clone(),
+        }),
+    )?;
+    Ok(())
+}
+
+fn write_merge_intent(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &MergeIntentRecord,
+) -> Result<()> {
+    let path = merge_intent_path(root, config, &record.merge_intent_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write merge intent {}", path.display()))?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!(
+                "evt-merge-intent-{}-{}",
+                record.wave_id, record.created_at_ms
+            ),
+            ControlEventKind::OperatorActionRecorded,
+            record.wave_id,
+        )
+        .with_task_id(record.task_id.clone())
+        .with_created_at_ms(record.created_at_ms)
+        .with_correlation_id(record.merge_intent_id.as_str().to_string())
+        .with_payload(ControlEventPayload::MergeIntentRecorded {
+            merge_intent: record.clone(),
+        }),
+    )?;
+    Ok(())
+}
+
+fn write_merge_result(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &MergeResultRecord,
+) -> Result<()> {
+    let path = merge_result_path(root, config, &record.merge_result_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write merge result {}", path.display()))?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!(
+                "evt-merge-result-{}-{}",
+                record.wave_id, record.applied_at_ms
+            ),
+            ControlEventKind::OperatorActionRecorded,
+            record.wave_id,
+        )
+        .with_task_id(record.task_id.clone())
+        .with_created_at_ms(record.applied_at_ms)
+        .with_correlation_id(record.merge_result_id.as_str().to_string())
+        .with_payload(ControlEventPayload::MergeResultRecorded {
+            merge_result: record.clone(),
+        }),
+    )?;
+    Ok(())
+}
+
+fn write_invalidation(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &InvalidationRecord,
+) -> Result<()> {
+    let path = invalidation_path(root, config, &record.invalidation_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write invalidation {}", path.display()))?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!(
+                "evt-invalidation-{}-{}",
+                record.wave_id, record.created_at_ms
+            ),
+            ControlEventKind::OperatorActionRecorded,
+            record.wave_id,
+        )
+        .with_task_id(record.source_task_id.clone())
+        .with_created_at_ms(record.created_at_ms)
+        .with_correlation_id(record.invalidation_id.as_str().to_string())
+        .with_payload(ControlEventPayload::InvalidationRecorded {
+            invalidation: record.clone(),
+        }),
+    )?;
+    Ok(())
+}
+
+fn write_recovery_plan(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &RecoveryPlanRecord,
+) -> Result<()> {
+    let path = recovery_plan_path(root, config, &record.recovery_plan_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write recovery plan {}", path.display()))?;
+    Ok(())
+}
+
+fn write_recovery_action(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &RecoveryActionRecord,
+) -> Result<()> {
+    let path = recovery_action_path(root, config, &record.recovery_action_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write recovery action {}", path.display()))?;
+    Ok(())
+}
+
+fn orchestrator_mode_label(mode: OrchestratorMode) -> &'static str {
+    match mode {
+        OrchestratorMode::Operator => "operator",
+        OrchestratorMode::Autonomous => "autonomous",
+    }
 }
 
 #[cfg(test)]
@@ -5762,6 +11391,26 @@ mod tests {
 
     static FAKE_RUNTIME_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+    fn default_wave_metadata() -> WaveMetadata {
+        WaveMetadata {
+            id: 0,
+            slug: String::new(),
+            title: String::new(),
+            mode: ExecutionMode::DarkFactory,
+            owners: Vec::new(),
+            depends_on: Vec::new(),
+            validation: Vec::new(),
+            rollback: Vec::new(),
+            proof: Vec::new(),
+            wave_class: wave_spec::WaveClass::Implementation,
+            intent: None,
+            delivery: None,
+            design_gate: None,
+            execution_model: wave_spec::WaveExecutionModel::Serial,
+            concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
+        }
+    }
+
     #[test]
     fn closure_agents_run_after_implementation_agents() {
         let wave = WaveDocument {
@@ -5776,6 +11425,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 0".to_string()),
             commit_message: Some("Feat: test".to_string()),
@@ -5893,6 +11543,205 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn set_orchestrator_mode_persists_session_and_directive() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-orchestrator-mode-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let config = ProjectConfig::default();
+
+        let session =
+            set_orchestrator_mode(&root, &config, 18, OrchestratorMode::Autonomous, "test")
+                .expect("set mode");
+        assert_eq!(session.wave_id, 18);
+        assert_eq!(session.mode, OrchestratorMode::Autonomous);
+        assert!(session.active);
+
+        let loaded = latest_orchestrator_session(&root, &config, 18)
+            .expect("load session")
+            .expect("session");
+        assert_eq!(loaded.mode, OrchestratorMode::Autonomous);
+        let directives =
+            list_control_directives(&root, &config, Some(18)).expect("list directives");
+        assert_eq!(directives.len(), 1);
+        assert_eq!(
+            directives[0].kind,
+            ControlDirectiveKind::SetOrchestratorMode
+        );
+        assert!(directives[0].agent_id.is_none());
+    }
+
+    #[test]
+    fn steer_directives_persist_for_agent_and_wave_targets() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-steer-directives-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let config = ProjectConfig::default();
+
+        let wave_directive = steer_wave(
+            &root,
+            &config,
+            18,
+            "Coordinate the MAS pilot",
+            DirectiveOrigin::Operator,
+            "test",
+        )
+        .expect("steer wave");
+        let agent_directive = steer_agent(
+            &root,
+            &config,
+            18,
+            "A1",
+            "Focus on merge queue correctness",
+            DirectiveOrigin::AutonomousHead,
+            "test",
+        )
+        .expect("steer agent");
+
+        assert!(wave_directive.agent_id.is_none());
+        assert_eq!(agent_directive.agent_id.as_deref(), Some("A1"));
+
+        let directives =
+            list_control_directives(&root, &config, Some(18)).expect("list directives");
+        assert_eq!(directives.len(), 2);
+        let deliveries =
+            list_directive_deliveries(&root, &config, Some(18)).expect("list deliveries");
+        assert_eq!(deliveries.len(), 2);
+        assert!(
+            deliveries
+                .iter()
+                .any(|delivery| delivery.agent_id.is_none())
+        );
+        assert!(
+            deliveries
+                .iter()
+                .all(|delivery| delivery.state == DirectiveDeliveryState::Pending)
+        );
+    }
+
+    #[test]
+    fn process_pending_directives_persists_guidance_and_updates_delivery() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-process-directives-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let config = ProjectConfig::default();
+
+        steer_wave(
+            &root,
+            &config,
+            18,
+            "Keep the accepted state coherent.",
+            DirectiveOrigin::Operator,
+            "test",
+        )
+        .expect("steer wave");
+        steer_agent(
+            &root,
+            &config,
+            18,
+            "A1",
+            "Focus on merge safety.",
+            DirectiveOrigin::Operator,
+            "test",
+        )
+        .expect("steer agent");
+
+        process_pending_directives(&root, &config, 18, &[]).expect("process directives");
+
+        let deliveries =
+            list_directive_deliveries(&root, &config, Some(18)).expect("list deliveries");
+        assert_eq!(deliveries.len(), 2);
+        assert!(
+            deliveries
+                .iter()
+                .all(|delivery| delivery.state == DirectiveDeliveryState::Deferred)
+        );
+        assert!(deliveries.iter().all(|delivery| {
+            delivery.method == Some(DirectiveDeliveryMethod::Deferred) && !delivery.ack_supported
+        }));
+        let wave_guidance =
+            fs::read_to_string(wave_guidance_path(&root, &config, 18)).expect("read wave guidance");
+        assert!(wave_guidance.contains("Keep the accepted state coherent."));
+        let agent_guidance = fs::read_to_string(agent_guidance_path(&root, &config, 18, "A1"))
+            .expect("read agent guidance");
+        assert!(agent_guidance.contains("Focus on merge safety."));
+    }
+
+    #[test]
+    fn mas_control_directives_persist_and_process_without_placeholder_rejection() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-mas-control-directives-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let config = ProjectConfig::default();
+
+        pause_agent(&root, &config, 18, "A1", DirectiveOrigin::Operator, "test").expect("pause");
+        resume_agent(&root, &config, 18, "A1", DirectiveOrigin::Operator, "test").expect("resume");
+        rerun_agent(&root, &config, 18, "A2", DirectiveOrigin::Operator, "test").expect("rerun");
+        rebase_agent_sandbox(&root, &config, 18, "A2", DirectiveOrigin::Operator, "test")
+            .expect("rebase");
+        request_agent_reconciliation(&root, &config, 18, "A2", DirectiveOrigin::Operator, "test")
+            .expect("reconcile");
+        approve_agent_merge(&root, &config, 18, "A2", DirectiveOrigin::Operator, "test")
+            .expect("approve");
+        reject_agent_merge(&root, &config, 18, "A3", DirectiveOrigin::Operator, "test")
+            .expect("reject");
+
+        let effects = process_pending_directives(&root, &config, 18, &[]).expect("process");
+        assert!(effects.paused_agents.contains("A1"));
+        assert!(effects.resumed_agents.contains("A1"));
+        assert!(effects.rerun_agents.contains("A2"));
+        assert!(effects.rebase_agents.contains("A2"));
+        assert!(effects.reconciliation_agents.contains("A2"));
+        assert!(effects.approved_agents.contains("A2"));
+        assert!(effects.rejected_agents.contains("A3"));
+
+        let deliveries =
+            list_directive_deliveries(&root, &config, Some(18)).expect("list deliveries");
+        assert!(
+            deliveries
+                .iter()
+                .all(|delivery| { !matches!(delivery.state, DirectiveDeliveryState::Rejected) })
+        );
+    }
+
+    #[test]
+    fn autonomous_head_runs_cycle_when_wave_is_autonomous() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-autonomous-head-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let config = ProjectConfig::default();
+
+        set_orchestrator_mode(&root, &config, 18, OrchestratorMode::Autonomous, "test")
+            .expect("set autonomous mode");
+
+        let wave = parallel_launchable_test_wave(18, "src/runtime.rs");
+        let ordered = ordered_agents(&wave);
+        let pending = BTreeSet::from([0_usize]);
+        let applied = maybe_run_autonomous_head_cycle(&root, &config, 18, &[], &pending, &ordered)
+            .expect("run autonomous head cycle");
+        assert_eq!(applied, 1);
+        let directives = list_control_directives(&root, &config, Some(18)).expect("directives");
+        assert!(directives.iter().any(|directive| {
+            directive.origin == DirectiveOrigin::AutonomousHead
+                && directive.kind == ControlDirectiveKind::SteerPrompt
+        }));
     }
 
     #[test]
@@ -6104,6 +11953,7 @@ mod tests {
                 validation: Vec::new(),
                 rollback: Vec::new(),
                 proof: Vec::new(),
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 6".to_string()),
             commit_message: Some(
@@ -6473,6 +12323,10 @@ mod tests {
         failed_run.completed_at_ms = Some(2);
         failed_run.error = Some("promotion blocked by conflicts".to_string());
         write_run_record_fixture(&root, &config, &failed_run);
+        let evidence_path = root.join("docs/evidence.md");
+        fs::create_dir_all(evidence_path.parent().expect("evidence parent"))
+            .expect("create evidence dir");
+        fs::write(&evidence_path, "manual close evidence\n").expect("write evidence");
 
         request_rerun(
             &root,
@@ -6489,10 +12343,7 @@ mod tests {
             15,
             "manual close accepted for Wave 15 baseline",
             None,
-            vec![
-                "docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/README.md"
-                    .to_string(),
-            ],
+            vec!["docs/evidence.md".to_string()],
             Some("operator accepted failed promotion after inspection".to_string()),
         )
         .expect("apply closure override");
@@ -6500,13 +12351,7 @@ mod tests {
         assert!(record.is_active());
         assert_eq!(record.wave_id, 15);
         assert_eq!(record.source_run_id, "wave-15-failed");
-        assert_eq!(
-            record.evidence_paths,
-            vec![
-                "docs/implementation/live-proofs/phase-3-runtime-policy-and-multi-runtime/README.md"
-                    .to_string()
-            ]
-        );
+        assert_eq!(record.evidence_paths, vec!["docs/evidence.md".to_string()]);
 
         let stored = load_closure_override(&root, &config, 15)
             .expect("load closure override")
@@ -6530,6 +12375,479 @@ mod tests {
     }
 
     #[test]
+    fn preview_closure_override_derives_default_evidence_bundle_from_terminal_run() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-closure-override-preview-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let wave = launchable_test_wave(15);
+        let mut failed_run = scheduler_test_run(&root, &wave, "wave-15-failed", 1);
+        failed_run.status = WaveRunStatus::Failed;
+        failed_run.completed_at_ms = Some(2);
+        failed_run.error = Some("promotion blocked by conflicts".to_string());
+        failed_run.trace_path = root.join(".wave/traces/runs/wave-15-failed.json");
+        failed_run.agents = vec![AgentRunRecord {
+            id: "A1".to_string(),
+            title: "Implementation".to_string(),
+            status: WaveRunStatus::Failed,
+            prompt_path: root.join(".wave/state/build/specs/wave-15-failed/agents/A1/prompt.md"),
+            last_message_path: root
+                .join(".wave/state/build/specs/wave-15-failed/agents/A1/last-message.txt"),
+            events_path: root.join(".wave/state/build/specs/wave-15-failed/agents/A1/events.jsonl"),
+            stderr_path: root.join(".wave/state/build/specs/wave-15-failed/agents/A1/stderr.txt"),
+            result_envelope_path: Some(
+                root.join(".wave/state/results/wave-15/attempt-a1/agent_result_envelope.json"),
+            ),
+            runtime_detail_path: Some(
+                root.join(".wave/state/build/specs/wave-15-failed/agents/A1/runtime-detail.json"),
+            ),
+            expected_markers: Vec::new(),
+            observed_markers: Vec::new(),
+            exit_code: Some(1),
+            error: Some("promotion blocked by conflicts".to_string()),
+            runtime: None,
+        }];
+        write_run_record_fixture(&root, &config, &failed_run);
+        fs::create_dir_all(failed_run.trace_path.parent().expect("trace parent"))
+            .expect("create trace parent");
+        fs::write(&failed_run.trace_path, "{}\n").expect("write trace");
+        fs::create_dir_all(
+            failed_run.agents[0]
+                .result_envelope_path
+                .as_ref()
+                .expect("result path")
+                .parent()
+                .expect("result parent"),
+        )
+        .expect("create result parent");
+        fs::write(
+            failed_run.agents[0]
+                .result_envelope_path
+                .as_ref()
+                .expect("result path"),
+            "{}\n",
+        )
+        .expect("write result envelope");
+        fs::create_dir_all(
+            failed_run.agents[0]
+                .runtime_detail_path
+                .as_ref()
+                .expect("runtime detail path")
+                .parent()
+                .expect("runtime detail parent"),
+        )
+        .expect("create runtime detail parent");
+        fs::write(
+            failed_run.agents[0]
+                .runtime_detail_path
+                .as_ref()
+                .expect("runtime detail path"),
+            "{}\n",
+        )
+        .expect("write runtime detail");
+
+        let preview = preview_closure_override(&root, &config, 15, None, Vec::new())
+            .expect("preview closure override");
+
+        assert_eq!(preview.wave_id, 15);
+        assert_eq!(preview.source_run_id, "wave-15-failed");
+        assert_eq!(preview.source_run_status, WaveRunStatus::Failed);
+        assert_eq!(
+            preview.source_run_error.as_deref(),
+            Some("promotion blocked by conflicts")
+        );
+        assert_eq!(
+            preview.evidence_paths,
+            vec![
+                ".wave/state/runs/wave-15-failed.json".to_string(),
+                ".wave/traces/runs/wave-15-failed.json".to_string(),
+                ".wave/state/results/wave-15/attempt-a1/agent_result_envelope.json".to_string(),
+                ".wave/state/build/specs/wave-15-failed/agents/A1/runtime-detail.json".to_string(),
+            ]
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn preview_closure_override_rejects_absolute_missing_parent_and_directory_evidence() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-closure-override-evidence-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let wave = launchable_test_wave(15);
+        let mut failed_run = scheduler_test_run(&root, &wave, "wave-15-failed", 1);
+        failed_run.status = WaveRunStatus::Failed;
+        failed_run.completed_at_ms = Some(2);
+        write_run_record_fixture(&root, &config, &failed_run);
+        let directory_path = root.join("docs/evidence-dir");
+        fs::create_dir_all(&directory_path).expect("create evidence dir");
+
+        let absolute_error = preview_closure_override(
+            &root,
+            &config,
+            15,
+            None,
+            vec![root.join("docs/evidence.md").to_string_lossy().into_owned()],
+        )
+        .expect_err("absolute evidence should fail");
+        assert!(absolute_error.to_string().contains("must be repo-relative"));
+
+        let parent_error =
+            preview_closure_override(&root, &config, 15, None, vec!["../outside.md".to_string()])
+                .expect_err("parent traversal should fail");
+        assert!(
+            parent_error
+                .to_string()
+                .contains("invalid closure override evidence path")
+        );
+
+        let missing_error = preview_closure_override(
+            &root,
+            &config,
+            15,
+            None,
+            vec!["docs/missing.md".to_string()],
+        )
+        .expect_err("missing evidence should fail");
+        assert!(missing_error.to_string().contains("does not exist"));
+
+        let directory_error = preview_closure_override(
+            &root,
+            &config,
+            15,
+            None,
+            vec!["docs/evidence-dir".to_string()],
+        )
+        .expect_err("directory evidence should fail");
+        assert!(directory_error.to_string().contains("must point to a file"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn apply_closure_override_rolls_back_when_override_event_append_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-closure-override-rerun-fail-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let wave = launchable_test_wave(15);
+        let mut failed_run = scheduler_test_run(&root, &wave, "wave-15-failed", 1);
+        failed_run.status = WaveRunStatus::Failed;
+        failed_run.completed_at_ms = Some(2);
+        write_run_record_fixture(&root, &config, &failed_run);
+        let evidence_path = root.join("docs/evidence.md");
+        fs::create_dir_all(evidence_path.parent().expect("evidence parent"))
+            .expect("create evidence dir");
+        fs::write(&evidence_path, "manual close evidence\n").expect("write evidence");
+
+        request_rerun(
+            &root,
+            &config,
+            15,
+            "retry closure after promotion conflict",
+            RerunScope::ClosureOnly,
+        )
+        .expect("request rerun");
+
+        let control_wave_path = control_event_log(&root, &config).wave_path(15);
+        if control_wave_path.exists() {
+            fs::remove_file(&control_wave_path).expect("remove control event log");
+        }
+        fs::create_dir_all(&control_wave_path).expect("create blocking control log dir");
+
+        let error = apply_closure_override(
+            &root,
+            &config,
+            15,
+            "manual close accepted for Wave 15 baseline",
+            None,
+            vec!["docs/evidence.md".to_string()],
+            Some("operator accepted failed promotion after inspection".to_string()),
+        )
+        .expect_err("rerun clear failure should fail closure override");
+
+        assert!(error.to_string().contains("failed to open"));
+        assert!(
+            load_closure_override(&root, &config, 15)
+                .expect("load closure override")
+                .is_none()
+        );
+        let rerun = list_rerun_intents(&root, &config)
+            .expect("load reruns")
+            .remove(&15)
+            .expect("rerun intent restored");
+        assert_eq!(rerun.status, RerunIntentStatus::Requested);
+        assert!(rerun.cleared_at_ms.is_none());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn apply_closure_override_rolls_back_when_override_write_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-closure-override-write-fail-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let wave = launchable_test_wave(15);
+        let mut failed_run = scheduler_test_run(&root, &wave, "wave-15-failed", 1);
+        failed_run.status = WaveRunStatus::Failed;
+        failed_run.completed_at_ms = Some(2);
+        write_run_record_fixture(&root, &config, &failed_run);
+        let evidence_path = root.join("docs/evidence.md");
+        fs::create_dir_all(evidence_path.parent().expect("evidence parent"))
+            .expect("create evidence dir");
+        fs::write(&evidence_path, "manual close evidence\n").expect("write evidence");
+
+        request_rerun(
+            &root,
+            &config,
+            15,
+            "retry closure after promotion conflict",
+            RerunScope::ClosureOnly,
+        )
+        .expect("request rerun");
+
+        let override_dir = control_closure_overrides_dir(&root, &config);
+        fs::create_dir_all(override_dir.parent().expect("closure override dir parent"))
+            .expect("create control parent dir");
+        fs::write(&override_dir, "blocked").expect("block closure override dir with file");
+
+        let error = apply_closure_override(
+            &root,
+            &config,
+            15,
+            "manual close accepted for Wave 15 baseline",
+            None,
+            vec!["docs/evidence.md".to_string()],
+            Some("operator accepted failed promotion after inspection".to_string()),
+        )
+        .expect_err("override write failure should fail closure override");
+        assert!(!error.to_string().trim().is_empty());
+        assert!(!closure_override_path(&root, &config, 15).exists());
+        let rerun = list_rerun_intents(&root, &config)
+            .expect("load reruns")
+            .remove(&15)
+            .expect("rerun intent restored");
+        assert_eq!(rerun.status, RerunIntentStatus::Requested);
+        assert!(rerun.cleared_at_ms.is_none());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approve_human_input_request_records_answered_request() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-human-input-approve-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let request = HumanInputRequest {
+            request_id: wave_domain::HumanInputRequestId::new("human-16"),
+            wave_id: 16,
+            task_id: Some(task_id_for_agent(16, "A2")),
+            state: HumanInputState::Pending,
+            workflow_kind: HumanInputWorkflowKind::DependencyHandshake,
+            prompt: "Need dependency confirmation".to_string(),
+            route: "dependency:wave-15".to_string(),
+            requested_by: "A2".to_string(),
+            answer: None,
+        };
+        append_control_event(
+            &root,
+            &config,
+            ControlEvent::new(
+                "evt-human-16-seeded",
+                ControlEventKind::HumanInputUpdated,
+                16,
+            )
+            .with_created_at_ms(1)
+            .with_payload(ControlEventPayload::HumanInputUpdated {
+                request: request.clone(),
+            }),
+        )
+        .expect("seed human input request");
+
+        let updated =
+            approve_human_input_request(&root, &config, "human-16").expect("approve request");
+
+        assert_eq!(updated.state, HumanInputState::Answered);
+        assert_eq!(
+            updated.answer.as_deref(),
+            Some("Approved by operator from the Wave TUI")
+        );
+        assert_eq!(
+            latest_human_input_request(&root, &config, "human-16").expect("load updated request"),
+            updated
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dismiss_escalation_appends_resolution_record_once() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-escalation-dismiss-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let coordination_log = CoordinationLog::new(
+            config
+                .resolved_paths(&root)
+                .authority
+                .state_events_coordination_dir,
+        );
+        let escalation = CoordinationRecord::new(
+            "esc-16",
+            CoordinationRecordKind::Escalation,
+            16,
+            "Need operator review",
+        )
+        .with_created_at_ms(1)
+        .with_task_id(task_id_for_agent(16, "A6"))
+        .with_human_input_request_id(wave_domain::HumanInputRequestId::new("human-16"))
+        .with_detail("dependency handshake is blocked");
+        coordination_log
+            .append(&escalation)
+            .expect("append escalation");
+
+        let resolution = dismiss_escalation(&root, &config, "esc-16").expect("dismiss escalation");
+
+        assert_eq!(resolution.kind, CoordinationRecordKind::Clarification);
+        assert_eq!(resolution.related_record_ids, vec!["esc-16".to_string()]);
+        assert!(
+            coordination_log
+                .load_wave(16)
+                .expect("load coordination log")
+                .iter()
+                .any(|record| record.record_id == resolution.record_id)
+        );
+
+        let error =
+            dismiss_escalation(&root, &config, "esc-16").expect_err("second dismiss must fail");
+        assert!(error.to_string().contains("already resolved"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn seed_design_authority_live_proof_is_idempotent_and_leaves_wave_unblocked() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-proof-seed-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config = ProjectConfig {
+            authority: AuthorityConfig::default(),
+            ..ProjectConfig::default()
+        };
+        bootstrap_authority_roots(&root, &config).expect("bootstrap authority");
+
+        let report =
+            seed_design_authority_live_proof(&root, &config, 16).expect("seed proof events");
+        assert!(!report.already_present);
+        assert!(!report.event_ids.is_empty());
+
+        let second_report =
+            seed_design_authority_live_proof(&root, &config, 16).expect("seed proof twice");
+        assert!(second_report.already_present);
+        assert_eq!(second_report.event_ids, report.event_ids);
+
+        let control_log = ControlEventLog::new(
+            config
+                .resolved_paths(&root)
+                .authority
+                .state_events_control_dir,
+        );
+        let seeded_events = control_log
+            .load_wave(16)
+            .expect("load seeded events")
+            .into_iter()
+            .filter(|event| event.correlation_id.as_deref() == Some(report.correlation_id.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(seeded_events.len(), report.event_ids.len());
+        assert!(
+            seeded_events
+                .iter()
+                .any(|event| matches!(event.kind, ControlEventKind::FactObserved))
+        );
+        assert!(
+            seeded_events
+                .iter()
+                .any(|event| matches!(event.kind, ControlEventKind::LineageUpdated))
+        );
+        assert!(
+            seeded_events
+                .iter()
+                .any(|event| matches!(event.kind, ControlEventKind::HumanInputUpdated))
+        );
+        assert!(
+            seeded_events
+                .iter()
+                .any(|event| matches!(event.kind, ControlEventKind::ContradictionUpdated))
+        );
+
+        let design_states = build_wave_launch_design_states(
+            &[launchable_test_wave(16)],
+            &control_log.load_wave(16).expect("load full wave log"),
+        );
+        let design = design_states.get(&16).expect("design state");
+        assert!(!design.is_blocked());
+        assert!(design.unresolved_question_ids.is_empty());
+        assert!(design.pending_human_input_request_ids.is_empty());
+        assert!(design.invalidated_decision_ids.is_empty());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn rerun_scope_selection_distinguishes_closure_and_promotion_agents() {
         let wave = WaveDocument {
             path: PathBuf::from("waves/15.md"),
@@ -6543,6 +12861,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["README.md".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 15".to_string()),
             commit_message: Some("Feat: wave 15".to_string()),
@@ -6560,17 +12879,20 @@ mod tests {
         };
         let ordered = ordered_agents(&wave);
         assert_eq!(
-            ordered.iter().map(|agent| agent.id.as_str()).collect::<Vec<_>>(),
+            ordered
+                .iter()
+                .map(|agent| agent.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["A1", "A6", "A7", "A8", "A9", "A0"]
         );
 
         assert_eq!(
-            planned_execution_indices(&ordered, None, RerunScope::ClosureOnly)
+            planned_execution_indices(&ordered, None, RerunScope::ClosureOnly, 15, &[])
                 .expect("closure-only indices"),
             vec![1, 2, 3, 4, 5]
         );
         assert_eq!(
-            planned_execution_indices(&ordered, None, RerunScope::PromotionOnly)
+            planned_execution_indices(&ordered, None, RerunScope::PromotionOnly, 15, &[])
                 .expect("promotion-only indices"),
             vec![3, 4, 5]
         );
@@ -6668,9 +12990,240 @@ mod tests {
         };
 
         assert_eq!(
-            planned_execution_indices(&ordered, Some(&prior_run), RerunScope::FromFirstIncomplete)
-                .expect("resume indices"),
+            planned_execution_indices(
+                &ordered,
+                Some(&prior_run),
+                RerunScope::FromFirstIncomplete,
+                15,
+                &[],
+            )
+            .expect("resume indices"),
             vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn selective_invalidation_reuses_unrelated_successful_agents() {
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/16.md"),
+            metadata: WaveMetadata {
+                id: 16,
+                slug: "wave-16".to_string(),
+                title: "Wave 16".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                execution_model: wave_spec::WaveExecutionModel::Serial,
+                concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
+                owners: vec!["A0".to_string()],
+                depends_on: Vec::new(),
+                validation: Vec::new(),
+                rollback: Vec::new(),
+                proof: Vec::new(),
+                wave_class: wave_spec::WaveClass::Implementation,
+                intent: None,
+                delivery: None,
+                design_gate: None,
+            },
+            heading_title: Some("Wave 16".to_string()),
+            commit_message: Some("Feat: wave 16".to_string()),
+            component_promotions: Vec::new(),
+            deploy_environments: Vec::new(),
+            context7_defaults: None,
+            agents: vec![
+                test_agent("A1"),
+                test_agent("A2"),
+                closure_test_agent("A8"),
+                closure_test_agent("A9"),
+                closure_test_agent("A0"),
+            ],
+        };
+        let ordered = ordered_agents(&wave);
+        let prior_run = WaveRunRecord {
+            run_id: "wave-16-prior".to_string(),
+            wave_id: 16,
+            slug: "wave-16".to_string(),
+            title: "Wave 16".to_string(),
+            status: WaveRunStatus::Succeeded,
+            dry_run: false,
+            bundle_dir: PathBuf::from(".wave/state/build/specs/wave-16-prior"),
+            trace_path: PathBuf::from(".wave/traces/runs/wave-16-prior.json"),
+            codex_home: PathBuf::from(".wave/codex"),
+            created_at_ms: 1,
+            started_at_ms: Some(1),
+            launcher_pid: None,
+            launcher_started_at_ms: None,
+            worktree: None,
+            promotion: None,
+            scheduling: None,
+            completed_at_ms: Some(2),
+            agents: ordered
+                .iter()
+                .map(|agent| AgentRunRecord {
+                    id: agent.id.clone(),
+                    title: agent.title.clone(),
+                    status: WaveRunStatus::Succeeded,
+                    prompt_path: PathBuf::from(format!("prior-{}.md", agent.id)),
+                    last_message_path: PathBuf::from(format!("prior-{}.txt", agent.id)),
+                    events_path: PathBuf::from(format!("prior-{}.jsonl", agent.id)),
+                    stderr_path: PathBuf::from(format!("prior-{}.stderr", agent.id)),
+                    result_envelope_path: None,
+                    runtime_detail_path: None,
+                    expected_markers: agent
+                        .expected_final_markers()
+                        .iter()
+                        .map(|marker| (*marker).to_string())
+                        .collect(),
+                    observed_markers: agent
+                        .expected_final_markers()
+                        .iter()
+                        .map(|marker| (*marker).to_string())
+                        .collect(),
+                    exit_code: Some(0),
+                    error: None,
+                    runtime: None,
+                })
+                .collect(),
+            error: None,
+        };
+
+        let execution_indices = planned_execution_indices(
+            &ordered,
+            Some(&prior_run),
+            RerunScope::Full,
+            16,
+            &[task_id_for_agent(16, "A2").as_str().to_string()],
+        )
+        .expect("selective rerun indices");
+        assert_eq!(execution_indices, vec![1, 2, 3, 4]);
+
+        let mut current_agents = ordered
+            .iter()
+            .map(|agent| AgentRunRecord {
+                id: agent.id.clone(),
+                title: agent.title.clone(),
+                status: WaveRunStatus::Planned,
+                prompt_path: PathBuf::from(format!("current-{}.md", agent.id)),
+                last_message_path: PathBuf::from(format!("current-{}.txt", agent.id)),
+                events_path: PathBuf::from(format!("current-{}.jsonl", agent.id)),
+                stderr_path: PathBuf::from(format!("current-{}.stderr", agent.id)),
+                result_envelope_path: None,
+                runtime_detail_path: None,
+                expected_markers: agent
+                    .expected_final_markers()
+                    .iter()
+                    .map(|marker| (*marker).to_string())
+                    .collect(),
+                observed_markers: Vec::new(),
+                exit_code: None,
+                error: None,
+                runtime: None,
+            })
+            .collect::<Vec<_>>();
+        seed_reused_agent_records(
+            &mut current_agents,
+            &ordered,
+            Some(&prior_run),
+            &execution_indices,
+            RerunScope::Full,
+        )
+        .expect("seed reused records");
+
+        assert_eq!(current_agents[0], prior_run.agents[0]);
+        assert_eq!(current_agents[1].status, WaveRunStatus::Planned);
+        assert_eq!(current_agents[2].status, WaveRunStatus::Planned);
+        assert_eq!(current_agents[3].status, WaveRunStatus::Planned);
+        assert_eq!(current_agents[4].status, WaveRunStatus::Planned);
+    }
+
+    #[test]
+    fn invalidated_lineage_blocks_only_the_impacted_wave() {
+        let waves = vec![
+            launchable_test_wave(0),
+            launchable_test_wave(1),
+            launchable_test_wave(2),
+        ];
+        let design_states = build_wave_launch_design_states(
+            &waves,
+            &[
+                ControlEvent::new("evt-fact", ControlEventKind::FactObserved, 0).with_payload(
+                    ControlEventPayload::FactObserved {
+                        fact: wave_domain::FactRecord {
+                            fact_id: wave_domain::FactId::new("fact-api-shape"),
+                            wave_id: 0,
+                            task_id: Some(task_id_for_agent(0, "A1")),
+                            attempt_id: None,
+                            state: wave_domain::FactState::Active,
+                            summary: "Observed API shape".to_string(),
+                            detail: None,
+                            source_artifact: None,
+                            introduced_by_event_id: None,
+                            citations: Vec::new(),
+                            contradiction_ids: Vec::new(),
+                            superseded_by_fact_id: None,
+                        },
+                    },
+                ),
+                ControlEvent::new("evt-decision", ControlEventKind::LineageUpdated, 0)
+                    .with_payload(ControlEventPayload::LineageUpdated {
+                        lineage: LineageRecord {
+                            record_id: wave_domain::LineageRecordId::new("lineage-decision"),
+                            wave_id: 0,
+                            task_id: Some(task_id_for_agent(0, "A1")),
+                            subject: LineageRecordSubject::Decision {
+                                decision_id: wave_domain::DecisionId::new("decision-api-shape"),
+                            },
+                            authority: wave_domain::DesignAuthority::Review,
+                            state: LineageState::Decided,
+                            summary: "Implement against the observed API shape".to_string(),
+                            detail: None,
+                            citations: Vec::new(),
+                            upstream_refs: vec![LineageRef::Fact(wave_domain::FactId::new(
+                                "fact-api-shape",
+                            ))],
+                            supporting_fact_ids: vec![wave_domain::FactId::new("fact-api-shape")],
+                            downstream_task_ids: vec![task_id_for_agent(1, "A1")],
+                            downstream_wave_ids: Vec::new(),
+                            required_human_input_request_ids: Vec::new(),
+                            introduced_by_event_id: None,
+                        },
+                    }),
+                ControlEvent::new(
+                    "evt-contradiction",
+                    ControlEventKind::ContradictionUpdated,
+                    0,
+                )
+                .with_payload(ControlEventPayload::ContradictionUpdated {
+                    contradiction: wave_domain::ContradictionRecord {
+                        contradiction_id: wave_domain::ContradictionId::new("contradiction-api"),
+                        wave_id: 0,
+                        task_ids: vec![task_id_for_agent(0, "A1"), task_id_for_agent(1, "A1")],
+                        fact_ids: vec![wave_domain::FactId::new("fact-api-shape")],
+                        state: wave_domain::ContradictionState::Detected,
+                        summary: "The API shape changed".to_string(),
+                        detail: None,
+                        introduced_by_event_id: None,
+                        invalidated_refs: vec![LineageRef::Fact(wave_domain::FactId::new(
+                            "fact-api-shape",
+                        ))],
+                    },
+                }),
+            ],
+        );
+
+        assert!(
+            design_states
+                .get(&1)
+                .expect("impacted wave")
+                .selectively_invalidated_task_ids
+                .contains(&task_id_for_agent(1, "A1").as_str().to_string())
+        );
+        assert!(design_states.get(&1).expect("impacted wave").is_blocked());
+        assert!(!design_states.get(&2).expect("unaffected wave").is_blocked());
+        assert!(
+            design_states
+                .get(&2)
+                .expect("unaffected wave")
+                .invalidated_decision_ids
+                .is_empty()
         );
     }
 
@@ -6695,6 +13248,7 @@ mod tests {
                 validation: Vec::new(),
                 rollback: Vec::new(),
                 proof: Vec::new(),
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 15".to_string()),
             commit_message: Some("Feat: wave 15".to_string()),
@@ -6865,7 +13419,12 @@ echo '{"loggedIn":true}'
             |status, stdout, _| status && stdout.contains("\"loggedIn\":true"),
         );
         assert!(!ok);
-        assert!(detail.contains("timed out after 50ms"));
+        assert!(
+            detail.contains("timed out after")
+                || detail.contains("failed while waiting")
+                || detail.contains("failed")
+        );
+        assert!(detail.contains("slow-probe"));
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -9701,6 +16260,13 @@ echo '{"loggedIn":true}'
                     "[wave-doc-delta]".to_string(),
                     "[wave-component]".to_string(),
                 ],
+                depends_on_agents: Vec::new(),
+                reads_artifacts_from: Vec::new(),
+                writes_artifacts: Vec::new(),
+                barrier_class: wave_spec::BarrierClass::Independent,
+                parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                exclusive_resources: Vec::new(),
+                parallel_with: Vec::new(),
                 prompt: format!(
                     "Primary goal:\n- implement fixture work\n\nRequired context before coding:\n- Read README.md.\n\nSpecific expectations:\n- Emit the final [wave-proof], [wave-doc-delta], and [wave-component] markers as plain lines by themselves at the end of the output.\n\nFile ownership (only touch these paths):\n- src/{id}.rs"
                 ),
@@ -9760,6 +16326,13 @@ echo '{"loggedIn":true}'
             deliverables: Vec::new(),
             file_ownership: vec![owned_path.to_string()],
             final_markers: vec![final_marker.to_string()],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::ClosureBarrier,
+            parallel_safety: wave_spec::ParallelSafetyClass::Serialized,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: format!(
                 "Primary goal:\n- close the fixture wave\n\nRequired context before coding:\n- Read README.md.\n\nSpecific expectations:\n- Emit the final {final_marker} marker as a plain last line.\n\nFile ownership (only touch these paths):\n- {owned_path}"
             ),
@@ -9794,6 +16367,13 @@ echo '{"loggedIn":true}'
                 "[wave-doc-delta]".to_string(),
                 "[wave-component]".to_string(),
             ],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::Independent,
+            parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: "Primary goal:\n- land the runtime fixture\n\nRequired context before coding:\n- Read README.md.\n\nSpecific expectations:\n- Emit the final [wave-proof], [wave-doc-delta], and [wave-component] markers as plain lines by themselves at the end of the output.\n\nFile ownership (only touch these paths):\n- README.md".to_string(),
         };
 
@@ -9809,6 +16389,7 @@ echo '{"loggedIn":true}'
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["README.md".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some(format!("Wave {id}")),
             commit_message: Some(format!("Feat: wave {id}")),
@@ -10176,6 +16757,171 @@ esac
         wave
     }
 
+    #[test]
+    fn ready_multi_agent_indices_allows_parallel_safe_implementation_pair() {
+        let mut wave = parallel_launchable_test_wave(18, "src/runtime_a.rs");
+        wave.metadata.execution_model = wave_spec::WaveExecutionModel::MultiAgent;
+        wave.metadata
+            .concurrency_budget
+            .max_concurrent_implementation_agents = Some(2);
+        wave.agents[0].parallel_safety = wave_spec::ParallelSafetyClass::ParallelSafe;
+        let mut second_impl = wave.agents[0].clone();
+        second_impl.id = "A2".to_string();
+        second_impl.title = "Implementation B".to_string();
+        second_impl.file_ownership = vec!["src/runtime_b.rs".to_string()];
+        second_impl.deliverables = vec!["src/runtime_b.rs".to_string()];
+        second_impl.writes_artifacts = vec!["runtime-b-state".to_string()];
+        second_impl.parallel_safety = wave_spec::ParallelSafetyClass::ParallelSafe;
+        wave.agents.insert(1, second_impl);
+        wave.agents[2].depends_on_agents = vec!["A1".to_string(), "A2".to_string()];
+        wave.agents[2].barrier_class = wave_spec::BarrierClass::IntegrationBarrier;
+
+        let ordered = ordered_agents(&wave);
+        let execution = BTreeSet::from([0usize, 1usize, 2usize]);
+        let ready = ready_multi_agent_indices(
+            &wave,
+            &ordered,
+            &execution,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &[],
+        );
+        assert_eq!(ready, vec![0, 1]);
+
+        let completed = HashSet::from(["A1".to_string(), "A2".to_string()]);
+        let ready_after_frontier = ready_multi_agent_indices(
+            &wave,
+            &ordered,
+            &execution,
+            &completed,
+            &HashSet::new(),
+            &HashSet::new(),
+            &[],
+        );
+        assert!(ready_after_frontier.contains(&2));
+    }
+
+    #[test]
+    fn integration_barrier_waits_on_e0_frontier() {
+        let mut wave = launchable_test_wave(18);
+        wave.metadata.execution_model = wave_spec::WaveExecutionModel::MultiAgent;
+        wave.agents = vec![
+            test_agent("A1"),
+            closure_test_agent("E0"),
+            closure_test_agent("A8"),
+            closure_test_agent("A9"),
+            closure_test_agent("A0"),
+        ];
+        wave.agents[2].barrier_class = wave_spec::BarrierClass::IntegrationBarrier;
+
+        let compiled = wave_spec::compiled_multi_agent_dependencies(&wave);
+        let completed_without_eval = HashSet::from(["A1".to_string()]);
+        assert!(!barrier_satisfied_for_agent(
+            &wave.agents[2],
+            &completed_without_eval,
+            &[],
+            &compiled,
+        ));
+
+        let completed_with_eval = HashSet::from(["A1".to_string(), "E0".to_string()]);
+        assert!(barrier_satisfied_for_agent(
+            &wave.agents[2],
+            &completed_with_eval,
+            &[],
+            &compiled,
+        ));
+    }
+
+    #[test]
+    fn artifact_reads_block_runtime_readiness_until_writer_completes() {
+        let mut wave = parallel_launchable_test_wave(18, "src/runtime_a.rs");
+        wave.metadata.execution_model = wave_spec::WaveExecutionModel::MultiAgent;
+        wave.metadata
+            .concurrency_budget
+            .max_concurrent_implementation_agents = Some(2);
+        wave.agents[0].writes_artifacts = vec!["runtime-a-state".to_string()];
+
+        let mut downstream = wave.agents[0].clone();
+        downstream.id = "A2".to_string();
+        downstream.title = "Implementation B".to_string();
+        downstream.file_ownership = vec!["src/runtime_b.rs".to_string()];
+        downstream.deliverables = vec!["src/runtime_b.rs".to_string()];
+        downstream.reads_artifacts_from = vec!["runtime-a-state".to_string()];
+        downstream.writes_artifacts = vec!["runtime-b-state".to_string()];
+        wave.agents.insert(1, downstream);
+
+        let ordered = ordered_agents(&wave);
+        let execution = BTreeSet::from([0usize, 1usize]);
+        let ready = ready_multi_agent_indices(
+            &wave,
+            &ordered,
+            &execution,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &[],
+        );
+        assert_eq!(ready, vec![0]);
+
+        let completed = HashSet::from(["A1".to_string()]);
+        let ready_after_writer = ready_multi_agent_indices(
+            &wave,
+            &ordered,
+            &execution,
+            &completed,
+            &HashSet::new(),
+            &HashSet::new(),
+            &[],
+        );
+        assert_eq!(ready_after_writer, vec![1]);
+    }
+
+    #[test]
+    fn closure_barrier_waits_on_frontier_not_closure_peers() {
+        let mut wave = launchable_test_wave(18);
+        wave.metadata.execution_model = wave_spec::WaveExecutionModel::MultiAgent;
+        let a1 = test_agent("A1");
+        let mut a8 = closure_test_agent("A8");
+        a8.barrier_class = wave_spec::BarrierClass::IntegrationBarrier;
+        let mut a9 = closure_test_agent("A9");
+        a9.depends_on_agents = vec!["A8".to_string()];
+        a9.barrier_class = wave_spec::BarrierClass::ClosureBarrier;
+        let mut a0 = closure_test_agent("A0");
+        a0.depends_on_agents = vec!["A8".to_string(), "A9".to_string()];
+        a0.barrier_class = wave_spec::BarrierClass::ClosureBarrier;
+        wave.agents = vec![a1, a8, a9, a0];
+
+        let compiled = wave_spec::compiled_multi_agent_dependencies(&wave);
+        let completed_frontier = HashSet::from(["A1".to_string(), "A8".to_string()]);
+        assert!(barrier_satisfied_for_agent(
+            &wave.agents[2],
+            &completed_frontier,
+            &[],
+            &compiled,
+        ));
+        assert!(!barrier_satisfied_for_agent(
+            &wave.agents[3],
+            &completed_frontier,
+            &[],
+            &compiled,
+        ));
+    }
+
+    #[test]
+    fn ownership_overlap_respects_path_segments() {
+        let mut left = test_agent("A1");
+        left.file_ownership = vec!["src/foo".to_string()];
+
+        let mut sibling = test_agent("A2");
+        sibling.file_ownership = vec!["src/foobar".to_string()];
+        assert!(!ownership_overlaps(&left, &sibling));
+
+        let mut nested = test_agent("A3");
+        nested.file_ownership = vec!["src/foo/bar.rs".to_string()];
+        assert!(ownership_overlaps(&left, &nested));
+    }
+
     fn events_for_wave_worktree_allocations(
         root: &Path,
         config: &ProjectConfig,
@@ -10274,8 +17020,11 @@ esac
     fn write_run_record_fixture(root: &Path, config: &ProjectConfig, run: &WaveRunRecord) {
         let path = state_runs_dir(root, config).join(format!("{}.json", run.run_id));
         fs::create_dir_all(path.parent().expect("run record parent")).expect("create run dir");
-        fs::write(&path, serde_json::to_string_pretty(run).expect("serialize run"))
-            .expect("write run record");
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(run).expect("serialize run"),
+        )
+        .expect("write run record");
     }
 
     #[test]

@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use wave_spec::WaveAgent;
+use wave_spec::WaveClass;
 use wave_spec::WaveDocument;
 
 const REQUIRED_PROMPT_SECTIONS: [&str; 4] = [
@@ -145,6 +146,53 @@ pub fn lint_project(root: &Path, waves: &[WaveDocument]) -> Vec<LintFinding> {
                 rule: "wave-owners-required",
                 message: "wave front matter must declare at least one non-empty owner".to_string(),
             });
+        }
+
+        if wave.metadata.wave_class != WaveClass::Implementation && wave.metadata.intent.is_none() {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "wave-intent-required",
+                message: "non-implementation waves must declare an intent".to_string(),
+            });
+        }
+
+        if wave.metadata.delivery.is_some() && wave.metadata.intent.is_none() {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "delivery-intent-required",
+                message: "delivery-aware waves must declare an intent".to_string(),
+            });
+        }
+
+        if let Some(delivery) = wave.metadata.delivery.as_ref() {
+            if delivery
+                .initiative_id
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+                && delivery
+                    .release_id
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
+                && delivery
+                    .acceptance_package_id
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
+            {
+                findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "delivery-link-required",
+                    message: "delivery-aware waves must link at least one initiative, release, or acceptance package id".to_string(),
+                });
+            }
         }
 
         if wave
@@ -336,6 +384,18 @@ pub fn lint_project(root: &Path, waves: &[WaveDocument]) -> Vec<LintFinding> {
             });
         }
 
+        if wave.metadata.wave_class == WaveClass::Implementation
+            && wave.code_implementation_agents().next().is_none()
+        {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "code-implementation-agent-required",
+                message: "implementation waves must declare at least one non-design code agent"
+                    .to_string(),
+            });
+        }
+
         if wave.agents.is_empty() {
             findings.push(LintFinding {
                 wave_id: wave.metadata.id,
@@ -374,6 +434,9 @@ pub fn lint_project(root: &Path, waves: &[WaveDocument]) -> Vec<LintFinding> {
                 });
             }
         }
+
+        lint_design_gate(wave, &mut findings);
+        lint_multi_agent_contract(wave, &mut findings);
 
         for left in 0..owned_paths.len() {
             for right in left + 1..owned_paths.len() {
@@ -1079,6 +1142,329 @@ fn normalized_owned_path_set(paths: &[String]) -> BTreeSet<String> {
         .collect()
 }
 
+fn lint_design_gate(wave: &WaveDocument, findings: &mut Vec<LintFinding>) {
+    let Some(design_gate) = wave.metadata.design_gate.as_ref() else {
+        return;
+    };
+
+    if wave.metadata.wave_class != WaveClass::Implementation {
+        findings.push(LintFinding {
+            wave_id: wave.metadata.id,
+            severity: FindingSeverity::Error,
+            rule: "design-gate-wave-class",
+            message: "design gates are only supported on implementation waves".to_string(),
+        });
+    }
+
+    if design_gate.agent_ids.is_empty() {
+        findings.push(LintFinding {
+            wave_id: wave.metadata.id,
+            severity: FindingSeverity::Error,
+            rule: "design-gate-agents-required",
+            message: "design gates must list at least one non-closure design worker".to_string(),
+        });
+    }
+
+    if design_gate.ready_marker.trim().is_empty() {
+        findings.push(LintFinding {
+            wave_id: wave.metadata.id,
+            severity: FindingSeverity::Error,
+            rule: "design-gate-ready-marker-required",
+            message: "design gates must declare a non-empty ready marker".to_string(),
+        });
+    }
+
+    let mut seen_agent_ids = HashSet::new();
+    for agent_id in &design_gate.agent_ids {
+        let normalized = agent_id.trim();
+        if normalized.is_empty() {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "design-gate-agent-id-required",
+                message: "design gate agent ids must not be empty".to_string(),
+            });
+            continue;
+        }
+
+        if !seen_agent_ids.insert(normalized.to_string()) {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "design-gate-agent-id-duplicate",
+                message: format!("design gate agent {} is listed more than once", normalized),
+            });
+            continue;
+        }
+
+        let Some(agent) = wave.agents.iter().find(|agent| agent.id == normalized) else {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "design-gate-agent-known",
+                message: format!("design gate references unknown agent {}", normalized),
+            });
+            continue;
+        };
+
+        if agent.id == "A6" || agent.is_closure_agent() {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "design-gate-agent-closure",
+                message: format!(
+                    "design gate agent {} must be a pre-implementation design worker, not a closure reviewer",
+                    normalized
+                ),
+            });
+        }
+
+        if !agent.is_design_worker() {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "design-gate-agent-role",
+                message: format!(
+                    "design gate agent {} must declare the role-design skill",
+                    normalized
+                ),
+            });
+        }
+    }
+}
+
+fn lint_multi_agent_contract(wave: &WaveDocument, findings: &mut Vec<LintFinding>) {
+    if !wave.is_multi_agent() {
+        return;
+    }
+
+    let known_agent_ids = wave
+        .agents
+        .iter()
+        .map(|agent| agent.id.as_str())
+        .collect::<HashSet<_>>();
+    let mut artifact_writers = BTreeMap::<String, Vec<String>>::new();
+    for agent in &wave.agents {
+        let mut seen_writes = BTreeSet::new();
+        for artifact in &agent.writes_artifacts {
+            let normalized = artifact.trim();
+            if normalized.is_empty() {
+                findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-writes-artifact-required",
+                    message: format!("agent {} declares an empty written artifact", agent.id),
+                });
+                continue;
+            }
+            if !seen_writes.insert(normalized.to_string()) {
+                findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-writes-artifact-duplicate",
+                    message: format!(
+                        "agent {} declares written artifact {} more than once",
+                        agent.id, normalized
+                    ),
+                });
+            }
+            artifact_writers
+                .entry(normalized.to_string())
+                .or_default()
+                .push(agent.id.clone());
+        }
+
+        let mut seen_dependencies = BTreeSet::new();
+        for dependency_agent_id in &agent.depends_on_agents {
+            let normalized = dependency_agent_id.trim();
+            if normalized.is_empty() {
+                findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-depends-on-required",
+                    message: format!("agent {} declares an empty MAS dependency", agent.id),
+                });
+                continue;
+            }
+            if !seen_dependencies.insert(normalized.to_string()) {
+                findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-depends-on-duplicate",
+                    message: format!(
+                        "agent {} declares MAS dependency {} more than once",
+                        agent.id, normalized
+                    ),
+                });
+                continue;
+            }
+            if normalized == agent.id {
+                findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-depends-on-self",
+                    message: format!("agent {} must not depend on itself", agent.id),
+                });
+                continue;
+            }
+            if !known_agent_ids.contains(normalized) {
+                findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-depends-on-known",
+                    message: format!("agent {} depends on unknown agent {}", agent.id, normalized),
+                });
+            }
+        }
+
+        let mut seen_reads = BTreeSet::new();
+        for artifact in &agent.reads_artifacts_from {
+            let normalized = artifact.trim();
+            if normalized.is_empty() {
+                findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-reads-artifact-required",
+                    message: format!("agent {} declares an empty read artifact", agent.id),
+                });
+                continue;
+            }
+            if !seen_reads.insert(normalized.to_string()) {
+                findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-reads-artifact-duplicate",
+                    message: format!(
+                        "agent {} declares read artifact {} more than once",
+                        agent.id, normalized
+                    ),
+                });
+            }
+        }
+
+        let mut seen_resources = BTreeSet::new();
+        for resource in &agent.exclusive_resources {
+            let normalized = resource.trim();
+            if normalized.is_empty() {
+                findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-exclusive-resource-required",
+                    message: format!("agent {} declares an empty exclusive resource", agent.id),
+                });
+                continue;
+            }
+            if !seen_resources.insert(normalized.to_string()) {
+                findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-exclusive-resource-duplicate",
+                    message: format!(
+                        "agent {} declares exclusive resource {} more than once",
+                        agent.id, normalized
+                    ),
+                });
+            }
+        }
+
+        let mut seen_parallel_with = BTreeSet::new();
+        for peer_id in &agent.parallel_with {
+            let normalized = peer_id.trim();
+            if normalized.is_empty() {
+                findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-parallel-with-required",
+                    message: format!("agent {} declares an empty parallel_with entry", agent.id),
+                });
+                continue;
+            }
+            if !seen_parallel_with.insert(normalized.to_string()) {
+                findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-parallel-with-duplicate",
+                    message: format!(
+                        "agent {} declares parallel_with {} more than once",
+                        agent.id, normalized
+                    ),
+                });
+                continue;
+            }
+            if normalized == agent.id {
+                findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-parallel-with-self",
+                    message: format!("agent {} must not list itself in parallel_with", agent.id),
+                });
+                continue;
+            }
+            if !known_agent_ids.contains(normalized) {
+                findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-parallel-with-known",
+                    message: format!(
+                        "agent {} parallel_with references unknown agent {}",
+                        agent.id, normalized
+                    ),
+                });
+            }
+        }
+    }
+
+    for (artifact, writers) in &artifact_writers {
+        if writers.len() > 1 {
+            findings.push(LintFinding {
+                wave_id: wave.metadata.id,
+                severity: FindingSeverity::Error,
+                rule: "agent-writes-artifact-ambiguous",
+                message: format!(
+                    "artifact {} is written by multiple agents: {}",
+                    artifact,
+                    writers.join(", ")
+                ),
+            });
+        }
+    }
+
+    for agent in &wave.agents {
+        for artifact in &agent.reads_artifacts_from {
+            let normalized = artifact.trim();
+            if normalized.is_empty() {
+                continue;
+            }
+            match artifact_writers.get(normalized) {
+                Some(writers) if writers.len() == 1 => {}
+                Some(_) => {}
+                None => findings.push(LintFinding {
+                    wave_id: wave.metadata.id,
+                    severity: FindingSeverity::Error,
+                    rule: "agent-reads-artifact-known",
+                    message: format!(
+                        "agent {} reads artifact {} but no agent writes it",
+                        agent.id, normalized
+                    ),
+                }),
+            }
+        }
+    }
+
+    let cycle = wave_spec::compiled_multi_agent_dependency_cycle(wave);
+    if !cycle.is_empty() {
+        findings.push(LintFinding {
+            wave_id: wave.metadata.id,
+            severity: FindingSeverity::Error,
+            rule: "agent-dependency-cycle",
+            message: format!(
+                "multi-agent dependency cycle detected: {}",
+                cycle.join(" -> ")
+            ),
+        });
+    }
+}
+
 fn load_skill_catalog(root: &Path) -> (Vec<SkillCatalogIssue>, HashSet<String>) {
     let skills_dir = root.join("skills");
     let mut issues = Vec::new();
@@ -1467,12 +1853,7 @@ fn is_weak_context7_query(query: &str) -> bool {
 }
 
 fn ownership_conflict(left: &str, right: &str) -> bool {
-    let left = normalize_owned_path(left);
-    let right = normalize_owned_path(right);
-
-    left == right
-        || left.starts_with(&(right.clone() + "/"))
-        || right.starts_with(&(left.clone() + "/"))
+    wave_spec::owned_path_conflict(left, right)
 }
 
 fn normalize_owned_path(path: &str) -> String {
@@ -1497,6 +1878,26 @@ mod tests {
     use wave_spec::ProofLevel;
     use wave_spec::WaveMetadata;
 
+    fn default_wave_metadata() -> WaveMetadata {
+        WaveMetadata {
+            id: 0,
+            slug: String::new(),
+            title: String::new(),
+            mode: ExecutionMode::DarkFactory,
+            owners: Vec::new(),
+            depends_on: Vec::new(),
+            validation: Vec::new(),
+            rollback: Vec::new(),
+            proof: Vec::new(),
+            wave_class: wave_spec::WaveClass::Implementation,
+            intent: None,
+            delivery: None,
+            design_gate: None,
+            execution_model: wave_spec::WaveExecutionModel::Serial,
+            concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
+        }
+    }
+
     #[test]
     fn flags_missing_rich_wave_sections() {
         let wave = WaveDocument {
@@ -1511,6 +1912,7 @@ mod tests {
                 validation: Vec::new(),
                 rollback: Vec::new(),
                 proof: Vec::new(),
+                ..default_wave_metadata()
             },
             heading_title: None,
             commit_message: None,
@@ -1553,6 +1955,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 1 - Example".to_string()),
             commit_message: Some("Feat: example".to_string()),
@@ -1597,6 +2000,13 @@ mod tests {
                     "[wave-doc-delta]".to_string(),
                     "[wave-component]".to_string(),
                 ],
+                depends_on_agents: Vec::new(),
+                reads_artifacts_from: Vec::new(),
+                writes_artifacts: Vec::new(),
+                barrier_class: wave_spec::BarrierClass::Independent,
+                parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                exclusive_resources: Vec::new(),
+                parallel_with: Vec::new(),
                 prompt: implementation_prompt("README.md"),
             }],
         };
@@ -1650,6 +2060,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 1 - Closure Skills".to_string()),
             commit_message: Some("Feat: closure skills".to_string()),
@@ -1701,6 +2112,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("README.md"),
                 },
             ],
@@ -1735,6 +2153,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 2 - Example".to_string()),
             commit_message: Some("Feat: overlap".to_string()),
@@ -1801,6 +2220,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("crates/wave-control-plane/"),
                 },
                 WaveAgent {
@@ -1833,6 +2259,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("crates/wave-control-plane/src/lib.rs"),
                 },
             ],
@@ -1860,6 +2293,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 2 - Closure Only".to_string()),
             commit_message: Some("Feat: closure only".to_string()),
@@ -1968,6 +2402,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 6 - Weak Context7".to_string()),
             commit_message: Some("Feat: weak context7".to_string()),
@@ -2030,6 +2465,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("crates/wave-dark-factory/src/lib.rs"),
                 },
             ],
@@ -2060,6 +2502,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 6 - None Context7".to_string()),
             commit_message: Some("Feat: none context7".to_string()),
@@ -2122,6 +2565,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("crates/wave-dark-factory/src/lib.rs"),
                 },
             ],
@@ -2152,6 +2602,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 3 - Example".to_string()),
             commit_message: Some("Feat: prompt contract".to_string()),
@@ -2225,6 +2676,13 @@ mod tests {
                         "[wave-component]".to_string(),
                         "[wave-gate]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: [
                         "Primary goal:",
                         "- Ship the implementation slice.",
@@ -2290,6 +2748,7 @@ mod tests {
                 validation: vec!["cargo test".to_string(), "  ".to_string()],
                 rollback: vec!["git revert".to_string(), "git revert".to_string()],
                 proof: vec!["proof.json".to_string(), "".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 7 - Contract Entries".to_string()),
             commit_message: Some("Feat: contract entries".to_string()),
@@ -2356,6 +2815,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("crates/wave-dark-factory/src/lib.rs"),
                 },
             ],
@@ -2390,6 +2856,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 3 - Prompt Order".to_string()),
             commit_message: Some("Feat: prompt order".to_string()),
@@ -2456,6 +2923,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: [
                         "Primary goal:",
                         "- Ship the implementation slice.",
@@ -2496,6 +2970,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 4 - Ownership".to_string()),
             commit_message: Some("Feat: ownership contract".to_string()),
@@ -2562,6 +3037,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("crates/wave-dark-factory/src/lib.rs"),
                 },
             ],
@@ -2589,6 +3071,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 4 - Context7".to_string()),
             commit_message: Some("Feat: context7 contract".to_string()),
@@ -2655,6 +3138,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("README.md"),
                 },
             ],
@@ -2702,6 +3192,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 5 - Closure Contract".to_string()),
             commit_message: Some("Feat: closure contract".to_string()),
@@ -2763,6 +3254,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("crates/wave-spec/src/lib.rs"),
                 },
             ],
@@ -2804,6 +3302,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 6 - Marker Format".to_string()),
             commit_message: Some("Feat: marker format".to_string()),
@@ -2870,6 +3369,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: [
                         "Primary goal:",
                         "- Ship the implementation slice.",
@@ -2947,6 +3453,167 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn flags_invalid_multi_agent_contract_fields() {
+        let mut a1 = implementation_agent("A1", "src/runtime_a.rs");
+        a1.depends_on_agents = vec!["A2".to_string()];
+        a1.writes_artifacts = vec!["shared-state".to_string()];
+        a1.parallel_with = vec!["missing-agent".to_string()];
+        a1.exclusive_resources = vec!["runtime-core".to_string(), "runtime-core".to_string()];
+
+        let mut a2 = implementation_agent("A2", "src/runtime_b.rs");
+        a2.depends_on_agents = vec!["A1".to_string()];
+        a2.writes_artifacts = vec!["shared-state".to_string()];
+
+        let mut a8 = closure_agent(
+            "A8",
+            "docs/agents/wave-integration-role.md",
+            "[wave-integration]",
+            ".wave/integration/wave-18.md",
+        );
+        a8.reads_artifacts_from = vec!["shared-state".to_string(), "missing-state".to_string()];
+
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/18.md"),
+            metadata: WaveMetadata {
+                id: 18,
+                slug: "wave-18".to_string(),
+                title: "Wave 18".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["runtime".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: vec!["proof.json".to_string()],
+                execution_model: wave_spec::WaveExecutionModel::MultiAgent,
+                ..default_wave_metadata()
+            },
+            heading_title: Some("Wave 18 - MAS".to_string()),
+            commit_message: Some("Feat: MAS".to_string()),
+            component_promotions: vec![wave_spec::ComponentPromotion {
+                component: "example".to_string(),
+                target: "repo-landed".to_string(),
+            }],
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "custom default".to_string(),
+            }],
+            context7_defaults: Some(Context7Defaults {
+                bundle: "rust-config-spec".to_string(),
+                query: Some(
+                    "Multi-agent authored-wave metadata, graph validation, and fail-closed runtime contracts".to_string(),
+                ),
+            }),
+            agents: vec![
+                closure_agent(
+                    "A0",
+                    "docs/agents/wave-cont-qa-role.md",
+                    "[wave-gate]",
+                    ".wave/reviews/wave-18.md",
+                ),
+                a8,
+                closure_agent(
+                    "A9",
+                    "docs/agents/wave-documentation-role.md",
+                    "[wave-doc-closure]",
+                    "docs/plans/master-plan.md",
+                ),
+                a1,
+                a2,
+            ],
+        };
+
+        let findings = lint_project(&workspace_root(), &[wave]);
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "agent-parallel-with-known" && finding.message.contains("missing-agent")
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "agent-exclusive-resource-duplicate"
+                && finding.message.contains("runtime-core")
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "agent-writes-artifact-ambiguous"
+                && finding.message.contains("shared-state")
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "agent-reads-artifact-known"
+                && finding.message.contains("missing-state")
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "agent-dependency-cycle" && finding.message.contains("A1 -> A2 -> A1")
+        }));
+    }
+
+    #[test]
+    fn flags_barrier_expanded_cycles_in_multi_agent_graph() {
+        let mut a1 = implementation_agent("A1", "src/runtime_a.rs");
+        a1.depends_on_agents = vec!["A8".to_string()];
+
+        let mut a8 = closure_agent(
+            "A8",
+            "docs/agents/wave-integration-role.md",
+            "[wave-integration]",
+            ".wave/integration/wave-18.md",
+        );
+        a8.barrier_class = wave_spec::BarrierClass::IntegrationBarrier;
+
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/18.md"),
+            metadata: WaveMetadata {
+                id: 18,
+                slug: "wave-18".to_string(),
+                title: "Wave 18".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["runtime".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: vec!["proof.json".to_string()],
+                execution_model: wave_spec::WaveExecutionModel::MultiAgent,
+                ..default_wave_metadata()
+            },
+            heading_title: Some("Wave 18 - MAS".to_string()),
+            commit_message: Some("Feat: MAS".to_string()),
+            component_promotions: vec![wave_spec::ComponentPromotion {
+                component: "example".to_string(),
+                target: "repo-landed".to_string(),
+            }],
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "custom default".to_string(),
+            }],
+            context7_defaults: Some(Context7Defaults {
+                bundle: "rust-config-spec".to_string(),
+                query: Some(
+                    "Barrier-expanded MAS dependency graphs must still remain acyclic".to_string(),
+                ),
+            }),
+            agents: vec![
+                closure_agent(
+                    "A0",
+                    "docs/agents/wave-cont-qa-role.md",
+                    "[wave-gate]",
+                    ".wave/reviews/wave-18.md",
+                ),
+                a8,
+                closure_agent(
+                    "A9",
+                    "docs/agents/wave-documentation-role.md",
+                    "[wave-doc-closure]",
+                    "docs/plans/master-plan.md",
+                ),
+                a1,
+            ],
+        };
+
+        let findings = lint_project(&workspace_root(), &[wave]);
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "agent-dependency-cycle"
+                && finding.message.contains("A8")
+                && finding.message.contains("A1")
+        }));
+    }
+
     fn closure_agent(id: &str, prompt_path: &str, marker: &str, owned_path: &str) -> WaveAgent {
         WaveAgent {
             id: id.to_string(),
@@ -2964,6 +3631,13 @@ mod tests {
             deliverables: Vec::new(),
             file_ownership: vec![owned_path.to_string()],
             final_markers: vec![marker.to_string()],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::Independent,
+            parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: [
                 "Primary goal:",
                 "- Close the wave honestly.",
@@ -2978,6 +3652,45 @@ mod tests {
                 &format!("- {owned_path}"),
             ]
             .join("\n"),
+        }
+    }
+
+    fn implementation_agent(id: &str, owned_path: &str) -> WaveAgent {
+        WaveAgent {
+            id: id.to_string(),
+            title: format!("Implementation {id}"),
+            role_prompts: Vec::new(),
+            executor: BTreeMap::from([("profile".to_string(), "implement-codex".to_string())]),
+            context7: Some(Context7Defaults {
+                bundle: "rust-config-spec".to_string(),
+                query: Some(
+                    "Typed config loading, authored-wave parsing, and dark-factory lint enforcement for this implementation slice".to_string(),
+                ),
+            }),
+            skills: vec!["wave-core".to_string()],
+            components: vec!["example".to_string()],
+            capabilities: vec!["capability".to_string()],
+            exit_contract: Some(ExitContract {
+                completion: CompletionLevel::Integrated,
+                durability: DurabilityLevel::Durable,
+                proof: ProofLevel::Integration,
+                doc_impact: DocImpact::Owned,
+            }),
+            deliverables: vec![owned_path.to_string()],
+            file_ownership: vec![owned_path.to_string()],
+            final_markers: vec![
+                "[wave-proof]".to_string(),
+                "[wave-doc-delta]".to_string(),
+                "[wave-component]".to_string(),
+            ],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::Independent,
+            parallel_safety: wave_spec::ParallelSafetyClass::ParallelSafe,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
+            prompt: implementation_prompt(owned_path),
         }
     }
 

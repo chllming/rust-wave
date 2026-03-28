@@ -2,6 +2,8 @@
 
 This folder is the human-inspectable proof bundle for the Wave 14 repo-local parallel-wave cutover.
 
+This proof bundle is intentionally Wave-14 scoped. It proves the parallel-wave boundary, not the entire later branch baseline.
+
 What is live now:
 
 - two non-conflicting waves can execute concurrently in repo-local use
@@ -13,13 +15,13 @@ What is live now:
 - FIFO fairness within the claimable implementation lane now affects admission order, while reserved closure capacity and lease-level preemption still outrank that lane
 - reducer-backed projections expose worktree identity, promotion state, scheduler phase, fairness rank, protected closure state, and preemption evidence
 
-What is still not live:
+What this proof bundle does not prove:
 
-- Claude runtime adapters
-- a runtime policy engine beyond the current scheduler-budget and scheduling-state visibility
-- portfolio or release-layer delivery state
+- later runtime plurality beyond the Wave 14 Codex-first cut
+- a richer runtime policy engine beyond the current scheduler-budget and scheduling-state visibility
 - question, contradiction, and decision-lineage invalidation
-- per-agent worktrees
+- the later delivery layer above waves
+- true intra-wave MAS sandboxes and merge queue authority
 
 ## Proof Files
 
@@ -87,4 +89,4 @@ What is still not live:
    `cargo run -p wave-cli -- trace latest --wave 14 --json`
    `cargo run -p wave-cli -- trace replay --wave 14 --json`
 
-This proof bundle is intentionally Wave-14 scoped: repo-local parallel-wave execution is now real, but runtime plurality, richer runtime policy, and delivery-layer aggregation remain Wave 15 and later work.
+This proof bundle is intentionally Wave-14 scoped: repo-local parallel-wave execution is what it proves. Runtime plurality landed later, the delivery layer above waves is now part of the product-factory branch, and true intra-wave MAS remains later work.

@@ -3,6 +3,7 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -27,6 +28,94 @@ pub struct WaveMetadata {
     pub rollback: Vec<String>,
     #[serde(default)]
     pub proof: Vec<String>,
+    #[serde(default)]
+    pub wave_class: WaveClass,
+    #[serde(default)]
+    pub intent: Option<WaveIntent>,
+    #[serde(default)]
+    pub delivery: Option<WaveDeliveryLink>,
+    #[serde(default)]
+    pub design_gate: Option<DesignGateSpec>,
+    #[serde(default)]
+    pub execution_model: WaveExecutionModel,
+    #[serde(default)]
+    pub concurrency_budget: WaveConcurrencyBudget,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum WaveClass {
+    #[default]
+    Implementation,
+    Design,
+    Delivery,
+    Acceptance,
+    Investigation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WaveIntent {
+    Implementation,
+    Delivery,
+    Acceptance,
+    Investigation,
+    Design,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WaveDeliveryLink {
+    pub initiative_id: Option<String>,
+    pub release_id: Option<String>,
+    pub acceptance_package_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignGateSpec {
+    #[serde(default)]
+    pub agent_ids: Vec<String>,
+    #[serde(default = "default_design_gate_ready_marker")]
+    pub ready_marker: String,
+}
+
+fn default_design_gate_ready_marker() -> String {
+    "ready-for-implementation".to_string()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum WaveExecutionModel {
+    #[default]
+    Serial,
+    MultiAgent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WaveConcurrencyBudget {
+    pub max_concurrent_implementation_agents: Option<u32>,
+    pub max_concurrent_report_only_agents: Option<u32>,
+    pub max_merge_operations: Option<u32>,
+    pub max_conflict_resolution_agents: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum BarrierClass {
+    #[default]
+    Independent,
+    MergeAfter,
+    IntegrationBarrier,
+    ClosureBarrier,
+    ReportOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ParallelSafetyClass {
+    #[default]
+    Derived,
+    ParallelSafe,
+    Serialized,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -102,7 +191,71 @@ pub struct WaveAgent {
     pub deliverables: Vec<String>,
     pub file_ownership: Vec<String>,
     pub final_markers: Vec<String>,
+    pub depends_on_agents: Vec<String>,
+    pub reads_artifacts_from: Vec<String>,
+    pub writes_artifacts: Vec<String>,
+    pub barrier_class: BarrierClass,
+    pub parallel_safety: ParallelSafetyClass,
+    pub exclusive_resources: Vec<String>,
+    pub parallel_with: Vec<String>,
     pub prompt: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompiledMasDependencyKind {
+    AgentGraph,
+    ArtifactFlow,
+    Barrier,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CompiledMasDependency {
+    pub upstream_agent_id: String,
+    pub kind: CompiledMasDependencyKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "resolution", rename_all = "kebab-case")]
+pub enum CompiledArtifactReadResolution {
+    Unique { source_agent_id: String },
+    Missing,
+    Ambiguous { source_agent_ids: Vec<String> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CompiledArtifactRead {
+    pub artifact: String,
+    pub resolution: CompiledArtifactReadResolution,
+}
+
+impl CompiledArtifactRead {
+    pub fn source_agent_id(&self) -> Option<&str> {
+        match &self.resolution {
+            CompiledArtifactReadResolution::Unique { source_agent_id } => Some(source_agent_id),
+            CompiledArtifactReadResolution::Missing
+            | CompiledArtifactReadResolution::Ambiguous { .. } => None,
+        }
+    }
+
+    pub fn is_resolved(&self) -> bool {
+        matches!(
+            self.resolution,
+            CompiledArtifactReadResolution::Unique { .. }
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct CompiledMasAgentDependencies {
+    pub dependencies: Vec<CompiledMasDependency>,
+    pub artifact_reads: Vec<CompiledArtifactRead>,
+}
+
+impl CompiledMasAgentDependencies {
+    pub fn has_unresolved_artifact_reads(&self) -> bool {
+        self.artifact_reads.iter().any(|read| !read.is_resolved())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -144,6 +297,14 @@ impl WaveAgent {
 
     pub fn is_required_closure_agent(&self) -> bool {
         matches!(self.id.as_str(), "A0" | "A8" | "A9")
+    }
+
+    pub fn is_closure_followup_agent(&self) -> bool {
+        matches!(self.id.as_str(), "A6" | "A7" | "A8" | "A9" | "A0")
+    }
+
+    pub fn blocks_integration_barrier(&self) -> bool {
+        !self.is_closure_followup_agent()
     }
 
     pub fn expected_final_markers(&self) -> &'static [&'static str] {
@@ -202,6 +363,232 @@ impl WaveAgent {
             .iter()
             .any(|owned_path| path_is_owned_by(path, owned_path))
     }
+
+    pub fn is_design_worker(&self) -> bool {
+        !self.is_closure_agent()
+            && self
+                .skills
+                .iter()
+                .any(|skill| skill.eq_ignore_ascii_case("role-design"))
+    }
+}
+
+pub fn owned_path_conflict(left: &str, right: &str) -> bool {
+    let left = normalize_owned_path(left);
+    let right = normalize_owned_path(right);
+
+    left == right
+        || left.starts_with(&(right.clone() + "/"))
+        || right.starts_with(&(left.clone() + "/"))
+}
+
+pub fn agent_ownership_overlaps(left: &WaveAgent, right: &WaveAgent) -> bool {
+    left.file_ownership.iter().any(|left_path| {
+        right
+            .file_ownership
+            .iter()
+            .any(|right_path| owned_path_conflict(left_path, right_path))
+    })
+}
+
+pub fn compiled_multi_agent_dependencies(
+    wave: &WaveDocument,
+) -> BTreeMap<String, CompiledMasAgentDependencies> {
+    let artifact_writers = compiled_artifact_writers(wave);
+    let mut compiled = BTreeMap::new();
+
+    for agent in &wave.agents {
+        let mut dependencies = CompiledMasAgentDependencies::default();
+
+        for dependency_agent_id in &agent.depends_on_agents {
+            let normalized = dependency_agent_id.trim();
+            if normalized.is_empty() {
+                continue;
+            }
+            push_compiled_dependency(
+                &mut dependencies.dependencies,
+                normalized.to_string(),
+                CompiledMasDependencyKind::AgentGraph,
+            );
+        }
+
+        for artifact in &agent.reads_artifacts_from {
+            let normalized = artifact.trim();
+            if normalized.is_empty() {
+                continue;
+            }
+            let read = CompiledArtifactRead {
+                artifact: normalized.to_string(),
+                resolution: compiled_artifact_read_resolution(&artifact_writers, normalized),
+            };
+            if let Some(source_agent_id) = read.source_agent_id() {
+                push_compiled_dependency(
+                    &mut dependencies.dependencies,
+                    source_agent_id.to_string(),
+                    CompiledMasDependencyKind::ArtifactFlow,
+                );
+            }
+            dependencies.artifact_reads.push(read);
+        }
+
+        match agent.barrier_class {
+            BarrierClass::IntegrationBarrier => {
+                for barrier_agent in wave
+                    .agents
+                    .iter()
+                    .filter(|candidate| candidate.id != agent.id)
+                    .filter(|candidate| candidate.blocks_integration_barrier())
+                {
+                    push_compiled_dependency(
+                        &mut dependencies.dependencies,
+                        barrier_agent.id.clone(),
+                        CompiledMasDependencyKind::Barrier,
+                    );
+                }
+            }
+            BarrierClass::ClosureBarrier => {
+                for barrier_agent in wave
+                    .agents
+                    .iter()
+                    .filter(|candidate| candidate.id != agent.id)
+                    .filter(|candidate| {
+                        !matches!(
+                            candidate.barrier_class,
+                            BarrierClass::ReportOnly | BarrierClass::ClosureBarrier
+                        )
+                    })
+                {
+                    push_compiled_dependency(
+                        &mut dependencies.dependencies,
+                        barrier_agent.id.clone(),
+                        CompiledMasDependencyKind::Barrier,
+                    );
+                }
+            }
+            BarrierClass::Independent | BarrierClass::MergeAfter | BarrierClass::ReportOnly => {}
+        }
+
+        compiled.insert(agent.id.clone(), dependencies);
+    }
+
+    compiled
+}
+
+pub fn compiled_multi_agent_dependency_cycle(wave: &WaveDocument) -> Vec<String> {
+    let compiled = compiled_multi_agent_dependencies(wave);
+    let mut graph = BTreeMap::<String, BTreeSet<String>>::new();
+
+    for agent in &wave.agents {
+        graph.entry(agent.id.clone()).or_default();
+    }
+    for (agent_id, dependencies) in compiled {
+        let upstreams = graph.entry(agent_id).or_default();
+        for dependency in dependencies.dependencies {
+            upstreams.insert(dependency.upstream_agent_id);
+        }
+    }
+
+    dependency_cycle(&graph)
+}
+
+fn compiled_artifact_writers(wave: &WaveDocument) -> BTreeMap<String, Vec<String>> {
+    let mut writers = BTreeMap::<String, Vec<String>>::new();
+    for agent in &wave.agents {
+        for artifact in &agent.writes_artifacts {
+            let normalized = artifact.trim();
+            if normalized.is_empty() {
+                continue;
+            }
+            writers
+                .entry(normalized.to_string())
+                .or_default()
+                .push(agent.id.clone());
+        }
+    }
+    writers
+}
+
+fn compiled_artifact_read_resolution(
+    artifact_writers: &BTreeMap<String, Vec<String>>,
+    artifact: &str,
+) -> CompiledArtifactReadResolution {
+    match artifact_writers.get(artifact) {
+        Some(writers) if writers.len() == 1 => CompiledArtifactReadResolution::Unique {
+            source_agent_id: writers[0].clone(),
+        },
+        Some(writers) => CompiledArtifactReadResolution::Ambiguous {
+            source_agent_ids: writers.clone(),
+        },
+        None => CompiledArtifactReadResolution::Missing,
+    }
+}
+
+fn push_compiled_dependency(
+    dependencies: &mut Vec<CompiledMasDependency>,
+    upstream_agent_id: String,
+    kind: CompiledMasDependencyKind,
+) {
+    if dependencies.iter().any(|dependency| {
+        dependency.upstream_agent_id == upstream_agent_id && dependency.kind == kind
+    }) {
+        return;
+    }
+    dependencies.push(CompiledMasDependency {
+        upstream_agent_id,
+        kind,
+    });
+}
+
+fn dependency_cycle(graph: &BTreeMap<String, BTreeSet<String>>) -> Vec<String> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum VisitState {
+        Visiting,
+        Done,
+    }
+
+    fn dfs(
+        node: &str,
+        graph: &BTreeMap<String, BTreeSet<String>>,
+        states: &mut BTreeMap<String, VisitState>,
+        stack: &mut Vec<String>,
+    ) -> Option<Vec<String>> {
+        states.insert(node.to_string(), VisitState::Visiting);
+        stack.push(node.to_string());
+        if let Some(neighbors) = graph.get(node) {
+            for neighbor in neighbors {
+                match states.get(neighbor.as_str()).copied() {
+                    Some(VisitState::Visiting) => {
+                        if let Some(start) = stack.iter().position(|entry| entry == neighbor) {
+                            let mut cycle = stack[start..].to_vec();
+                            cycle.push(neighbor.clone());
+                            return Some(cycle);
+                        }
+                    }
+                    Some(VisitState::Done) => {}
+                    None => {
+                        if let Some(cycle) = dfs(neighbor, graph, states, stack) {
+                            return Some(cycle);
+                        }
+                    }
+                }
+            }
+        }
+        stack.pop();
+        states.insert(node.to_string(), VisitState::Done);
+        None
+    }
+
+    let mut states = BTreeMap::new();
+    let mut stack = Vec::new();
+    for node in graph.keys() {
+        if states.contains_key(node) {
+            continue;
+        }
+        if let Some(cycle) = dfs(node, graph, &mut states, &mut stack) {
+            return cycle;
+        }
+    }
+    Vec::new()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -221,8 +608,32 @@ impl WaveDocument {
         self.agents.iter().filter(|agent| !agent.is_closure_agent())
     }
 
+    pub fn design_agents(&self) -> impl Iterator<Item = &WaveAgent> {
+        self.agents.iter().filter(|agent| agent.is_design_worker())
+    }
+
+    pub fn code_implementation_agents(&self) -> impl Iterator<Item = &WaveAgent> {
+        self.implementation_agents()
+            .filter(|agent| !agent.is_design_worker())
+    }
+
     pub fn closure_agents(&self) -> impl Iterator<Item = &WaveAgent> {
         self.agents.iter().filter(|agent| agent.is_closure_agent())
+    }
+
+    pub fn design_gate_agent_ids(&self) -> &[String] {
+        self.metadata
+            .design_gate
+            .as_ref()
+            .map(|gate| gate.agent_ids.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub fn is_multi_agent(&self) -> bool {
+        matches!(
+            self.metadata.execution_model,
+            WaveExecutionModel::MultiAgent
+        )
     }
 }
 
@@ -464,8 +875,49 @@ fn parse_agent(section: &MarkdownSection) -> Result<WaveAgent> {
         deliverables: parse_bullet_section(find_section(&subsections, "Deliverables"))?,
         file_ownership: parse_bullet_section(find_section(&subsections, "File ownership"))?,
         final_markers: parse_bullet_section(find_section(&subsections, "Final markers"))?,
+        depends_on_agents: parse_bullet_section(find_section(&subsections, "Depends on agents"))?,
+        reads_artifacts_from: parse_bullet_section(find_section(
+            &subsections,
+            "Reads artifacts from",
+        ))?,
+        writes_artifacts: parse_bullet_section(find_section(&subsections, "Writes artifacts"))?,
+        barrier_class: parse_barrier_class(find_section(&subsections, "Barrier class"))?,
+        parallel_safety: parse_parallel_safety(find_section(&subsections, "Parallel safety"))?,
+        exclusive_resources: parse_bullet_section(find_section(
+            &subsections,
+            "Exclusive resources",
+        ))?,
+        parallel_with: parse_bullet_section(find_section(&subsections, "Parallel with"))?,
         prompt: parse_prompt(find_section(&subsections, "Prompt")),
     })
+}
+
+fn parse_barrier_class(value: Option<&String>) -> Result<BarrierClass> {
+    let Some(section) = value else {
+        return Ok(BarrierClass::default());
+    };
+    let raw = section.trim();
+    match raw {
+        "independent" => Ok(BarrierClass::Independent),
+        "merge-after" => Ok(BarrierClass::MergeAfter),
+        "integration-barrier" => Ok(BarrierClass::IntegrationBarrier),
+        "closure-barrier" => Ok(BarrierClass::ClosureBarrier),
+        "report-only" => Ok(BarrierClass::ReportOnly),
+        _ => anyhow::bail!("invalid barrier class `{raw}`"),
+    }
+}
+
+fn parse_parallel_safety(value: Option<&String>) -> Result<ParallelSafetyClass> {
+    let Some(section) = value else {
+        return Ok(ParallelSafetyClass::default());
+    };
+    let raw = section.trim();
+    match raw {
+        "derived" => Ok(ParallelSafetyClass::Derived),
+        "parallel-safe" => Ok(ParallelSafetyClass::ParallelSafe),
+        "serialized" => Ok(ParallelSafetyClass::Serialized),
+        _ => anyhow::bail!("invalid parallel safety `{raw}`"),
+    }
 }
 
 fn parse_context7(value: Option<&String>) -> Result<Option<Context7Defaults>> {
@@ -724,6 +1176,60 @@ fn unquote(value: &str) -> String {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    fn test_agent(id: &str) -> WaveAgent {
+        WaveAgent {
+            id: id.to_string(),
+            title: id.to_string(),
+            role_prompts: Vec::new(),
+            executor: BTreeMap::new(),
+            context7: None,
+            skills: vec!["wave-core".to_string()],
+            components: Vec::new(),
+            capabilities: Vec::new(),
+            exit_contract: None,
+            deliverables: Vec::new(),
+            file_ownership: vec![format!("src/{id}.rs")],
+            final_markers: Vec::new(),
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: BarrierClass::Independent,
+            parallel_safety: ParallelSafetyClass::Derived,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
+            prompt: String::new(),
+        }
+    }
+
+    fn test_multi_agent_wave(agents: Vec<WaveAgent>) -> WaveDocument {
+        WaveDocument {
+            path: PathBuf::from("waves/18.md"),
+            metadata: WaveMetadata {
+                id: 18,
+                slug: "wave-18".to_string(),
+                title: "Wave 18".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["runtime".to_string()],
+                depends_on: Vec::new(),
+                validation: Vec::new(),
+                rollback: Vec::new(),
+                proof: Vec::new(),
+                wave_class: WaveClass::Implementation,
+                intent: None,
+                delivery: None,
+                design_gate: None,
+                execution_model: WaveExecutionModel::MultiAgent,
+                concurrency_budget: WaveConcurrencyBudget::default(),
+            },
+            heading_title: None,
+            commit_message: None,
+            component_promotions: Vec::new(),
+            deploy_environments: Vec::new(),
+            context7_defaults: None,
+            agents,
+        }
+    }
 
     #[test]
     fn parses_rich_wave_document() {
@@ -1127,6 +1633,13 @@ queue-reducer: repo-landed
                 "docs/plans/".to_string(),
             ],
             final_markers: vec!["[wave-integration]".to_string()],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: BarrierClass::Independent,
+            parallel_safety: ParallelSafetyClass::Derived,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: [
                 "Primary goal:",
                 "- Reconcile the authored-wave slices.",
@@ -1157,5 +1670,75 @@ queue-reducer: repo-landed
         assert!(agent.owns_path(".wave/integration/wave-0.md"));
         assert!(agent.owns_path("docs/plans/master-plan.md"));
         assert!(!agent.owns_path("crates/wave-spec/src/lib.rs"));
+    }
+
+    #[test]
+    fn compiled_multi_agent_dependencies_skip_closure_barrier_peers() {
+        let mut a1 = test_agent("A1");
+        a1.writes_artifacts = vec!["mas-proof-bundle".to_string()];
+
+        let mut a8 = test_agent("A8");
+        a8.barrier_class = BarrierClass::IntegrationBarrier;
+
+        let mut a9 = test_agent("A9");
+        a9.depends_on_agents = vec!["A8".to_string()];
+        a9.barrier_class = BarrierClass::ClosureBarrier;
+
+        let mut a0 = test_agent("A0");
+        a0.depends_on_agents = vec!["A8".to_string(), "A9".to_string()];
+        a0.reads_artifacts_from = vec!["mas-proof-bundle".to_string()];
+        a0.barrier_class = BarrierClass::ClosureBarrier;
+
+        let wave = test_multi_agent_wave(vec![a1, a8, a9, a0]);
+        let compiled = compiled_multi_agent_dependencies(&wave);
+
+        let a9_dependencies = &compiled["A9"].dependencies;
+        assert!(a9_dependencies.iter().any(|dependency| {
+            dependency.upstream_agent_id == "A8"
+                && dependency.kind == CompiledMasDependencyKind::AgentGraph
+        }));
+        assert!(
+            !a9_dependencies
+                .iter()
+                .any(|dependency| dependency.upstream_agent_id == "A0")
+        );
+
+        let a0_dependencies = &compiled["A0"].dependencies;
+        assert!(a0_dependencies.iter().any(|dependency| {
+            dependency.upstream_agent_id == "A9"
+                && dependency.kind == CompiledMasDependencyKind::AgentGraph
+        }));
+        assert!(a0_dependencies.iter().any(|dependency| {
+            dependency.upstream_agent_id == "A1"
+                && dependency.kind == CompiledMasDependencyKind::ArtifactFlow
+        }));
+        assert!(compiled_multi_agent_dependency_cycle(&wave).is_empty());
+    }
+
+    #[test]
+    fn compiled_multi_agent_dependencies_record_unresolved_artifact_reads() {
+        let mut a1 = test_agent("A1");
+        a1.writes_artifacts = vec!["shared-state".to_string()];
+        let mut a2 = test_agent("A2");
+        a2.writes_artifacts = vec!["shared-state".to_string()];
+        let mut a8 = test_agent("A8");
+        a8.reads_artifacts_from = vec!["shared-state".to_string(), "missing-state".to_string()];
+
+        let wave = test_multi_agent_wave(vec![a1, a2, a8]);
+        let compiled = compiled_multi_agent_dependencies(&wave);
+        let reads = &compiled["A8"].artifact_reads;
+
+        assert!(reads.iter().any(|read| {
+            read.artifact == "shared-state"
+                && matches!(
+                    read.resolution,
+                    CompiledArtifactReadResolution::Ambiguous { .. }
+                )
+        }));
+        assert!(reads.iter().any(|read| {
+            read.artifact == "missing-state"
+                && matches!(read.resolution, CompiledArtifactReadResolution::Missing)
+        }));
+        assert!(compiled["A8"].has_unresolved_artifact_reads());
     }
 }

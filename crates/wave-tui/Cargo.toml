@@ -13,4 +13,5 @@ wave-config.workspace = true
 wave-control-plane.workspace = true
 wave-domain.workspace = true
 wave-runtime.workspace = true
+wave-spec.workspace = true
 wave-trace.workspace = true

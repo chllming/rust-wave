@@ -1,13 +1,16 @@
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fmt;
 use wave_spec::WaveAgent;
 use wave_spec::WaveDocument;
 
 macro_rules! string_id {
     ($name:ident) => {
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[derive(
+            Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+        )]
         #[serde(transparent)]
         pub struct $name(String);
 
@@ -34,6 +37,10 @@ string_id!(AttemptId);
 string_id!(GateId);
 string_id!(FactId);
 string_id!(ContradictionId);
+string_id!(QuestionId);
+string_id!(AssumptionId);
+string_id!(DecisionId);
+string_id!(LineageRecordId);
 string_id!(ProofBundleId);
 string_id!(RerunRequestId);
 string_id!(HumanInputRequestId);
@@ -43,6 +50,25 @@ string_id!(TaskLeaseId);
 string_id!(SchedulerBudgetId);
 string_id!(WaveWorktreeId);
 string_id!(WavePromotionId);
+string_id!(InitiativeId);
+string_id!(ReleaseId);
+string_id!(AcceptancePackageId);
+string_id!(DeliveryRiskId);
+string_id!(DeliveryDebtId);
+string_id!(MilestoneId);
+string_id!(ReleaseTrainId);
+string_id!(OutcomeContractId);
+string_id!(AgentSandboxId);
+string_id!(MergeIntentId);
+string_id!(MergeResultId);
+string_id!(InvalidationId);
+string_id!(RecoveryPlanId);
+string_id!(RecoveryActionId);
+string_id!(ControlDirectiveId);
+string_id!(OrchestratorSessionId);
+string_id!(OperatorShellSessionId);
+string_id!(OperatorShellTurnId);
+string_id!(HeadProposalId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -117,6 +143,39 @@ pub enum HumanInputState {
     TimedOut,
 }
 
+impl HumanInputState {
+    pub fn is_resolved(self) -> bool {
+        matches!(self, Self::Answered | Self::Resolved)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanInputWorkflowKind {
+    #[default]
+    Unspecified,
+    OperatorApproval,
+    DependencyHandshake,
+}
+
+impl HumanInputWorkflowKind {
+    pub fn effective(self, route: &str) -> Self {
+        if !matches!(self, Self::Unspecified) {
+            return self;
+        }
+        let normalized = route.to_ascii_lowercase();
+        if normalized.contains("dependency") || normalized.contains("handshake") {
+            Self::DependencyHandshake
+        } else {
+            Self::OperatorApproval
+        }
+    }
+
+    pub fn is_dependency_handshake(self, route: &str) -> bool {
+        matches!(self.effective(route), Self::DependencyHandshake)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContradictionState {
@@ -127,12 +186,54 @@ pub enum ContradictionState {
     Waived,
 }
 
+impl ContradictionState {
+    pub fn is_active(self) -> bool {
+        matches!(
+            self,
+            Self::Detected | Self::Acknowledged | Self::RepairInProgress
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FactState {
     Active,
     Superseded,
     Retracted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesignAuthority {
+    Agent,
+    Dependency,
+    Human,
+    Operator,
+    Review,
+    Runtime,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineageState {
+    Open,
+    PendingHuman,
+    Resolved,
+    Accepted,
+    Decided,
+    Superseded,
+    Invalidated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesignCompletenessState {
+    Underspecified,
+    Fragmented,
+    StructurallyComplete,
+    ImplementationReady,
+    Verified,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -385,16 +486,699 @@ pub struct WaveSchedulingRecord {
     pub updated_at_ms: u128,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SoftState {
+    #[default]
+    Clear,
+    Advisory,
+    Degraded,
+    Stale,
+}
+
+impl SoftState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Clear => "clear",
+            Self::Advisory => "advisory",
+            Self::Degraded => "degraded",
+            Self::Stale => "stale",
+        }
+    }
+
+    pub fn merge(self, other: Self) -> Self {
+        self.max(other)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InitiativeState {
+    Planned,
+    InProgress,
+    Blocked,
+    Completed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReleaseState {
+    Planned,
+    Assembling,
+    Candidate,
+    Ready,
+    Shipped,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AcceptancePackageState {
+    Draft,
+    CollectingEvidence,
+    ReviewReady,
+    Accepted,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeliverySeverity {
+    Advisory,
+    Blocking,
+}
+
+impl DeliverySeverity {
+    pub fn is_blocking(self) -> bool {
+        matches!(self, Self::Blocking)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct InitiativeRecord {
+    pub id: InitiativeId,
+    pub title: String,
+    pub summary: String,
+    pub state: Option<InitiativeState>,
+    #[serde(default)]
+    pub soft_state: SoftState,
+    #[serde(default)]
+    pub owners: Vec<String>,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub release_ids: Vec<ReleaseId>,
+    pub outcome: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ReleaseRecord {
+    pub id: ReleaseId,
+    pub title: String,
+    pub summary: String,
+    pub initiative_id: Option<InitiativeId>,
+    pub state: Option<ReleaseState>,
+    #[serde(default)]
+    pub soft_state: SoftState,
+    #[serde(default)]
+    pub owners: Vec<String>,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub acceptance_package_ids: Vec<AcceptancePackageId>,
+    pub milestone_id: Option<String>,
+    pub release_train_id: Option<String>,
+    #[serde(default)]
+    pub blocking_risk_ids: Vec<DeliveryRiskId>,
+    #[serde(default)]
+    pub blocking_debt_ids: Vec<DeliveryDebtId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AcceptancePackageRecord {
+    pub id: AcceptancePackageId,
+    pub title: String,
+    pub summary: String,
+    pub release_id: Option<ReleaseId>,
+    pub state: Option<AcceptancePackageState>,
+    #[serde(default)]
+    pub soft_state: SoftState,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub proof_artifacts: Vec<String>,
+    #[serde(default)]
+    pub design_evidence: Vec<String>,
+    #[serde(default)]
+    pub documentation_evidence: Vec<String>,
+    #[serde(default)]
+    pub signoffs: Vec<String>,
+    #[serde(default)]
+    pub blocking_risk_ids: Vec<DeliveryRiskId>,
+    #[serde(default)]
+    pub blocking_debt_ids: Vec<DeliveryDebtId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DeliveryRiskRecord {
+    pub id: DeliveryRiskId,
+    pub title: String,
+    pub summary: String,
+    pub severity: Option<DeliverySeverity>,
+    #[serde(default)]
+    pub soft_state: SoftState,
+    pub release_id: Option<ReleaseId>,
+    pub acceptance_package_id: Option<AcceptancePackageId>,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub owners: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DeliveryDebtRecord {
+    pub id: DeliveryDebtId,
+    pub title: String,
+    pub summary: String,
+    pub severity: Option<DeliverySeverity>,
+    #[serde(default)]
+    pub soft_state: SoftState,
+    pub release_id: Option<ReleaseId>,
+    pub acceptance_package_id: Option<AcceptancePackageId>,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub owners: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryCatalog {
+    #[serde(default = "default_delivery_catalog_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub initiatives: Vec<InitiativeRecord>,
+    #[serde(default)]
+    pub releases: Vec<ReleaseRecord>,
+    #[serde(default)]
+    pub acceptance_packages: Vec<AcceptancePackageRecord>,
+    #[serde(default)]
+    pub risks: Vec<DeliveryRiskRecord>,
+    #[serde(default)]
+    pub debts: Vec<DeliveryDebtRecord>,
+}
+
+impl Default for DeliveryCatalog {
+    fn default() -> Self {
+        Self {
+            version: default_delivery_catalog_version(),
+            initiatives: Vec::new(),
+            releases: Vec::new(),
+            acceptance_packages: Vec::new(),
+            risks: Vec::new(),
+            debts: Vec::new(),
+        }
+    }
+}
+
+fn default_delivery_catalog_version() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PortfolioDeliveryModel {
+    #[serde(default)]
+    pub initiatives: Vec<PortfolioInitiative>,
+    #[serde(default)]
+    pub milestones: Vec<PortfolioMilestone>,
+    #[serde(default)]
+    pub release_trains: Vec<ReleaseTrain>,
+    #[serde(default)]
+    pub outcome_contracts: Vec<OutcomeContract>,
+}
+
+impl PortfolioDeliveryModel {
+    pub fn is_empty(&self) -> bool {
+        self.initiatives.is_empty()
+            && self.milestones.is_empty()
+            && self.release_trains.is_empty()
+            && self.outcome_contracts.is_empty()
+    }
+
+    pub fn referenced_wave_ids(&self) -> Vec<u32> {
+        let mut wave_ids = BTreeSet::new();
+        for initiative in &self.initiatives {
+            wave_ids.extend(initiative.wave_ids.iter().copied());
+        }
+        for milestone in &self.milestones {
+            wave_ids.extend(milestone.wave_ids.iter().copied());
+        }
+        for release_train in &self.release_trains {
+            wave_ids.extend(release_train.wave_ids.iter().copied());
+        }
+        for outcome_contract in &self.outcome_contracts {
+            wave_ids.extend(outcome_contract.wave_ids.iter().copied());
+        }
+        wave_ids.into_iter().collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortfolioInitiative {
+    pub initiative_id: InitiativeId,
+    pub slug: String,
+    pub title: String,
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub milestone_ids: Vec<MilestoneId>,
+    pub release_train_id: Option<ReleaseTrainId>,
+    #[serde(default)]
+    pub outcome_contract_ids: Vec<OutcomeContractId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortfolioMilestone {
+    pub milestone_id: MilestoneId,
+    pub initiative_id: InitiativeId,
+    pub slug: String,
+    pub title: String,
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseTrain {
+    pub release_train_id: ReleaseTrainId,
+    pub slug: String,
+    pub title: String,
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub initiative_ids: Vec<InitiativeId>,
+    #[serde(default)]
+    pub milestone_ids: Vec<MilestoneId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutcomeContract {
+    pub outcome_contract_id: OutcomeContractId,
+    pub slug: String,
+    pub title: String,
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub initiative_ids: Vec<InitiativeId>,
+    #[serde(default)]
+    pub milestone_ids: Vec<MilestoneId>,
+    pub release_train_id: Option<ReleaseTrainId>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskDependencyKind {
     WaveClosure,
+    DesignApproval,
     ImplementationSlice,
     ContEvalVerdict,
     DesignReviewVerdict,
     SecurityReviewVerdict,
     IntegrationClosure,
     DocumentationClosure,
+    AgentGraph,
+    ArtifactFlow,
+    Barrier,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum WaveExecutionModel {
+    #[default]
+    Serial,
+    MultiAgent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum BarrierClass {
+    #[default]
+    Independent,
+    MergeAfter,
+    IntegrationBarrier,
+    ClosureBarrier,
+    ReportOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ParallelSafetyClass {
+    #[default]
+    Derived,
+    ParallelSafe,
+    Serialized,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WaveConcurrencyBudgetPlan {
+    pub max_concurrent_implementation_agents: Option<u32>,
+    pub max_concurrent_report_only_agents: Option<u32>,
+    pub max_merge_operations: Option<u32>,
+    pub max_conflict_resolution_agents: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactDependency {
+    pub artifact: String,
+    pub source_agent_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSandboxRecord {
+    pub sandbox_id: AgentSandboxId,
+    pub wave_id: u32,
+    pub task_id: TaskId,
+    pub agent_id: String,
+    pub path: String,
+    pub base_integration_ref: Option<String>,
+    pub allocated_at_ms: u128,
+    pub released_at_ms: Option<u128>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeIntentRecord {
+    pub merge_intent_id: MergeIntentId,
+    pub wave_id: u32,
+    pub task_id: TaskId,
+    pub sandbox_id: AgentSandboxId,
+    pub ownership_paths: Vec<String>,
+    pub produced_artifacts: Vec<String>,
+    pub invalidation_hints: Vec<String>,
+    pub created_at_ms: u128,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeDisposition {
+    Pending,
+    Accepted,
+    Rejected,
+    Conflicted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeResultRecord {
+    pub merge_result_id: MergeResultId,
+    pub merge_intent_id: MergeIntentId,
+    pub wave_id: u32,
+    pub task_id: TaskId,
+    pub disposition: MergeDisposition,
+    pub conflict_paths: Vec<String>,
+    pub applied_at_ms: u128,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvalidationRecord {
+    pub invalidation_id: InvalidationId,
+    pub wave_id: u32,
+    pub source_task_id: TaskId,
+    #[serde(default)]
+    pub invalidated_task_ids: Vec<TaskId>,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    pub created_at_ms: u128,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryCause {
+    MergeConflict,
+    MergeRejected,
+    Invalidated,
+    LeaseExpired,
+    AgentFailed,
+    Mixed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryActionKind {
+    RerunAgent,
+    RebaseSandbox,
+    RequestReconciliation,
+    ApproveMerge,
+    RejectMerge,
+    ResumeAgent,
+    PauseAgent,
+    ClearResolvedStep,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryPlanStatus {
+    #[default]
+    Open,
+    InProgress,
+    Resolved,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryAgentPlan {
+    pub agent_id: String,
+    pub cause: RecoveryCause,
+    #[serde(default)]
+    pub required_actions: Vec<RecoveryActionKind>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryPlanRecord {
+    pub recovery_plan_id: RecoveryPlanId,
+    pub wave_id: u32,
+    pub run_id: String,
+    #[serde(default)]
+    pub causes: Vec<RecoveryCause>,
+    #[serde(default)]
+    pub affected_agent_ids: Vec<String>,
+    #[serde(default)]
+    pub preserved_accepted_agent_ids: Vec<String>,
+    #[serde(default)]
+    pub agent_plans: Vec<RecoveryAgentPlan>,
+    pub status: RecoveryPlanStatus,
+    pub detail: Option<String>,
+    pub created_at_ms: u128,
+    pub updated_at_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryActionRecord {
+    pub recovery_action_id: RecoveryActionId,
+    pub recovery_plan_id: RecoveryPlanId,
+    pub wave_id: u32,
+    pub run_id: String,
+    pub agent_id: Option<String>,
+    pub action_kind: RecoveryActionKind,
+    pub requested_by: String,
+    pub detail: Option<String>,
+    pub created_at_ms: u128,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectiveOrigin {
+    Operator,
+    AutonomousHead,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlDirectiveKind {
+    PauseAgent,
+    ResumeAgent,
+    RerunAgent,
+    RebaseSandbox,
+    SteerPrompt,
+    ApproveMerge,
+    RejectMerge,
+    RequestReconciliation,
+    SetOrchestratorMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectiveDeliveryState {
+    #[default]
+    Pending,
+    Delivered,
+    Acked,
+    Deferred,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectiveDeliveryMethod {
+    LiveInjection,
+    CheckpointOverlay,
+    Deferred,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OrchestratorMode {
+    #[default]
+    Operator,
+    Autonomous,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorShellScope {
+    #[default]
+    Head,
+    Wave,
+    Agent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorShellTurnOrigin {
+    #[default]
+    Operator,
+    Head,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorShellTurnStatus {
+    Pending,
+    #[default]
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HeadProposalState {
+    #[default]
+    Pending,
+    Applied,
+    Dismissed,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeadProposalResolutionKind {
+    OperatorApplied,
+    AutonomousApplied,
+    Dismissed,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeadProposalResolution {
+    pub kind: HeadProposalResolutionKind,
+    pub resolved_by: String,
+    pub resolved_at_ms: u128,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeadProposalActionKind {
+    SteerWave,
+    SteerAgent,
+    PauseAgent,
+    ResumeAgent,
+    RerunAgent,
+    RebaseSandbox,
+    RequestReconciliation,
+    ApproveMerge,
+    RejectMerge,
+    RequestWaveRerun,
+    SetOrchestratorMode,
+    LaunchWave,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlDirectiveRecord {
+    pub directive_id: ControlDirectiveId,
+    pub wave_id: u32,
+    pub task_id: Option<TaskId>,
+    pub agent_id: Option<String>,
+    pub sandbox_id: Option<AgentSandboxId>,
+    pub kind: ControlDirectiveKind,
+    pub origin: DirectiveOrigin,
+    pub message: Option<String>,
+    pub requested_by: String,
+    pub requested_at_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectiveDeliveryRecord {
+    pub directive_id: ControlDirectiveId,
+    pub wave_id: u32,
+    pub agent_id: Option<String>,
+    pub state: DirectiveDeliveryState,
+    #[serde(default)]
+    pub method: Option<DirectiveDeliveryMethod>,
+    #[serde(default)]
+    pub runtime: Option<RuntimeId>,
+    #[serde(default)]
+    pub ack_supported: bool,
+    pub detail: Option<String>,
+    pub updated_at_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrchestratorSessionRecord {
+    pub session_id: OrchestratorSessionId,
+    pub wave_id: u32,
+    pub mode: OrchestratorMode,
+    pub active: bool,
+    pub runtime: Option<RuntimeId>,
+    pub detail: Option<String>,
+    pub started_at_ms: u128,
+    pub updated_at_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorShellSessionRecord {
+    pub session_id: OperatorShellSessionId,
+    pub scope: OperatorShellScope,
+    pub wave_id: Option<u32>,
+    pub agent_id: Option<String>,
+    pub tab: String,
+    pub follow_mode: String,
+    pub mode: OrchestratorMode,
+    pub active: bool,
+    pub started_at_ms: u128,
+    pub updated_at_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorShellTurnRecord {
+    pub turn_id: OperatorShellTurnId,
+    pub session_id: OperatorShellSessionId,
+    pub origin: OperatorShellTurnOrigin,
+    pub scope: OperatorShellScope,
+    #[serde(default)]
+    pub cycle_id: Option<String>,
+    pub wave_id: Option<u32>,
+    pub agent_id: Option<String>,
+    pub input: String,
+    pub output: Option<String>,
+    pub status: OperatorShellTurnStatus,
+    pub created_at_ms: u128,
+    pub failed_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeadProposalRecord {
+    pub proposal_id: HeadProposalId,
+    pub session_id: OperatorShellSessionId,
+    pub turn_id: OperatorShellTurnId,
+    #[serde(default)]
+    pub cycle_id: Option<String>,
+    pub wave_id: u32,
+    pub agent_id: Option<String>,
+    pub action_kind: HeadProposalActionKind,
+    #[serde(default)]
+    pub action_payload: BTreeMap<String, String>,
+    pub state: HeadProposalState,
+    #[serde(default)]
+    pub resolution: Option<HeadProposalResolution>,
+    pub summary: String,
+    pub detail: Option<String>,
+    pub created_at_ms: u128,
+    pub updated_at_ms: u128,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -850,6 +1634,8 @@ pub struct TaskSeed {
     pub wave_title: String,
     pub agent_id: String,
     pub agent_title: String,
+    #[serde(default)]
+    pub execution_model: WaveExecutionModel,
     pub role: TaskRole,
     pub closure_role: Option<ClosureRole>,
     pub state: TaskState,
@@ -861,6 +1647,20 @@ pub struct TaskSeed {
     pub exit_contract: Option<TaskExitContract>,
     pub wave_dependencies: Vec<u32>,
     pub dependencies: Vec<TaskDependency>,
+    #[serde(default)]
+    pub depends_on_agent_ids: Vec<String>,
+    #[serde(default)]
+    pub reads_artifacts_from: Vec<ArtifactDependency>,
+    #[serde(default)]
+    pub writes_artifacts: Vec<String>,
+    #[serde(default)]
+    pub barrier_class: BarrierClass,
+    #[serde(default)]
+    pub parallel_safety: ParallelSafetyClass,
+    #[serde(default)]
+    pub exclusive_resources: Vec<String>,
+    #[serde(default)]
+    pub parallel_with: Vec<String>,
     pub required_role_prompts: Vec<String>,
     pub owned_paths: Vec<String>,
     pub deliverables: Vec<String>,
@@ -881,6 +1681,20 @@ impl TaskSeed {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DeclaredWaveDeliveryLink {
+    pub initiative_id: Option<String>,
+    pub release_id: Option<String>,
+    pub acceptance_package_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DesignGatePlan {
+    #[serde(default)]
+    pub agent_ids: Vec<String>,
+    pub ready_marker: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeclaredWavePlan {
     pub wave_id: u32,
@@ -891,6 +1705,14 @@ pub struct DeclaredWavePlan {
     pub validation: Vec<String>,
     pub rollback: Vec<String>,
     pub proof: Vec<String>,
+    pub wave_class: String,
+    pub intent: Option<String>,
+    pub delivery: Option<DeclaredWaveDeliveryLink>,
+    pub design_gate: Option<DesignGatePlan>,
+    #[serde(default)]
+    pub execution_model: WaveExecutionModel,
+    #[serde(default)]
+    pub concurrency_budget: WaveConcurrencyBudgetPlan,
     pub task_seeds: Vec<TaskSeed>,
 }
 
@@ -1035,6 +1857,83 @@ pub struct FactCitation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "id")]
+pub enum LineageRef {
+    Fact(FactId),
+    Question(QuestionId),
+    Assumption(AssumptionId),
+    Decision(DecisionId),
+    HumanInput(HumanInputRequestId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum LineageRecordSubject {
+    Question {
+        question_id: QuestionId,
+    },
+    Assumption {
+        assumption_id: AssumptionId,
+    },
+    Decision {
+        decision_id: DecisionId,
+    },
+    SupersededDecision {
+        decision_id: DecisionId,
+        superseded_by_decision_id: Option<DecisionId>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineageRecord {
+    pub record_id: LineageRecordId,
+    pub wave_id: u32,
+    pub task_id: Option<TaskId>,
+    pub subject: LineageRecordSubject,
+    pub authority: DesignAuthority,
+    pub state: LineageState,
+    pub summary: String,
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub citations: Vec<FactCitation>,
+    #[serde(default)]
+    pub upstream_refs: Vec<LineageRef>,
+    #[serde(default)]
+    pub supporting_fact_ids: Vec<FactId>,
+    #[serde(default)]
+    pub downstream_task_ids: Vec<TaskId>,
+    #[serde(default)]
+    pub downstream_wave_ids: Vec<u32>,
+    #[serde(default)]
+    pub required_human_input_request_ids: Vec<HumanInputRequestId>,
+    pub introduced_by_event_id: Option<String>,
+}
+
+impl LineageRecord {
+    pub fn question_id(&self) -> Option<&QuestionId> {
+        match &self.subject {
+            LineageRecordSubject::Question { question_id } => Some(question_id),
+            _ => None,
+        }
+    }
+
+    pub fn assumption_id(&self) -> Option<&AssumptionId> {
+        match &self.subject {
+            LineageRecordSubject::Assumption { assumption_id } => Some(assumption_id),
+            _ => None,
+        }
+    }
+
+    pub fn decision_id(&self) -> Option<&DecisionId> {
+        match &self.subject {
+            LineageRecordSubject::Decision { decision_id }
+            | LineageRecordSubject::SupersededDecision { decision_id, .. } => Some(decision_id),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FactRecord {
     pub fact_id: FactId,
     pub wave_id: u32,
@@ -1054,12 +1953,16 @@ pub struct FactRecord {
 pub struct ContradictionRecord {
     pub contradiction_id: ContradictionId,
     pub wave_id: u32,
+    #[serde(default)]
     pub task_ids: Vec<TaskId>,
+    #[serde(default)]
     pub fact_ids: Vec<FactId>,
     pub state: ContradictionState,
     pub summary: String,
     pub detail: Option<String>,
     pub introduced_by_event_id: Option<String>,
+    #[serde(default)]
+    pub invalidated_refs: Vec<LineageRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1144,10 +2047,18 @@ pub struct HumanInputRequest {
     pub wave_id: u32,
     pub task_id: Option<TaskId>,
     pub state: HumanInputState,
+    #[serde(default)]
+    pub workflow_kind: HumanInputWorkflowKind,
     pub prompt: String,
     pub route: String,
     pub requested_by: String,
     pub answer: Option<String>,
+}
+
+impl HumanInputRequest {
+    pub fn effective_workflow_kind(&self) -> HumanInputWorkflowKind {
+        self.workflow_kind.effective(&self.route)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1258,6 +2169,9 @@ pub enum ControlEventPayload {
     FactObserved {
         fact: FactRecord,
     },
+    LineageUpdated {
+        lineage: LineageRecord,
+    },
     ContradictionUpdated {
         contradiction: ContradictionRecord,
     },
@@ -1272,6 +2186,42 @@ pub enum ControlEventPayload {
     },
     HumanInputUpdated {
         request: HumanInputRequest,
+    },
+    ControlDirectiveRecorded {
+        directive: ControlDirectiveRecord,
+    },
+    DirectiveDeliveryUpdated {
+        delivery: DirectiveDeliveryRecord,
+    },
+    OrchestratorSessionUpdated {
+        session: OrchestratorSessionRecord,
+    },
+    OperatorShellSessionUpdated {
+        session: OperatorShellSessionRecord,
+    },
+    OperatorShellTurnRecorded {
+        turn: OperatorShellTurnRecord,
+    },
+    HeadProposalUpdated {
+        proposal: HeadProposalRecord,
+    },
+    RecoveryPlanUpdated {
+        recovery_plan: RecoveryPlanRecord,
+    },
+    RecoveryActionRecorded {
+        recovery_action: RecoveryActionRecord,
+    },
+    AgentSandboxUpdated {
+        sandbox: AgentSandboxRecord,
+    },
+    MergeIntentRecorded {
+        merge_intent: MergeIntentRecord,
+    },
+    MergeResultRecorded {
+        merge_result: MergeResultRecord,
+    },
+    InvalidationRecorded {
+        invalidation: InvalidationRecord,
     },
     ResultEnvelopeRecorded {
         result: ResultEnvelope,
@@ -1289,11 +2239,63 @@ pub fn declared_wave_plan(wave: &WaveDocument) -> DeclaredWavePlan {
         validation: wave.metadata.validation.clone(),
         rollback: wave.metadata.rollback.clone(),
         proof: wave.metadata.proof.clone(),
+        wave_class: format!("{:?}", wave.metadata.wave_class).to_ascii_lowercase(),
+        intent: wave
+            .metadata
+            .intent
+            .map(|intent| format!("{intent:?}").to_ascii_lowercase()),
+        delivery: wave
+            .metadata
+            .delivery
+            .as_ref()
+            .map(|delivery| DeclaredWaveDeliveryLink {
+                initiative_id: delivery.initiative_id.clone(),
+                release_id: delivery.release_id.clone(),
+                acceptance_package_id: delivery.acceptance_package_id.clone(),
+            }),
+        execution_model: match wave.metadata.execution_model {
+            wave_spec::WaveExecutionModel::Serial => WaveExecutionModel::Serial,
+            wave_spec::WaveExecutionModel::MultiAgent => WaveExecutionModel::MultiAgent,
+        },
+        concurrency_budget: WaveConcurrencyBudgetPlan {
+            max_concurrent_implementation_agents: wave
+                .metadata
+                .concurrency_budget
+                .max_concurrent_implementation_agents,
+            max_concurrent_report_only_agents: wave
+                .metadata
+                .concurrency_budget
+                .max_concurrent_report_only_agents,
+            max_merge_operations: wave.metadata.concurrency_budget.max_merge_operations,
+            max_conflict_resolution_agents: wave
+                .metadata
+                .concurrency_budget
+                .max_conflict_resolution_agents,
+        },
+        design_gate: wave
+            .metadata
+            .design_gate
+            .as_ref()
+            .map(|gate| DesignGatePlan {
+                agent_ids: gate.agent_ids.clone(),
+                ready_marker: Some(gate.ready_marker.clone()),
+            }),
         task_seeds,
     }
 }
 
 pub fn declaration_task_seeds(wave: &WaveDocument) -> Vec<TaskSeed> {
+    let agent_task_ids = wave
+        .agents
+        .iter()
+        .map(|agent| {
+            (
+                agent.id.clone(),
+                task_id_for_agent(wave.metadata.id, &agent.id),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let compiled_mas_dependencies = wave_spec::compiled_multi_agent_dependencies(wave);
     let wave_dependency_task_ids = wave
         .metadata
         .depends_on
@@ -1329,6 +2331,16 @@ pub fn declaration_task_seeds(wave: &WaveDocument) -> Vec<TaskSeed> {
         .iter()
         .find(|agent| agent.id == "A9")
         .map(|agent| task_id_for_agent(wave.metadata.id, &agent.id));
+    let design_gate_task_ids = wave
+        .design_gate_agent_ids()
+        .iter()
+        .filter_map(|agent_id| {
+            wave.agents
+                .iter()
+                .find(|agent| agent.id == *agent_id)
+                .map(|agent| task_id_for_agent(wave.metadata.id, &agent.id))
+        })
+        .collect::<Vec<_>>();
 
     wave.agents
         .iter()
@@ -1339,6 +2351,10 @@ pub fn declaration_task_seeds(wave: &WaveDocument) -> Vec<TaskSeed> {
             wave_title: wave.metadata.title.clone(),
             agent_id: agent.id.clone(),
             agent_title: agent.title.clone(),
+            execution_model: match wave.metadata.execution_model {
+                wave_spec::WaveExecutionModel::Serial => WaveExecutionModel::Serial,
+                wave_spec::WaveExecutionModel::MultiAgent => WaveExecutionModel::MultiAgent,
+            },
             role: task_role(agent),
             closure_role: closure_role(agent),
             state: TaskState::Declared,
@@ -1350,6 +2366,7 @@ pub fn declaration_task_seeds(wave: &WaveDocument) -> Vec<TaskSeed> {
             exit_contract: task_exit_contract(agent),
             wave_dependencies: wave.metadata.depends_on.clone(),
             dependencies: task_dependencies(
+                wave,
                 agent,
                 &wave_dependency_task_ids,
                 &implementation_task_ids,
@@ -1358,7 +2375,36 @@ pub fn declaration_task_seeds(wave: &WaveDocument) -> Vec<TaskSeed> {
                 security_review_task_id.as_ref(),
                 integration_task_id.as_ref(),
                 documentation_task_id.as_ref(),
+                &design_gate_task_ids,
+                &agent_task_ids,
+                &compiled_mas_dependencies,
             ),
+            depends_on_agent_ids: agent.depends_on_agents.clone(),
+            reads_artifacts_from: compiled_mas_dependencies
+                .get(&agent.id)
+                .map(|compiled| compiled.artifact_reads.as_slice())
+                .unwrap_or(&[])
+                .iter()
+                .map(|artifact| ArtifactDependency {
+                    artifact: artifact.artifact.clone(),
+                    source_agent_id: artifact.source_agent_id().map(ToString::to_string),
+                })
+                .collect(),
+            writes_artifacts: agent.writes_artifacts.clone(),
+            barrier_class: match agent.barrier_class {
+                wave_spec::BarrierClass::Independent => BarrierClass::Independent,
+                wave_spec::BarrierClass::MergeAfter => BarrierClass::MergeAfter,
+                wave_spec::BarrierClass::IntegrationBarrier => BarrierClass::IntegrationBarrier,
+                wave_spec::BarrierClass::ClosureBarrier => BarrierClass::ClosureBarrier,
+                wave_spec::BarrierClass::ReportOnly => BarrierClass::ReportOnly,
+            },
+            parallel_safety: match agent.parallel_safety {
+                wave_spec::ParallelSafetyClass::Derived => ParallelSafetyClass::Derived,
+                wave_spec::ParallelSafetyClass::ParallelSafe => ParallelSafetyClass::ParallelSafe,
+                wave_spec::ParallelSafetyClass::Serialized => ParallelSafetyClass::Serialized,
+            },
+            exclusive_resources: agent.exclusive_resources.clone(),
+            parallel_with: agent.parallel_with.clone(),
             required_role_prompts: agent
                 .expected_role_prompts()
                 .iter()
@@ -1431,6 +2477,7 @@ fn dedup_strings(values: impl IntoIterator<Item = String>) -> Vec<String> {
 }
 
 fn task_dependencies(
+    wave: &WaveDocument,
     agent: &WaveAgent,
     wave_dependency_task_ids: &[TaskId],
     implementation_task_ids: &[TaskId],
@@ -1439,6 +2486,9 @@ fn task_dependencies(
     security_review_task_id: Option<&TaskId>,
     integration_task_id: Option<&TaskId>,
     documentation_task_id: Option<&TaskId>,
+    design_gate_task_ids: &[TaskId],
+    agent_task_ids: &BTreeMap<String, TaskId>,
+    compiled_mas_dependencies: &BTreeMap<String, wave_spec::CompiledMasAgentDependencies>,
 ) -> Vec<TaskDependency> {
     let mut dependencies = wave_dependency_task_ids
         .iter()
@@ -1541,7 +2591,66 @@ fn task_dependencies(
     };
 
     dependencies.extend(specific_dependencies);
+    if wave.is_multi_agent() {
+        extend_compiled_multi_agent_dependencies(
+            agent,
+            agent_task_ids,
+            compiled_mas_dependencies,
+            &mut dependencies,
+        );
+    }
+    if !agent.is_closure_agent() && !agent.is_design_worker() {
+        for task_id in design_gate_task_ids {
+            push_dependency(
+                &mut dependencies,
+                task_id.clone(),
+                TaskDependencyKind::DesignApproval,
+            );
+        }
+    }
     dependencies
+}
+
+fn extend_compiled_multi_agent_dependencies(
+    agent: &WaveAgent,
+    agent_task_ids: &BTreeMap<String, TaskId>,
+    compiled_mas_dependencies: &BTreeMap<String, wave_spec::CompiledMasAgentDependencies>,
+    dependencies: &mut Vec<TaskDependency>,
+) {
+    let Some(compiled) = compiled_mas_dependencies.get(&agent.id) else {
+        return;
+    };
+    for dependency in &compiled.dependencies {
+        if let Some(task_id) = agent_task_ids.get(&dependency.upstream_agent_id) {
+            push_dependency(
+                dependencies,
+                task_id.clone(),
+                match dependency.kind {
+                    wave_spec::CompiledMasDependencyKind::AgentGraph => {
+                        TaskDependencyKind::AgentGraph
+                    }
+                    wave_spec::CompiledMasDependencyKind::ArtifactFlow => {
+                        TaskDependencyKind::ArtifactFlow
+                    }
+                    wave_spec::CompiledMasDependencyKind::Barrier => TaskDependencyKind::Barrier,
+                },
+            );
+        }
+    }
+}
+
+fn push_dependency(
+    dependencies: &mut Vec<TaskDependency>,
+    task_id: TaskId,
+    kind: TaskDependencyKind,
+) {
+    if dependencies
+        .iter()
+        .any(|dependency| dependency.task_id == task_id && dependency.kind == kind)
+    {
+        return;
+    }
+    dependencies.push(TaskDependency { task_id, kind });
 }
 
 fn task_executor(agent: &WaveAgent) -> TaskExecutor {
@@ -1702,6 +2811,26 @@ mod tests {
     use wave_spec::ExitContract;
     use wave_spec::WaveMetadata;
 
+    fn default_wave_metadata() -> WaveMetadata {
+        WaveMetadata {
+            id: 0,
+            slug: String::new(),
+            title: String::new(),
+            mode: ExecutionMode::DarkFactory,
+            execution_model: wave_spec::WaveExecutionModel::Serial,
+            concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
+            owners: Vec::new(),
+            depends_on: Vec::new(),
+            validation: Vec::new(),
+            rollback: Vec::new(),
+            proof: Vec::new(),
+            wave_class: wave_spec::WaveClass::Implementation,
+            intent: None,
+            delivery: None,
+            design_gate: None,
+        }
+    }
+
     #[test]
     fn declaration_mapping_builds_explicit_closure_dependencies() {
         let wave = WaveDocument {
@@ -1716,6 +2845,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["docs/implementation/rust-wave-0.2-architecture.md".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 10".to_string()),
             commit_message: Some("Feat: authority core".to_string()),
@@ -1889,6 +3019,187 @@ mod tests {
     }
 
     #[test]
+    fn declaration_mapping_compiles_multi_agent_contract_into_dependency_edges() {
+        let mut a1 = agent(
+            "A1",
+            "Runtime substrate",
+            vec!["role-implementation"],
+            vec!["src/runtime_a.rs"],
+        );
+        a1.writes_artifacts = vec!["runtime-a-state".to_string()];
+        a1.parallel_safety = wave_spec::ParallelSafetyClass::ParallelSafe;
+
+        let mut a2 = agent(
+            "A2",
+            "Operator shell",
+            vec!["role-implementation"],
+            vec!["src/runtime_b.rs"],
+        );
+        a2.depends_on_agents = vec!["A1".to_string()];
+        a2.reads_artifacts_from = vec!["runtime-a-state".to_string()];
+        a2.writes_artifacts = vec!["runtime-b-state".to_string()];
+        a2.parallel_safety = wave_spec::ParallelSafetyClass::ParallelSafe;
+
+        let mut e0 = agent(
+            "E0",
+            "Continuous eval",
+            vec!["role-cont-eval"],
+            vec![".wave/eval/wave-18.md"],
+        );
+        e0.reads_artifacts_from = vec!["runtime-a-state".to_string()];
+
+        let mut a8 = agent(
+            "A8",
+            "Integration",
+            vec!["role-integration"],
+            vec![".wave/integration/wave-18.md"],
+        );
+        a8.barrier_class = wave_spec::BarrierClass::IntegrationBarrier;
+
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/18.md"),
+            metadata: WaveMetadata {
+                id: 18,
+                slug: "wave-18".to_string(),
+                title: "Wave 18".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["runtime".to_string()],
+                depends_on: Vec::new(),
+                validation: Vec::new(),
+                rollback: Vec::new(),
+                proof: Vec::new(),
+                wave_class: wave_spec::WaveClass::Implementation,
+                intent: None,
+                delivery: None,
+                design_gate: None,
+                execution_model: wave_spec::WaveExecutionModel::MultiAgent,
+                concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
+            },
+            heading_title: Some("Wave 18 - MAS".to_string()),
+            commit_message: Some("Feat: MAS".to_string()),
+            component_promotions: Vec::new(),
+            deploy_environments: Vec::new(),
+            context7_defaults: None,
+            agents: vec![a1, a2, e0, a8],
+        };
+
+        let plan = declaration_task_seeds(&wave);
+        let a2 = plan
+            .iter()
+            .find(|task| task.agent_id == "A2")
+            .expect("A2 task seed");
+        assert!(a2.dependencies.iter().any(|dependency| {
+            dependency.task_id == task_id_for_agent(18, "A1")
+                && dependency.kind == TaskDependencyKind::AgentGraph
+        }));
+        assert!(a2.dependencies.iter().any(|dependency| {
+            dependency.task_id == task_id_for_agent(18, "A1")
+                && dependency.kind == TaskDependencyKind::ArtifactFlow
+        }));
+        assert_eq!(
+            a2.reads_artifacts_from,
+            vec![ArtifactDependency {
+                artifact: "runtime-a-state".to_string(),
+                source_agent_id: Some("A1".to_string()),
+            }]
+        );
+
+        let a8 = plan
+            .iter()
+            .find(|task| task.agent_id == "A8")
+            .expect("A8 task seed");
+        assert!(a8.dependencies.iter().any(|dependency| {
+            dependency.task_id == task_id_for_agent(18, "A1")
+                && dependency.kind == TaskDependencyKind::Barrier
+        }));
+        assert!(a8.dependencies.iter().any(|dependency| {
+            dependency.task_id == task_id_for_agent(18, "A2")
+                && dependency.kind == TaskDependencyKind::Barrier
+        }));
+        assert!(a8.dependencies.iter().any(|dependency| {
+            dependency.task_id == task_id_for_agent(18, "E0")
+                && dependency.kind == TaskDependencyKind::Barrier
+        }));
+    }
+
+    #[test]
+    fn declaration_mapping_does_not_add_closure_barrier_peer_edges() {
+        let a1 = agent(
+            "A1",
+            "Runtime substrate",
+            vec!["role-implementation"],
+            vec!["src/runtime_a.rs"],
+        );
+
+        let mut a8 = agent(
+            "A8",
+            "Integration",
+            vec!["role-integration"],
+            vec![".wave/integration/wave-18.md"],
+        );
+        a8.barrier_class = wave_spec::BarrierClass::IntegrationBarrier;
+
+        let mut a9 = agent(
+            "A9",
+            "Docs",
+            vec!["role-documentation"],
+            vec!["docs/plans/current-state.md"],
+        );
+        a9.depends_on_agents = vec!["A8".to_string()];
+        a9.barrier_class = wave_spec::BarrierClass::ClosureBarrier;
+
+        let mut a0 = agent(
+            "A0",
+            "QA",
+            vec!["role-cont-qa"],
+            vec![".wave/reviews/wave-18.md"],
+        );
+        a0.depends_on_agents = vec!["A8".to_string(), "A9".to_string()];
+        a0.barrier_class = wave_spec::BarrierClass::ClosureBarrier;
+
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/18.md"),
+            metadata: WaveMetadata {
+                id: 18,
+                slug: "wave-18".to_string(),
+                title: "Wave 18".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["runtime".to_string()],
+                depends_on: Vec::new(),
+                validation: Vec::new(),
+                rollback: Vec::new(),
+                proof: Vec::new(),
+                wave_class: wave_spec::WaveClass::Implementation,
+                intent: None,
+                delivery: None,
+                design_gate: None,
+                execution_model: wave_spec::WaveExecutionModel::MultiAgent,
+                concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
+            },
+            heading_title: Some("Wave 18 - MAS".to_string()),
+            commit_message: Some("Feat: MAS".to_string()),
+            component_promotions: Vec::new(),
+            deploy_environments: Vec::new(),
+            context7_defaults: None,
+            agents: vec![a1, a8, a9, a0],
+        };
+
+        let plan = declaration_task_seeds(&wave);
+        let a9 = plan
+            .iter()
+            .find(|task| task.agent_id == "A9")
+            .expect("A9 task seed");
+        assert!(!a9.dependencies.iter().any(|dependency| {
+            dependency.task_id == task_id_for_agent(18, "A0")
+                && dependency.kind == TaskDependencyKind::Barrier
+        }));
+        assert!(a9.dependencies.iter().any(|dependency| {
+            dependency.task_id == task_id_for_agent(18, "A8")
+                && dependency.kind == TaskDependencyKind::AgentGraph
+        }));
+    }
+
+    #[test]
     fn task_seed_captures_executor_contract_and_context() {
         let wave = WaveDocument {
             path: PathBuf::from("waves/10-authority-core.md"),
@@ -1902,6 +3213,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["trace.json".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 10".to_string()),
             commit_message: Some("Feat: authority core".to_string()),
@@ -1936,6 +3248,13 @@ mod tests {
                 }),
                 deliverables: vec!["crates/wave-domain/src/lib.rs".to_string()],
                 file_ownership: vec!["crates/wave-domain/src/lib.rs".to_string()],
+                depends_on_agents: Vec::new(),
+                reads_artifacts_from: Vec::new(),
+                writes_artifacts: Vec::new(),
+                barrier_class: wave_spec::BarrierClass::Independent,
+                parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                exclusive_resources: Vec::new(),
+                parallel_with: Vec::new(),
                 final_markers: vec![
                     "[wave-proof]".to_string(),
                     "[wave-doc-delta]".to_string(),
@@ -2405,6 +3724,75 @@ mod tests {
         assert_eq!(RuntimeId::Claude.skill_id(), "runtime-claude");
     }
 
+    #[test]
+    fn human_input_workflow_kind_prefers_explicit_kind_over_route_text() {
+        assert_eq!(
+            HumanInputWorkflowKind::OperatorApproval.effective("dependency:wave-15"),
+            HumanInputWorkflowKind::OperatorApproval
+        );
+        assert!(
+            !HumanInputWorkflowKind::OperatorApproval.is_dependency_handshake("dependency:wave-15")
+        );
+    }
+
+    #[test]
+    fn human_input_workflow_kind_uses_legacy_route_fallback_when_unspecified() {
+        assert_eq!(
+            HumanInputWorkflowKind::Unspecified.effective("dependency:wave-15"),
+            HumanInputWorkflowKind::DependencyHandshake
+        );
+        assert_eq!(
+            HumanInputWorkflowKind::Unspecified.effective("operator:approve"),
+            HumanInputWorkflowKind::OperatorApproval
+        );
+    }
+
+    #[test]
+    fn portfolio_delivery_model_deduplicates_referenced_waves_across_layers() {
+        let model = PortfolioDeliveryModel {
+            initiatives: vec![PortfolioInitiative {
+                initiative_id: InitiativeId::new("initiative-portfolio"),
+                slug: "portfolio-release".to_string(),
+                title: "Portfolio release".to_string(),
+                summary: Some("Aggregate multiple waves into a single delivery view.".to_string()),
+                wave_ids: vec![17, 18],
+                milestone_ids: vec![MilestoneId::new("milestone-readiness")],
+                release_train_id: Some(ReleaseTrainId::new("train-2026-03")),
+                outcome_contract_ids: vec![OutcomeContractId::new("contract-rollout")],
+            }],
+            milestones: vec![PortfolioMilestone {
+                milestone_id: MilestoneId::new("milestone-readiness"),
+                initiative_id: InitiativeId::new("initiative-portfolio"),
+                slug: "readiness".to_string(),
+                title: "Readiness".to_string(),
+                summary: None,
+                wave_ids: vec![18, 19],
+            }],
+            release_trains: vec![ReleaseTrain {
+                release_train_id: ReleaseTrainId::new("train-2026-03"),
+                slug: "march-2026".to_string(),
+                title: "March 2026".to_string(),
+                summary: None,
+                wave_ids: vec![19, 20],
+                initiative_ids: vec![InitiativeId::new("initiative-portfolio")],
+                milestone_ids: vec![MilestoneId::new("milestone-readiness")],
+            }],
+            outcome_contracts: vec![OutcomeContract {
+                outcome_contract_id: OutcomeContractId::new("contract-rollout"),
+                slug: "rollout-readiness".to_string(),
+                title: "Rollout readiness".to_string(),
+                summary: None,
+                wave_ids: vec![20, 21],
+                initiative_ids: vec![InitiativeId::new("initiative-portfolio")],
+                milestone_ids: vec![MilestoneId::new("milestone-readiness")],
+                release_train_id: Some(ReleaseTrainId::new("train-2026-03")),
+            }],
+        };
+
+        assert_eq!(model.referenced_wave_ids(), vec![17, 18, 19, 20, 21]);
+        assert!(!model.is_empty());
+    }
+
     fn agent(id: &str, title: &str, skills: Vec<&str>, file_ownership: Vec<&str>) -> WaveAgent {
         WaveAgent {
             id: id.to_string(),
@@ -2435,6 +3823,13 @@ mod tests {
                     "[wave-component]".to_string(),
                 ],
             },
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::Independent,
+            parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: String::new(),
         }
     }

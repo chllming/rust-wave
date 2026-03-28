@@ -39,6 +39,7 @@ pub const DEFAULT_COMPONENT_CUTOVER_MATRIX_DOC_PATH: &str =
     "docs/plans/component-cutover-matrix.md";
 pub const DEFAULT_COMPONENT_CUTOVER_MATRIX_JSON_PATH: &str =
     "docs/plans/component-cutover-matrix.json";
+pub const DEFAULT_DELIVERY_CATALOG_PATH: &str = "docs/plans/delivery-catalog.json";
 pub const DEFAULT_STATE_EVENTS_DIR: &str = ".wave/state/events";
 pub const DEFAULT_STATE_EVENTS_SCHEDULER_DIR: &str = ".wave/state/events/scheduler";
 pub const DEFAULT_STATE_EVENTS_CONTROL_DIR: &str = ".wave/state/events/control";
@@ -48,6 +49,7 @@ pub const DEFAULT_STATE_DERIVED_DIR: &str = ".wave/state/derived";
 pub const DEFAULT_STATE_PROJECTIONS_DIR: &str = ".wave/state/projections";
 pub const DEFAULT_STATE_TRACES_DIR: &str = ".wave/state/traces";
 pub const DEFAULT_STATE_WORKTREES_DIR: &str = ".wave/state/worktrees";
+pub const DEFAULT_STATE_ADHOC_DIR: &str = ".wave/state/adhoc";
 pub const DEFAULT_CODEX_VENDOR_DIR: &str = "third_party/codex-rs";
 pub const DEFAULT_REFERENCE_WAVE_REPO_DIR: &str = "third_party/agent-wave-orchestrator";
 
@@ -163,6 +165,10 @@ fn default_component_cutover_matrix_json_path() -> PathBuf {
     PathBuf::from(DEFAULT_COMPONENT_CUTOVER_MATRIX_JSON_PATH)
 }
 
+fn default_delivery_catalog_path() -> PathBuf {
+    PathBuf::from(DEFAULT_DELIVERY_CATALOG_PATH)
+}
+
 fn default_state_events_dir() -> PathBuf {
     PathBuf::from(DEFAULT_STATE_EVENTS_DIR)
 }
@@ -197,6 +203,10 @@ fn default_state_traces_dir() -> PathBuf {
 
 fn default_state_worktrees_dir() -> PathBuf {
     PathBuf::from(DEFAULT_STATE_WORKTREES_DIR)
+}
+
+fn default_state_adhoc_dir() -> PathBuf {
+    PathBuf::from(DEFAULT_STATE_ADHOC_DIR)
 }
 
 fn default_codex_vendor_dir() -> PathBuf {
@@ -331,6 +341,8 @@ pub struct AuthorityConfig {
     pub state_traces_dir: PathBuf,
     #[serde(default = "default_state_worktrees_dir")]
     pub state_worktrees_dir: PathBuf,
+    #[serde(default = "default_state_adhoc_dir")]
+    pub state_adhoc_dir: PathBuf,
 }
 
 impl Default for AuthorityConfig {
@@ -352,6 +364,7 @@ impl Default for AuthorityConfig {
             state_projections_dir: default_state_projections_dir(),
             state_traces_dir: default_state_traces_dir(),
             state_worktrees_dir: default_state_worktrees_dir(),
+            state_adhoc_dir: default_state_adhoc_dir(),
         }
     }
 }
@@ -393,6 +406,8 @@ pub struct ProjectConfig {
     pub component_cutover_matrix_doc_path: PathBuf,
     #[serde(default = "default_component_cutover_matrix_json_path")]
     pub component_cutover_matrix_json_path: PathBuf,
+    #[serde(default = "default_delivery_catalog_path")]
+    pub delivery_catalog_path: PathBuf,
     #[serde(default = "default_codex_vendor_dir")]
     pub codex_vendor_dir: PathBuf,
     #[serde(default = "default_reference_wave_repo_dir")]
@@ -432,6 +447,7 @@ pub struct ResolvedAuthorityPaths {
     pub state_projections_dir: PathBuf,
     pub state_traces_dir: PathBuf,
     pub state_worktrees_dir: PathBuf,
+    pub state_adhoc_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -446,6 +462,7 @@ pub struct ResolvedProjectPaths {
     pub benchmark_catalog_path: PathBuf,
     pub component_cutover_matrix_doc_path: PathBuf,
     pub component_cutover_matrix_json_path: PathBuf,
+    pub delivery_catalog_path: PathBuf,
     pub codex_vendor_dir: PathBuf,
     pub reference_wave_repo_dir: PathBuf,
 }
@@ -495,6 +512,7 @@ impl ProjectConfig {
             state_projections_dir: repo_root.join(&self.authority.state_projections_dir),
             state_traces_dir: repo_root.join(&self.authority.state_traces_dir),
             state_worktrees_dir: repo_root.join(&self.authority.state_worktrees_dir),
+            state_adhoc_dir: repo_root.join(&self.authority.state_adhoc_dir),
         };
         let context7_bundle_index_path = repo_root.join(&self.context7_bundle_index_path);
         let benchmark_catalog_path = repo_root.join(&self.benchmark_catalog_path);
@@ -502,6 +520,7 @@ impl ProjectConfig {
             repo_root.join(&self.component_cutover_matrix_doc_path);
         let component_cutover_matrix_json_path =
             repo_root.join(&self.component_cutover_matrix_json_path);
+        let delivery_catalog_path = repo_root.join(&self.delivery_catalog_path);
         let codex_vendor_dir = repo_root.join(&self.codex_vendor_dir);
         let reference_wave_repo_dir = repo_root.join(&self.reference_wave_repo_dir);
 
@@ -516,6 +535,7 @@ impl ProjectConfig {
             benchmark_catalog_path,
             component_cutover_matrix_doc_path,
             component_cutover_matrix_json_path,
+            delivery_catalog_path,
             codex_vendor_dir,
             reference_wave_repo_dir,
         }
@@ -542,6 +562,7 @@ impl Default for ProjectConfig {
             benchmark_catalog_path: default_benchmark_catalog_path(),
             component_cutover_matrix_doc_path: default_component_cutover_matrix_doc_path(),
             component_cutover_matrix_json_path: default_component_cutover_matrix_json_path(),
+            delivery_catalog_path: default_delivery_catalog_path(),
             codex_vendor_dir: default_codex_vendor_dir(),
             reference_wave_repo_dir: default_reference_wave_repo_dir(),
             dark_factory: DarkFactoryPolicy::default(),
@@ -572,7 +593,7 @@ impl ResolvedAuthorityPaths {
         Ok(())
     }
 
-    pub fn canonical_root_paths(&self) -> [&Path; 10] {
+    pub fn canonical_root_paths(&self) -> [&Path; 11] {
         [
             self.state_build_specs_dir.as_path(),
             self.state_events_dir.as_path(),
@@ -584,6 +605,7 @@ impl ResolvedAuthorityPaths {
             self.state_projections_dir.as_path(),
             self.state_traces_dir.as_path(),
             self.state_worktrees_dir.as_path(),
+            self.state_adhoc_dir.as_path(),
         ]
     }
 

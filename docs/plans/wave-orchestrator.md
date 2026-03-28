@@ -367,7 +367,7 @@ Live closure is fail-closed:
 
 The self-host run proved the repo-local operator loop, but it also leaves a small set of follow-up surfaces that should be treated as concrete work items rather than background caveats:
 
-- `wave adhoc` needs the remaining repo-local lifecycle wiring: plan, run, show, promote, and closure artifacts that reuse the same trace and proof conventions as a normal wave.
+- In this Rust repo, the product-factory branch now ships repo-local `wave adhoc plan|run|list|show|promote`. Treat any older package-era gap notes about `wave adhoc` as historical context rather than the current branch baseline.
 - `wave dep` needs the remaining dependency workflow wiring: ticket creation, board projection, blocking semantics, and finalization checks that surface unresolved cross-lane work before completion.
 - The terminal surface remains the built-in TUI shell. A separate dashboard or alternate operator entrypoint is still unproven.
 

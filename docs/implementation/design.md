@@ -2,9 +2,19 @@
 
 ## Status
 
-Not yet.
+Mostly live.
 
-We have good direction, but not a detailed TUI UX and ergonomics spec at the level this harness now needs.
+The current shell already lands the operator-shell split:
+
+- left-side header, transcript, and composer
+- right-side `Overview`, `Agents`, `Queue`, `Proof`, and `Control`
+- focus-lane navigation
+- operator/autonomous mode switching
+- MAS and recovery visibility
+- transcript search and compare mode
+- explicit `wave tui --alt-screen ...` and `--fresh-session`
+
+What is still missing is not a usable shell baseline. It is the deeper end-state UX polish and richer operator-agent help beyond the current product pass.
 
 ## What exists today
 
@@ -17,9 +27,17 @@ At the architecture level, the current docs already cover the intended operator 
 
 That is the right information architecture and the right control-plane posture.
 
+The live repo-local shell currently proves a substantial slice of that design:
+
+- a Codex-style main shell with transcript and composer
+- a stable right-side operator dashboard
+- queue selection plus direct rerun/manual-close/operator-action control
+- explicit runtime identity, fallback, last-activity, autonomy, and recovery visibility
+- MAS-aware agent state, merge state, sandbox state, and directive status
+
 ## What is still missing
 
-We do not yet have a detailed TUI UX plan that specifies all of this concretely:
+What remains for the full end-state is:
 
 - exact screen layout and panel hierarchy
 - keyboard model and navigation flows
@@ -440,6 +458,8 @@ The keyboard model should be fast, memorable, and shallow.
 - `p`: focus proof for the selected wave
 - `a`: open action menu for the selected object
 - `r`: request rerun or retry where valid
+- `m`: open manual-close confirmation for the selected wave
+- `M`: clear the selected wave's manual-close override after confirmation
 - `u`: approve selected action when approval is allowed
 - `x`: reject or cancel selected request
 
@@ -730,17 +750,22 @@ This UX design should shape the coming waves as follows.
 
 ### Wave 14
 
-Must make parallel-wave, worktree, fairness, and merge state visible enough that the `Overview`, `Wave`, and `Blockers` views can explain concurrency honestly.
+Must make parallel-wave, worktree, fairness, and merge state visible enough that the `Overview`, `Queue`, and blocker-triage views can explain concurrency honestly.
 
-The current Wave 14 landing now surfaces the first repo-local slice of that truth in the live shell: selected-wave and run views show worktree identity, promotion state, scheduler phase, fairness, protected closure state, and merge blocking from reducer-backed projections. The fuller `Overview` and `Blockers` ergonomics in this document still belong to a dedicated later UX wave.
+The current Wave 14 landing now surfaces the first repo-local slice of that truth in the live shell: `Overview`, `Agents`, `Queue`, and `Proof` show worktree identity, promotion state, scheduler phase, fairness, protected closure state, and merge blocking from reducer-backed projections. The fuller blocker-triage ergonomics in this document still belong to a dedicated later UX wave.
 
 ### Wave 15
 
 Must make runtime identity, runtime selection, fallback reason, and runtime-specific operator visibility fit the `Agents` and `Control` views without leaking runtime semantics into the TUI.
 
+The current repo-local shell now also carries the recovery slice that landed immediately after Wave 15 closeout: manual-close override visibility plus confirm-first apply and clear actions in the `Control` view.
+That live path is now transactional with rerun preservation rather than best-effort ordering: a failed override write or event append restores the prior rerun and override file state instead of silently discarding rerun intent.
+
 ### Wave 16
 
 Must make contradictions, human-input requests, dependency handshakes, and invalidation visible enough that blocker triage and approval flows are first-class.
+
+The current repo-local shell now carries the first live Wave 16-grade operator selection slice as well: dependency-handshake classification is typed workflow state rather than route-name folklore, and the `Control` view can step through multiple actionable approvals or escalations on the selected wave via `[` and `]` before `u` or `x` confirms the chosen action.
 
 ### Wave 17
 

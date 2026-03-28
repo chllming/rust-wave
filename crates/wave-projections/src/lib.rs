@@ -2,6 +2,7 @@
 //! queue/control status, and operator snapshot surfaces.
 
 mod authority;
+mod delivery;
 
 use anyhow::Result;
 use serde::Serialize;
@@ -12,23 +13,50 @@ use wave_config::ExecutionMode;
 use wave_config::ProjectConfig;
 use wave_dark_factory::LintFinding;
 use wave_dark_factory::SkillCatalogIssue;
+use wave_domain::DeliveryCatalog;
+use wave_domain::InitiativeId;
+use wave_domain::MilestoneId;
+use wave_domain::OutcomeContract;
+use wave_domain::OutcomeContractId;
+use wave_domain::PortfolioDeliveryModel;
+use wave_domain::PortfolioInitiative;
+use wave_domain::PortfolioMilestone;
+use wave_domain::ReleaseTrain;
+use wave_domain::ReleaseTrainId;
+use wave_domain::SoftState;
+use wave_events::ControlEvent;
+use wave_events::ControlEventLog;
 use wave_events::SchedulerEvent;
 use wave_gates::CompatibilityRunInput;
 use wave_gates::REQUIRED_CLOSURE_AGENT_IDS;
 use wave_gates::compatibility_run_inputs_by_wave;
 use wave_reducer::PlanningReducerState;
+use wave_reducer::reduce_planning_state_with_authorities;
 use wave_reducer::reduce_planning_state_with_scheduler;
+use wave_reducer::with_portfolio_delivery_model;
 use wave_spec::WaveDocument;
 use wave_trace::WaveRunRecord;
 use wave_trace::WaveRunStatus;
 
 pub use authority::load_canonical_compatibility_runs;
 pub use authority::load_scheduler_events;
+pub use delivery::AcceptancePackageReadModel;
+pub use delivery::DeliveryDebtReadModel;
+pub use delivery::DeliveryReadModel;
+pub use delivery::DeliveryRiskReadModel;
+pub use delivery::DeliverySignalReadModel;
+pub use delivery::DeliverySummaryReadModel;
+pub use delivery::InitiativeReadModel;
+pub use delivery::ReleaseReadModel;
+pub use delivery::build_delivery_read_model;
+pub use delivery::load_delivery_catalog;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WaveBlockerKind {
     Dependency,
+    Design,
+    Recovery,
     Lint,
     Closure,
     Ownership,
@@ -71,6 +99,8 @@ pub type TaskLeaseStateView = wave_reducer::TaskLeaseStateView;
 pub type SchedulerBudgetState = wave_reducer::SchedulerBudgetState;
 pub type WaveOwnershipState = wave_reducer::WaveOwnershipState;
 pub type WaveExecutionState = wave_reducer::WaveExecutionState;
+pub type WaveRecoveryState = wave_reducer::WaveRecoveryState;
+pub type PortfolioDeliveryReadModel = wave_reducer::PortfolioReducerState;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct QueueReadinessProjection {
@@ -95,10 +125,12 @@ pub struct WaveQueueEntry {
     pub depends_on: Vec<u32>,
     pub blocked_by: Vec<String>,
     pub blocker_state: Vec<WaveBlockerState>,
+    pub design_completeness: wave_domain::DesignCompletenessState,
     pub lint_errors: usize,
     pub ready: bool,
     pub ownership: WaveOwnershipState,
     pub execution: WaveExecutionState,
+    pub recovery: WaveRecoveryState,
     pub agent_count: usize,
     pub implementation_agent_count: usize,
     pub closure_agent_count: usize,
@@ -111,6 +143,7 @@ pub struct WaveQueueEntry {
     pub closure_override_applied: bool,
     pub completed: bool,
     pub last_run_status: Option<WaveRunStatus>,
+    pub soft_state: SoftState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -120,6 +153,7 @@ pub struct PlanningStatusSummary {
     pub blocked_waves: usize,
     pub active_waves: usize,
     pub completed_waves: usize,
+    pub design_incomplete_waves: usize,
     pub total_agents: usize,
     pub implementation_agents: usize,
     pub closure_agents: usize,
@@ -142,6 +176,8 @@ pub struct PlanningStatus {
     pub project_name: String,
     pub default_mode: ExecutionMode,
     pub summary: PlanningStatusSummary,
+    pub delivery: DeliverySummaryReadModel,
+    pub portfolio: PortfolioDeliveryReadModel,
     pub skill_catalog: SkillCatalogHealth,
     pub queue: QueueReadinessProjection,
     pub next_ready_wave_ids: Vec<u32>,
@@ -159,6 +195,8 @@ pub struct WaveRef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct WaveBlockerFlags {
     pub dependency: bool,
+    pub design: bool,
+    pub recovery: bool,
     pub lint: bool,
     pub closure: bool,
     pub ownership: bool,
@@ -192,15 +230,18 @@ pub struct WavePlanningProjection {
     pub depends_on: Vec<u32>,
     pub blocked_by: Vec<String>,
     pub blocker_state: Vec<WaveBlockerState>,
+    pub design_completeness: wave_domain::DesignCompletenessState,
     pub readiness: WaveReadinessState,
     pub lint_errors: usize,
     pub ready: bool,
     pub ownership: WaveOwnershipState,
     pub execution: WaveExecutionState,
+    pub recovery: WaveRecoveryState,
     pub rerun_requested: bool,
     pub closure_override_applied: bool,
     pub completed: bool,
     pub last_run_status: Option<WaveRunStatus>,
+    pub soft_state: SoftState,
     pub agents: WaveAgentCounts,
     pub closure: WaveClosureStatus,
     pub blockers: WaveBlockerFlags,
@@ -238,6 +279,8 @@ pub struct ClosureCoverageProjection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct QueueBlockerSummary {
     pub dependency: usize,
+    pub design: usize,
+    pub recovery: usize,
     pub lint: usize,
     pub closure: usize,
     pub ownership: usize,
@@ -256,6 +299,7 @@ pub struct BlockedWaveProjection {
     pub depends_on: Vec<u32>,
     pub blocked_by: Vec<String>,
     pub blocker_state: Vec<WaveBlockerState>,
+    pub design_completeness: wave_domain::DesignCompletenessState,
     pub lint_errors: usize,
     pub missing_closure_agents: Vec<String>,
     pub rerun_requested: bool,
@@ -277,6 +321,8 @@ pub struct QueueProjection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct QueueBlockerWaves {
     pub dependency: Vec<WaveRef>,
+    pub design: Vec<WaveRef>,
+    pub recovery: Vec<WaveRef>,
     pub lint: Vec<WaveRef>,
     pub closure: Vec<WaveRef>,
     pub ownership: Vec<WaveRef>,
@@ -299,6 +345,7 @@ pub struct SkillCatalogProjection {
 pub struct PlanningStatusProjection {
     pub agent_counts: AgentCountProjection,
     pub closure_coverage: ClosureCoverageProjection,
+    pub portfolio: PortfolioDeliveryReadModel,
     pub queue: QueueProjection,
     pub skill_catalog: SkillCatalogProjection,
     pub run: RunProjection,
@@ -329,6 +376,10 @@ pub struct AgentsProjection {
 pub struct ControlProjection {
     pub rerun_supported: bool,
     pub clear_rerun_supported: bool,
+    pub apply_closure_override_supported: bool,
+    pub clear_closure_override_supported: bool,
+    pub approve_operator_action_supported: bool,
+    pub reject_operator_action_supported: bool,
     pub launch_supported: bool,
     pub autonomous_supported: bool,
     pub launcher_required: bool,
@@ -351,6 +402,89 @@ pub type QueueReadinessStateReadModel = QueueReadinessState;
 pub type WaveReadinessReadModel = WaveReadinessState;
 pub type QueueBlockerReadModel = WaveBlockerState;
 pub type QueueBlockerKindReadModel = WaveBlockerKind;
+
+fn repo_portfolio_delivery_model(waves: &[WaveDocument]) -> PortfolioDeliveryModel {
+    let available_wave_ids = waves
+        .iter()
+        .map(|wave| wave.metadata.id)
+        .collect::<Vec<_>>();
+    let mut selected_wave_ids = [15_u32, 16, 17]
+        .into_iter()
+        .filter(|wave_id| available_wave_ids.contains(wave_id))
+        .collect::<Vec<_>>();
+    if selected_wave_ids.len() < 2 {
+        selected_wave_ids = available_wave_ids
+            .into_iter()
+            .rev()
+            .take(3)
+            .collect::<Vec<_>>();
+        selected_wave_ids.sort_unstable();
+    }
+    if selected_wave_ids.is_empty() {
+        return PortfolioDeliveryModel::default();
+    }
+
+    let release_titles = selected_wave_ids
+        .iter()
+        .filter_map(|wave_id| {
+            waves
+                .iter()
+                .find(|wave| wave.metadata.id == *wave_id)
+                .map(|wave| format!("wave {} {}", wave.metadata.id, wave.metadata.title))
+        })
+        .collect::<Vec<_>>();
+
+    PortfolioDeliveryModel {
+        initiatives: vec![PortfolioInitiative {
+            initiative_id: InitiativeId::new("initiative-delivery-aware-wave-stack"),
+            slug: "delivery-aware-wave-stack".to_string(),
+            title: "Delivery-aware wave stack".to_string(),
+            summary: Some(
+                "Runtime policy, design authority, and release readiness roll into one delivery initiative."
+                    .to_string(),
+            ),
+            wave_ids: selected_wave_ids.clone(),
+            milestone_ids: vec![MilestoneId::new("milestone-release-readiness")],
+            release_train_id: Some(ReleaseTrainId::new("train-repo-local-pilot")),
+            outcome_contract_ids: vec![OutcomeContractId::new("contract-ship-ready-operator-ux")],
+        }],
+        milestones: vec![PortfolioMilestone {
+            milestone_id: MilestoneId::new("milestone-release-readiness"),
+            initiative_id: InitiativeId::new("initiative-delivery-aware-wave-stack"),
+            slug: "release-readiness".to_string(),
+            title: "Release readiness".to_string(),
+            summary: Some(format!(
+                "Aggregate delivery evidence across {}.",
+                release_titles.join(", ")
+            )),
+            wave_ids: selected_wave_ids.clone(),
+        }],
+        release_trains: vec![ReleaseTrain {
+            release_train_id: ReleaseTrainId::new("train-repo-local-pilot"),
+            slug: "repo-local-pilot".to_string(),
+            title: "Repo-local pilot".to_string(),
+            summary: Some(
+                "Ship/no-ship state stays above individual wave completion.".to_string(),
+            ),
+            wave_ids: selected_wave_ids.clone(),
+            initiative_ids: vec![InitiativeId::new("initiative-delivery-aware-wave-stack")],
+            milestone_ids: vec![MilestoneId::new("milestone-release-readiness")],
+        }],
+        outcome_contracts: vec![OutcomeContract {
+            outcome_contract_id: OutcomeContractId::new("contract-ship-ready-operator-ux"),
+            slug: "ship-ready-operator-ux".to_string(),
+            title: "Ship-ready operator UX".to_string(),
+            summary: Some(
+                "Delivery truth must explain ship readiness, proof, risks, and debt directly."
+                    .to_string(),
+            ),
+            wave_ids: selected_wave_ids,
+            initiative_ids: vec![InitiativeId::new("initiative-delivery-aware-wave-stack")],
+            milestone_ids: vec![MilestoneId::new("milestone-release-readiness")],
+            release_train_id: Some(ReleaseTrainId::new("train-repo-local-pilot")),
+        }],
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DashboardRunReadModel {
@@ -376,6 +510,7 @@ pub struct QueuePanelWaveReadModel {
     pub title: String,
     pub queue_state: String,
     pub blocked: bool,
+    pub soft_state: SoftState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -409,6 +544,10 @@ pub struct ControlActionReadModel {
 pub struct ControlPanelReadModel {
     pub rerun_supported: bool,
     pub clear_rerun_supported: bool,
+    pub apply_closure_override_supported: bool,
+    pub clear_closure_override_supported: bool,
+    pub approve_operator_action_supported: bool,
+    pub reject_operator_action_supported: bool,
     pub launch_supported: bool,
     pub autonomous_supported: bool,
     pub launcher_required: bool,
@@ -426,12 +565,14 @@ pub struct OperatorSnapshotInputs {
     pub agents: AgentsProjection,
     pub queue: QueuePanelReadModel,
     pub control: ControlPanelReadModel,
+    pub delivery: DeliveryReadModel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProjectionSpine {
     pub planning: PlanningProjectionBundle,
     pub operator: OperatorSnapshotInputs,
+    pub delivery: DeliveryReadModel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -451,6 +592,8 @@ pub struct ControlStatusReadModel {
     pub closure_attention_lines: Vec<String>,
     pub skill_issue_paths: Vec<String>,
     pub skill_issue_lines: Vec<String>,
+    pub delivery_attention_lines: Vec<String>,
+    pub signal: DeliverySignalReadModel,
 }
 
 pub type PlanningStatusView = PlanningStatus;
@@ -522,14 +665,62 @@ pub fn build_planning_projection_bundle_with_compatibility_state(
     rerun_wave_ids: &HashSet<u32>,
     closure_override_wave_ids: &HashSet<u32>,
 ) -> PlanningProjectionBundle {
-    let reduced = reduce_planning_state_with_scheduler(
+    build_planning_projection_bundle_with_portfolio_compatibility_state(
+        config,
         waves,
         findings,
         skill_catalog_issues,
         latest_runs,
         rerun_wave_ids,
         closure_override_wave_ids,
-        &[],
+        &repo_portfolio_delivery_model(waves),
+    )
+}
+
+pub fn build_planning_projection_bundle_with_portfolio_state(
+    config: &ProjectConfig,
+    waves: &[WaveDocument],
+    findings: &[LintFinding],
+    skill_catalog_issues: &[SkillCatalogIssue],
+    latest_runs: &HashMap<u32, WaveRunRecord>,
+    rerun_wave_ids: &HashSet<u32>,
+    closure_override_wave_ids: &HashSet<u32>,
+    portfolio_model: &PortfolioDeliveryModel,
+) -> PlanningProjectionBundle {
+    let compatibility_runs = compatibility_run_inputs_by_wave(latest_runs);
+    build_planning_projection_bundle_with_portfolio_compatibility_state(
+        config,
+        waves,
+        findings,
+        skill_catalog_issues,
+        &compatibility_runs,
+        rerun_wave_ids,
+        closure_override_wave_ids,
+        portfolio_model,
+    )
+}
+
+pub fn build_planning_projection_bundle_with_portfolio_compatibility_state(
+    config: &ProjectConfig,
+    waves: &[WaveDocument],
+    findings: &[LintFinding],
+    skill_catalog_issues: &[SkillCatalogIssue],
+    latest_runs: &HashMap<u32, CompatibilityRunInput>,
+    rerun_wave_ids: &HashSet<u32>,
+    closure_override_wave_ids: &HashSet<u32>,
+    portfolio_model: &PortfolioDeliveryModel,
+) -> PlanningProjectionBundle {
+    let reduced = with_portfolio_delivery_model(
+        reduce_planning_state_with_scheduler(
+            waves,
+            findings,
+            skill_catalog_issues,
+            latest_runs,
+            rerun_wave_ids,
+            closure_override_wave_ids,
+            &[],
+        ),
+        portfolio_model,
     );
     let status = build_planning_status_from_reducer(config, &reduced);
     let projection = build_planning_status_projection(&status);
@@ -546,7 +737,8 @@ pub fn build_planning_projection_bundle_with_scheduler_state(
     closure_override_wave_ids: &HashSet<u32>,
     scheduler_events: &[SchedulerEvent],
 ) -> PlanningProjectionBundle {
-    let reduced = reduce_planning_state_with_scheduler(
+    build_planning_projection_bundle_with_portfolio_scheduler_state(
+        config,
         waves,
         findings,
         skill_catalog_issues,
@@ -554,6 +746,35 @@ pub fn build_planning_projection_bundle_with_scheduler_state(
         rerun_wave_ids,
         closure_override_wave_ids,
         scheduler_events,
+        &[],
+        &repo_portfolio_delivery_model(waves),
+    )
+}
+
+pub fn build_planning_projection_bundle_with_portfolio_scheduler_state(
+    config: &ProjectConfig,
+    waves: &[WaveDocument],
+    findings: &[LintFinding],
+    skill_catalog_issues: &[SkillCatalogIssue],
+    latest_runs: &HashMap<u32, CompatibilityRunInput>,
+    rerun_wave_ids: &HashSet<u32>,
+    closure_override_wave_ids: &HashSet<u32>,
+    scheduler_events: &[SchedulerEvent],
+    control_events: &[ControlEvent],
+    portfolio_model: &PortfolioDeliveryModel,
+) -> PlanningProjectionBundle {
+    let reduced = with_portfolio_delivery_model(
+        reduce_planning_state_with_authorities(
+            waves,
+            findings,
+            skill_catalog_issues,
+            latest_runs,
+            rerun_wave_ids,
+            closure_override_wave_ids,
+            scheduler_events,
+            control_events,
+        ),
+        portfolio_model,
     );
     let status = build_planning_status_from_reducer(config, &reduced);
     let projection = build_planning_status_projection(&status);
@@ -571,11 +792,13 @@ pub fn build_projection_spine_with_state(
     launcher_ready: bool,
 ) -> ProjectionSpine {
     let compatibility_runs = compatibility_run_inputs_by_wave(latest_runs);
+    let delivery_catalog = DeliveryCatalog::default();
     build_projection_spine_with_compatibility_state(
         config,
         waves,
         findings,
         skill_catalog_issues,
+        &delivery_catalog,
         &compatibility_runs,
         rerun_wave_ids,
         closure_override_wave_ids,
@@ -588,12 +811,13 @@ pub fn build_projection_spine_with_compatibility_state(
     waves: &[WaveDocument],
     findings: &[LintFinding],
     skill_catalog_issues: &[SkillCatalogIssue],
+    delivery_catalog: &DeliveryCatalog,
     latest_runs: &HashMap<u32, CompatibilityRunInput>,
     rerun_wave_ids: &HashSet<u32>,
     closure_override_wave_ids: &HashSet<u32>,
     launcher_ready: bool,
 ) -> ProjectionSpine {
-    let planning = build_planning_projection_bundle_with_scheduler_state(
+    let mut planning = build_planning_projection_bundle_with_scheduler_state(
         config,
         waves,
         findings,
@@ -603,12 +827,19 @@ pub fn build_projection_spine_with_compatibility_state(
         closure_override_wave_ids,
         &[],
     );
+    let delivery = build_delivery_read_model(&planning.status, waves, delivery_catalog);
+    overlay_delivery_onto_planning(&mut planning, &delivery);
     let operator = build_operator_snapshot_inputs_from_compatibility_runs(
         &planning,
+        &delivery,
         latest_runs,
         launcher_ready,
     );
-    ProjectionSpine { planning, operator }
+    ProjectionSpine {
+        planning,
+        operator,
+        delivery,
+    }
 }
 
 pub fn build_projection_spine_with_scheduler_state(
@@ -616,13 +847,15 @@ pub fn build_projection_spine_with_scheduler_state(
     waves: &[WaveDocument],
     findings: &[LintFinding],
     skill_catalog_issues: &[SkillCatalogIssue],
+    delivery_catalog: &DeliveryCatalog,
     latest_runs: &HashMap<u32, CompatibilityRunInput>,
     rerun_wave_ids: &HashSet<u32>,
     closure_override_wave_ids: &HashSet<u32>,
     scheduler_events: &[SchedulerEvent],
+    control_events: &[ControlEvent],
     launcher_ready: bool,
 ) -> ProjectionSpine {
-    let planning = build_planning_projection_bundle_with_scheduler_state(
+    let mut planning = build_planning_projection_bundle_with_portfolio_scheduler_state(
         config,
         waves,
         findings,
@@ -631,13 +864,22 @@ pub fn build_projection_spine_with_scheduler_state(
         rerun_wave_ids,
         closure_override_wave_ids,
         scheduler_events,
+        control_events,
+        &repo_portfolio_delivery_model(waves),
     );
+    let delivery = build_delivery_read_model(&planning.status, waves, delivery_catalog);
+    overlay_delivery_onto_planning(&mut planning, &delivery);
     let operator = build_operator_snapshot_inputs_from_compatibility_runs(
         &planning,
+        &delivery,
         latest_runs,
         launcher_ready,
     );
-    ProjectionSpine { planning, operator }
+    ProjectionSpine {
+        planning,
+        operator,
+        delivery,
+    }
 }
 
 pub fn build_projection_spine_from_authority(
@@ -652,22 +894,78 @@ pub fn build_projection_spine_from_authority(
     launcher_ready: bool,
 ) -> Result<ProjectionSpine> {
     let mut compatibility_runs = load_canonical_compatibility_runs(root, config, waves)?;
-    for (wave_id, run) in compatibility_run_inputs_by_wave(fallback_runs) {
-        compatibility_runs.entry(wave_id).or_insert(run);
+    for (wave_id, fallback_run) in compatibility_run_inputs_by_wave(fallback_runs) {
+        match compatibility_runs.entry(wave_id) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(fallback_run);
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if should_prefer_fallback_run(entry.get(), &fallback_run) {
+                    entry.insert(fallback_run);
+                }
+            }
+        }
     }
     let scheduler_events = load_scheduler_events(root, config)?;
+    let control_events = ControlEventLog::under_repo(root).load_all()?;
+    let delivery_catalog = load_delivery_catalog(root, config)?;
 
     Ok(build_projection_spine_with_scheduler_state(
         config,
         waves,
         findings,
         skill_catalog_issues,
+        &delivery_catalog,
         &compatibility_runs,
         rerun_wave_ids,
         closure_override_wave_ids,
         &scheduler_events,
+        &control_events,
         launcher_ready,
     ))
+}
+
+fn should_prefer_fallback_run(
+    canonical_run: &CompatibilityRunInput,
+    fallback_run: &CompatibilityRunInput,
+) -> bool {
+    if fallback_run.run_id == canonical_run.run_id {
+        if fallback_run.completed_at_ms.is_some()
+            && canonical_run.completed_at_ms.is_none()
+            && is_terminal_run_status(fallback_run.status)
+        {
+            return true;
+        }
+        if fallback_run.completed_successfully && !canonical_run.completed_successfully {
+            return true;
+        }
+        if fallback_run.is_active() && !canonical_run.is_active() {
+            return true;
+        }
+    }
+
+    run_recency_key(fallback_run) > run_recency_key(canonical_run)
+}
+
+fn is_terminal_run_status(status: WaveRunStatus) -> bool {
+    matches!(
+        status,
+        WaveRunStatus::Succeeded | WaveRunStatus::Failed | WaveRunStatus::DryRun
+    )
+}
+
+fn run_recency_key(run: &CompatibilityRunInput) -> (u128, u128, u128, u8) {
+    (
+        run.created_at_ms,
+        run.started_at_ms.unwrap_or_default(),
+        run.completed_at_ms.unwrap_or_default(),
+        match run.status {
+            WaveRunStatus::Running | WaveRunStatus::Planned => 3,
+            WaveRunStatus::Succeeded => 2,
+            WaveRunStatus::Failed => 1,
+            WaveRunStatus::DryRun => 0,
+        },
+    )
 }
 
 pub fn build_planning_status(
@@ -713,6 +1011,29 @@ pub fn build_planning_status_with_state(
         latest_runs,
         rerun_wave_ids,
         closure_override_wave_ids,
+    )
+    .status
+}
+
+pub fn build_planning_status_with_portfolio_state(
+    config: &ProjectConfig,
+    waves: &[WaveDocument],
+    findings: &[LintFinding],
+    skill_catalog_issues: &[SkillCatalogIssue],
+    latest_runs: &HashMap<u32, WaveRunRecord>,
+    rerun_wave_ids: &HashSet<u32>,
+    closure_override_wave_ids: &HashSet<u32>,
+    portfolio_model: &PortfolioDeliveryModel,
+) -> PlanningStatus {
+    build_planning_projection_bundle_with_portfolio_state(
+        config,
+        waves,
+        findings,
+        skill_catalog_issues,
+        latest_runs,
+        rerun_wave_ids,
+        closure_override_wave_ids,
+        portfolio_model,
     )
     .status
 }
@@ -820,6 +1141,7 @@ pub fn build_planning_status_projection(status: &PlanningStatus) -> PlanningStat
                 depends_on: wave.depends_on.clone(),
                 blocked_by: wave.blocked_by.clone(),
                 blocker_state: blocker_state.clone(),
+                design_completeness: wave.design_completeness,
                 lint_errors: wave.lint_errors,
                 missing_closure_agents: wave.missing_closure_agents.clone(),
                 rerun_requested: wave.rerun_requested,
@@ -834,15 +1156,18 @@ pub fn build_planning_status_projection(status: &PlanningStatus) -> PlanningStat
             depends_on: wave.depends_on.clone(),
             blocked_by: wave.blocked_by.clone(),
             blocker_state: blocker_state.clone(),
+            design_completeness: wave.design_completeness,
             readiness: wave.readiness.clone(),
             lint_errors: wave.lint_errors,
             ready: wave.ready,
             ownership: wave.ownership.clone(),
             execution: wave.execution.clone(),
+            recovery: wave.recovery.clone(),
             rerun_requested: wave.rerun_requested,
             closure_override_applied: wave.closure_override_applied,
             completed: wave.completed,
             last_run_status: wave.last_run_status,
+            soft_state: wave.soft_state,
             agents: WaveAgentCounts {
                 total: wave.agent_count,
                 implementation: wave.implementation_agent_count,
@@ -875,6 +1200,7 @@ pub fn build_planning_status_projection(status: &PlanningStatus) -> PlanningStat
             missing_required_agents: status.summary.total_missing_closure_agents,
             waves: closure_gaps,
         },
+        portfolio: status.portfolio.clone(),
         queue: QueueProjection {
             ready,
             claimed,
@@ -927,6 +1253,10 @@ pub fn build_planning_status_projection(status: &PlanningStatus) -> PlanningStat
         control: ControlProjection {
             rerun_supported: true,
             clear_rerun_supported: true,
+            apply_closure_override_supported: true,
+            clear_closure_override_supported: true,
+            approve_operator_action_supported: true,
+            reject_operator_action_supported: true,
             launch_supported: true,
             autonomous_supported: true,
             launcher_required: true,
@@ -975,11 +1305,13 @@ pub fn build_dashboard_read_model_from_compatibility_runs(
 
 pub fn build_operator_snapshot_inputs(
     planning: &PlanningProjectionBundle,
+    delivery: &DeliveryReadModel,
     latest_runs: &HashMap<u32, WaveRunRecord>,
     launcher_ready: bool,
 ) -> OperatorSnapshotInputs {
     build_operator_snapshot_inputs_from_compatibility_runs(
         planning,
+        delivery,
         &compatibility_run_inputs_by_wave(latest_runs),
         launcher_ready,
     )
@@ -987,6 +1319,7 @@ pub fn build_operator_snapshot_inputs(
 
 pub fn build_operator_snapshot_inputs_from_compatibility_runs(
     planning: &PlanningProjectionBundle,
+    delivery: &DeliveryReadModel,
     latest_runs: &HashMap<u32, CompatibilityRunInput>,
     launcher_ready: bool,
 ) -> OperatorSnapshotInputs {
@@ -999,6 +1332,7 @@ pub fn build_operator_snapshot_inputs_from_compatibility_runs(
         agents: planning.projection.agents.clone(),
         queue: build_queue_panel_read_model(&planning.projection),
         control: build_control_panel_read_model(&planning.projection.control, launcher_ready),
+        delivery: delivery.clone(),
     }
 }
 
@@ -1037,6 +1371,7 @@ pub fn build_queue_panel_read_model(projection: &PlanningStatusProjection) -> Qu
                 title: wave.title.clone(),
                 queue_state: queue_state_label(wave.readiness.state, &wave.blocked_by),
                 blocked: matches!(wave.readiness.state, QueueReadinessState::Blocked),
+                soft_state: wave.soft_state,
             })
             .collect(),
     }
@@ -1055,6 +1390,10 @@ pub fn build_control_panel_read_model(
     ControlPanelReadModel {
         rerun_supported: control.rerun_supported,
         clear_rerun_supported: control.clear_rerun_supported,
+        apply_closure_override_supported: control.apply_closure_override_supported,
+        clear_closure_override_supported: control.clear_closure_override_supported,
+        approve_operator_action_supported: control.approve_operator_action_supported,
+        reject_operator_action_supported: control.reject_operator_action_supported,
         launch_supported: control.launch_supported,
         autonomous_supported: control.autonomous_supported,
         launcher_required: control.launcher_required,
@@ -1092,6 +1431,19 @@ pub fn build_control_action_read_models(
             implemented: true,
         },
         ControlActionReadModel {
+            key: "j / k or arrows".to_string(),
+            label: "Select action".to_string(),
+            description: if control.approve_operator_action_supported
+                || control.reject_operator_action_supported
+            {
+                "Move between actionable review items in the visible Control queue.".to_string()
+            } else {
+                "Operator action selection is not supported by the control plane yet.".to_string()
+            },
+            implemented: control.approve_operator_action_supported
+                || control.reject_operator_action_supported,
+        },
+        ControlActionReadModel {
             key: "r".to_string(),
             label: "Request rerun".to_string(),
             description: if control.rerun_supported {
@@ -1110,6 +1462,48 @@ pub fn build_control_action_read_models(
                 "Clearing rerun intents is not supported by the control plane yet.".to_string()
             },
             implemented: control.clear_rerun_supported,
+        },
+        ControlActionReadModel {
+            key: "m".to_string(),
+            label: "Apply manual close".to_string(),
+            description: if control.apply_closure_override_supported {
+                "Open a confirmation flow to apply a manual close override.".to_string()
+            } else {
+                "Applying manual close overrides is not supported by the control plane yet."
+                    .to_string()
+            },
+            implemented: control.apply_closure_override_supported,
+        },
+        ControlActionReadModel {
+            key: "M".to_string(),
+            label: "Clear manual close".to_string(),
+            description: if control.clear_closure_override_supported {
+                "Open a confirmation flow to clear an active manual close override.".to_string()
+            } else {
+                "Clearing manual close overrides is not supported by the control plane yet."
+                    .to_string()
+            },
+            implemented: control.clear_closure_override_supported,
+        },
+        ControlActionReadModel {
+            key: "u".to_string(),
+            label: "Approve action".to_string(),
+            description: if control.approve_operator_action_supported {
+                "Confirm the selected review item in the Control queue.".to_string()
+            } else {
+                "Operator approvals are not supported by the control plane yet.".to_string()
+            },
+            implemented: control.approve_operator_action_supported,
+        },
+        ControlActionReadModel {
+            key: "x".to_string(),
+            label: "Reject or dismiss".to_string(),
+            description: if control.reject_operator_action_supported {
+                "Reject or dismiss the selected review item in the Control queue.".to_string()
+            } else {
+                "Operator rejection flows are not supported by the control plane yet.".to_string()
+            },
+            implemented: control.reject_operator_action_supported,
         },
         ControlActionReadModel {
             key: "launch".to_string(),
@@ -1185,18 +1579,35 @@ pub fn build_control_status_read_model(
     status: &PlanningStatus,
     projection: &PlanningStatusProjection,
 ) -> ControlStatusReadModel {
+    let delivery = DeliveryReadModel {
+        summary: status.delivery.clone(),
+        signal: build_delivery_signal_from_status(status),
+        ..DeliveryReadModel::default()
+    };
     ControlStatusReadModel {
         queue_decision: build_queue_decision_read_model(status, projection),
         closure_attention_lines: build_closure_attention_lines(projection),
         skill_issue_paths: projection.skill_catalog.issue_paths.clone(),
         skill_issue_lines: build_skill_issue_lines(&projection.skill_catalog),
+        delivery_attention_lines: delivery.attention_lines.clone(),
+        signal: delivery.signal,
     }
 }
 
 pub fn build_control_status_read_model_from_spine(
     spine: &ProjectionSpine,
 ) -> ControlStatusReadModel {
-    build_control_status_read_model(&spine.planning.status, &spine.planning.projection)
+    ControlStatusReadModel {
+        queue_decision: build_queue_decision_read_model(
+            &spine.planning.status,
+            &spine.planning.projection,
+        ),
+        closure_attention_lines: build_closure_attention_lines(&spine.planning.projection),
+        skill_issue_paths: spine.planning.projection.skill_catalog.issue_paths.clone(),
+        skill_issue_lines: build_skill_issue_lines(&spine.planning.projection.skill_catalog),
+        delivery_attention_lines: spine.delivery.attention_lines.clone(),
+        signal: spine.delivery.signal.clone(),
+    }
 }
 
 pub fn build_closure_attention_lines(projection: &PlanningStatusProjection) -> Vec<String> {
@@ -1253,8 +1664,10 @@ fn queue_decision_story_lines(
         ),
         format!("queue decision: queue ready reason={queue_ready_reason}"),
         format!(
-            "queue decision: blocker story dependency={} lint={} closure={} ownership={} lease_expired={} budget={} active_run={}",
+            "queue decision: blocker story dependency={} design={} recovery={} lint={} closure={} ownership={} lease_expired={} budget={} active_run={}",
             blocker_summary.dependency,
+            blocker_summary.design,
+            blocker_summary.recovery,
             blocker_summary.lint,
             blocker_summary.closure,
             blocker_summary.ownership,
@@ -1333,6 +1746,7 @@ fn build_planning_status_from_reducer(
             blocked_waves: reduced.summary.blocked_waves,
             active_waves: reduced.summary.active_waves,
             completed_waves: reduced.summary.completed_waves,
+            design_incomplete_waves: reduced.summary.design_incomplete_waves,
             total_agents: reduced.summary.total_agents,
             implementation_agents: reduced.summary.implementation_agents,
             closure_agents: reduced.summary.closure_agents,
@@ -1342,6 +1756,8 @@ fn build_planning_status_from_reducer(
             lint_error_waves: reduced.summary.lint_error_waves,
             skill_catalog_issue_count: reduced.summary.skill_catalog_issue_count,
         },
+        delivery: DeliverySummaryReadModel::default(),
+        portfolio: reduced.portfolio.clone(),
         skill_catalog: SkillCatalogHealth {
             ok: reduced.skill_catalog.ok,
             issue_count: reduced.skill_catalog.issue_count,
@@ -1363,10 +1779,12 @@ fn build_planning_status_from_reducer(
                     .iter()
                     .map(convert_blocker_state)
                     .collect(),
+                design_completeness: wave.design.completeness,
                 lint_errors: wave.lint_errors,
                 ready: wave.ready,
                 ownership: wave.ownership.clone(),
                 execution: wave.execution.clone(),
+                recovery: wave.recovery.clone(),
                 agent_count: wave.agents.total,
                 implementation_agent_count: wave.agents.implementation,
                 closure_agent_count: wave.agents.closure,
@@ -1379,9 +1797,108 @@ fn build_planning_status_from_reducer(
                 closure_override_applied: wave.lifecycle.closure_override_applied,
                 completed: wave.lifecycle.completed,
                 last_run_status: wave.lifecycle.last_run_status,
+                soft_state: SoftState::Clear,
             })
             .collect(),
         has_errors: reduced.has_errors,
+    }
+}
+
+fn overlay_delivery_onto_planning(
+    planning: &mut PlanningProjectionBundle,
+    delivery: &DeliveryReadModel,
+) {
+    planning.status.delivery = delivery.summary.clone();
+    for wave in &mut planning.status.waves {
+        wave.soft_state = delivery
+            .wave_soft_states
+            .get(&wave.id)
+            .copied()
+            .unwrap_or(SoftState::Clear);
+    }
+    planning.projection = build_planning_status_projection(&planning.status);
+}
+
+fn build_delivery_signal_from_status(status: &PlanningStatus) -> DeliverySignalReadModel {
+    let ready_wave_ids = status
+        .waves
+        .iter()
+        .filter(|wave| wave.ready)
+        .map(|wave| wave.id)
+        .collect::<Vec<_>>();
+    let blocked_wave_ids = status
+        .waves
+        .iter()
+        .filter(|wave| {
+            !wave.ready
+                && !wave.completed
+                && !matches!(
+                    wave.readiness.state,
+                    QueueReadinessState::Active | QueueReadinessState::Claimed
+                )
+        })
+        .map(|wave| wave.id)
+        .collect::<Vec<_>>();
+    let active_wave_ids = status
+        .waves
+        .iter()
+        .filter(|wave| {
+            matches!(
+                wave.readiness.state,
+                QueueReadinessState::Active | QueueReadinessState::Claimed
+            )
+        })
+        .map(|wave| wave.id)
+        .collect::<Vec<_>>();
+    let delivery_soft_state = status
+        .waves
+        .iter()
+        .map(|wave| wave.soft_state)
+        .max()
+        .unwrap_or(SoftState::Clear);
+    let exit_code = match delivery_soft_state {
+        SoftState::Stale => 5,
+        SoftState::Degraded => 4,
+        SoftState::Advisory => 3,
+        SoftState::Clear if !active_wave_ids.is_empty() => 2,
+        SoftState::Clear if ready_wave_ids.is_empty() && !blocked_wave_ids.is_empty() => 1,
+        SoftState::Clear => 0,
+    };
+    DeliverySignalReadModel {
+        exit_code,
+        queue_state: if !active_wave_ids.is_empty() {
+            "active".to_string()
+        } else if !ready_wave_ids.is_empty() {
+            "ready".to_string()
+        } else if status.summary.completed_waves == status.summary.total_waves
+            && status.summary.total_waves > 0
+        {
+            "completed".to_string()
+        } else {
+            "blocked".to_string()
+        },
+        delivery_soft_state,
+        next_claimable_wave_id: status.queue.next_ready_wave_id,
+        ready_wave_ids,
+        blocked_wave_ids,
+        active_wave_ids,
+        ready_release_ids: Vec::new(),
+        blocked_release_ids: Vec::new(),
+        message: format!(
+            "queue={} delivery_soft={}",
+            if status.summary.active_waves > 0 {
+                "active"
+            } else if status.summary.ready_waves > 0 {
+                "ready"
+            } else if status.summary.completed_waves == status.summary.total_waves
+                && status.summary.total_waves > 0
+            {
+                "completed"
+            } else {
+                "blocked"
+            },
+            delivery_soft_state.label()
+        ),
     }
 }
 
@@ -1428,6 +1945,8 @@ fn convert_blocker_state(state: &wave_reducer::WaveBlockerState) -> WaveBlockerS
 fn convert_blocker_kind(kind: wave_reducer::WaveBlockerKind) -> WaveBlockerKind {
     match kind {
         wave_reducer::WaveBlockerKind::Dependency => WaveBlockerKind::Dependency,
+        wave_reducer::WaveBlockerKind::Design => WaveBlockerKind::Design,
+        wave_reducer::WaveBlockerKind::Recovery => WaveBlockerKind::Recovery,
         wave_reducer::WaveBlockerKind::Lint => WaveBlockerKind::Lint,
         wave_reducer::WaveBlockerKind::Closure => WaveBlockerKind::Closure,
         wave_reducer::WaveBlockerKind::Ownership => WaveBlockerKind::Ownership,
@@ -1453,6 +1972,10 @@ fn accumulate_blockers(summary: &mut QueueBlockerSummary, blocked_by: &[String])
     for blocker in blocked_by {
         if blocker.starts_with("wave:") {
             summary.dependency += 1;
+        } else if blocker.starts_with("design:") {
+            summary.design += 1;
+        } else if blocker.starts_with("recovery:") {
+            summary.recovery += 1;
         } else if blocker == "lint:error" {
             summary.lint += 1;
         } else if blocker.starts_with("closure:") {
@@ -1480,6 +2003,18 @@ fn classify_blockers(blocked_by: &[String]) -> Vec<WaveBlockerState> {
             if let Some(detail) = blocker.strip_prefix("wave:") {
                 WaveBlockerState {
                     kind: WaveBlockerKind::Dependency,
+                    raw: blocker.clone(),
+                    detail: Some(detail.to_string()),
+                }
+            } else if let Some(detail) = blocker.strip_prefix("design:") {
+                WaveBlockerState {
+                    kind: WaveBlockerKind::Design,
+                    raw: blocker.clone(),
+                    detail: Some(detail.to_string()),
+                }
+            } else if let Some(detail) = blocker.strip_prefix("recovery:") {
+                WaveBlockerState {
+                    kind: WaveBlockerKind::Recovery,
                     raw: blocker.clone(),
                     detail: Some(detail.to_string()),
                 }
@@ -1541,6 +2076,8 @@ fn classify_blocker_flags(blocker_state: &[WaveBlockerState]) -> WaveBlockerFlag
     for blocker in blocker_state {
         match blocker.kind {
             WaveBlockerKind::Dependency => flags.dependency = true,
+            WaveBlockerKind::Design => flags.design = true,
+            WaveBlockerKind::Recovery => flags.recovery = true,
             WaveBlockerKind::Lint => flags.lint = true,
             WaveBlockerKind::Closure => flags.closure = true,
             WaveBlockerKind::Ownership => flags.ownership = true,
@@ -1561,6 +2098,12 @@ fn accumulate_blocker_waves(
 ) {
     if flags.dependency {
         summary.dependency.push(wave.clone());
+    }
+    if flags.design {
+        summary.design.push(wave.clone());
+    }
+    if flags.recovery {
+        summary.recovery.push(wave.clone());
     }
     if flags.lint {
         summary.lint.push(wave.clone());
@@ -1592,11 +2135,18 @@ fn accumulate_blocker_waves(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::fs;
     use std::path::PathBuf;
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
     use wave_config::AuthorityConfig;
     use wave_config::DarkFactoryPolicy;
     use wave_config::LaneConfig;
     use wave_dark_factory::FindingSeverity;
+    use wave_domain::AttemptId;
+    use wave_domain::AttemptRecord;
+    use wave_domain::AttemptState;
+    use wave_domain::ControlEventPayload;
     use wave_domain::SchedulerBudget;
     use wave_domain::SchedulerBudgetId;
     use wave_domain::SchedulerBudgetRecord;
@@ -1608,6 +2158,10 @@ mod tests {
     use wave_domain::WaveClaimId;
     use wave_domain::WaveClaimRecord;
     use wave_domain::WaveClaimState;
+    use wave_domain::task_id_for_agent;
+    use wave_events::ControlEvent;
+    use wave_events::ControlEventKind;
+    use wave_events::ControlEventLog;
     use wave_events::SchedulerEvent;
     use wave_events::SchedulerEventKind;
     use wave_spec::CompletionLevel;
@@ -1838,7 +2392,175 @@ mod tests {
             vec!["no supported runtime is ready"]
         );
         assert_eq!(spine.operator.control.unavailable_actions[0].key, "launch");
-        assert_eq!(spine.operator.control.actions.len(), 7);
+        assert!(spine.operator.control.apply_closure_override_supported);
+        assert!(spine.operator.control.clear_closure_override_supported);
+        assert!(spine.operator.control.approve_operator_action_supported);
+        assert!(spine.operator.control.reject_operator_action_supported);
+        assert_eq!(spine.operator.control.actions.len(), 12);
+        assert!(spine.operator.control.actions.iter().any(|action| {
+            action.key == "j / k or arrows" && action.label == "Select action" && action.implemented
+        }));
+        assert!(spine.operator.control.actions.iter().any(|action| {
+            action.key == "m" && action.label == "Apply manual close" && action.implemented
+        }));
+        assert!(spine.operator.control.actions.iter().any(|action| {
+            action.key == "M" && action.label == "Clear manual close" && action.implemented
+        }));
+        assert!(spine.operator.control.actions.iter().any(|action| {
+            action.key == "u" && action.label == "Approve action" && action.implemented
+        }));
+        assert!(spine.operator.control.actions.iter().any(|action| {
+            action.key == "x" && action.label == "Reject or dismiss" && action.implemented
+        }));
+    }
+
+    #[test]
+    fn authority_merge_prefers_file_backed_success_for_closure_only_rerun() {
+        let config = test_config();
+        let wave = test_wave(16, Vec::new());
+        let root = temp_test_root("closure-only-authority-merge");
+        let resolved = config.resolved_paths(&root);
+        fs::create_dir_all(&resolved.authority.state_events_control_dir)
+            .expect("create control dir");
+        fs::create_dir_all(&resolved.authority.state_events_scheduler_dir)
+            .expect("create scheduler dir");
+
+        let control_log = ControlEventLog::new(resolved.authority.state_events_control_dir);
+        control_log
+            .append_many(&[
+                attempt_finished_event(16, "wave-16-closure-only", "A8", 101),
+                attempt_finished_event(16, "wave-16-closure-only", "A9", 102),
+                attempt_finished_event(16, "wave-16-closure-only", "A0", 103),
+            ])
+            .expect("append closure-only events");
+
+        let latest_runs = HashMap::from([(
+            16,
+            WaveRunRecord {
+                run_id: "wave-16-closure-only".to_string(),
+                wave_id: 16,
+                slug: "wave-16".to_string(),
+                title: "Wave 16".to_string(),
+                status: WaveRunStatus::Succeeded,
+                dry_run: false,
+                bundle_dir: root.join(".wave/state/build/specs/wave-16-closure-only"),
+                trace_path: root.join(".wave/traces/runs/wave-16-closure-only.json"),
+                codex_home: root.join(".wave/codex"),
+                created_at_ms: 100,
+                started_at_ms: Some(101),
+                launcher_pid: None,
+                launcher_started_at_ms: None,
+                worktree: None,
+                promotion: None,
+                scheduling: None,
+                completed_at_ms: Some(104),
+                agents: Vec::new(),
+                error: None,
+            },
+        )]);
+
+        let spine = build_projection_spine_from_authority(
+            &root,
+            &config,
+            &[wave],
+            &[],
+            &[],
+            &latest_runs,
+            &HashSet::new(),
+            &HashSet::new(),
+            true,
+        )
+        .expect("build projection spine from authority");
+        let wave = spine
+            .planning
+            .status
+            .waves
+            .iter()
+            .find(|wave| wave.id == 16)
+            .expect("wave 16 status");
+
+        assert!(wave.completed);
+        assert_eq!(wave.last_run_status, Some(WaveRunStatus::Succeeded));
+        assert_eq!(wave.readiness.state, QueueReadinessState::Completed);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn authority_merge_prefers_repaired_terminal_fallback_over_stale_canonical_active_run() {
+        let config = test_config();
+        let wave = test_wave(17, Vec::new());
+        let root = temp_test_root("repaired-authority-merge");
+        let resolved = config.resolved_paths(&root);
+        fs::create_dir_all(&resolved.authority.state_events_control_dir)
+            .expect("create control dir");
+        fs::create_dir_all(&resolved.authority.state_events_scheduler_dir)
+            .expect("create scheduler dir");
+
+        let control_log = ControlEventLog::new(resolved.authority.state_events_control_dir);
+        control_log
+            .append_many(&[
+                attempt_finished_event(17, "wave-17-orphaned", "A1", 101),
+                attempt_started_event(17, "wave-17-orphaned", "A2", 102),
+            ])
+            .expect("append orphaned events");
+
+        let latest_runs = HashMap::from([(
+            17,
+            WaveRunRecord {
+                run_id: "wave-17-orphaned".to_string(),
+                wave_id: 17,
+                slug: "wave-17".to_string(),
+                title: "Wave 17".to_string(),
+                status: WaveRunStatus::Failed,
+                dry_run: false,
+                bundle_dir: root.join(".wave/state/build/specs/wave-17-orphaned"),
+                trace_path: root.join(".wave/traces/runs/wave-17-orphaned.json"),
+                codex_home: root.join(".wave/codex"),
+                created_at_ms: 100,
+                started_at_ms: Some(101),
+                launcher_pid: Some(42),
+                launcher_started_at_ms: Some(100),
+                worktree: None,
+                promotion: None,
+                scheduling: None,
+                completed_at_ms: Some(200),
+                agents: Vec::new(),
+                error: Some("launcher exited before completion was recorded".to_string()),
+            },
+        )]);
+
+        let spine = build_projection_spine_from_authority(
+            &root,
+            &config,
+            &[wave],
+            &[],
+            &[],
+            &latest_runs,
+            &HashSet::new(),
+            &HashSet::new(),
+            true,
+        )
+        .expect("build projection spine from authority");
+        let wave = spine
+            .planning
+            .status
+            .waves
+            .iter()
+            .find(|wave| wave.id == 17)
+            .expect("wave 17 status");
+
+        assert_eq!(wave.last_run_status, Some(WaveRunStatus::Failed));
+        assert_eq!(wave.readiness.state, QueueReadinessState::Ready);
+        assert!(
+            !wave
+                .blocked_by
+                .iter()
+                .any(|blocker| blocker == "active-run:running")
+        );
+        assert!(spine.operator.dashboard.active_runs.is_empty());
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -2434,6 +3156,12 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                wave_class: wave_spec::WaveClass::Implementation,
+                intent: None,
+                delivery: None,
+                design_gate: None,
+                execution_model: wave_spec::WaveExecutionModel::Serial,
+                concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
             },
             heading_title: Some(format!("Wave {id}")),
             commit_message: Some("Feat: test".to_string()),
@@ -2481,6 +3209,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: [
                         "Primary goal:",
                         "- Land reducer-backed projections.",
@@ -2522,6 +3257,13 @@ mod tests {
             deliverables: Vec::new(),
             file_ownership: vec![format!(".wave/reviews/{id}.md")],
             final_markers: vec![marker.to_string()],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::ClosureBarrier,
+            parallel_safety: wave_spec::ParallelSafetyClass::Serialized,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: [
                 "Primary goal:",
                 "- Close the wave honestly.",
@@ -2534,5 +3276,86 @@ mod tests {
             ]
             .join("\n"),
         }
+    }
+
+    fn temp_test_root(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "wave-projections-{name}-{}-{unique}",
+            std::process::id()
+        ))
+    }
+
+    fn attempt_finished_event(
+        wave_id: u32,
+        run_id: &str,
+        agent_id: &str,
+        created_at_ms: u128,
+    ) -> ControlEvent {
+        let task_id = task_id_for_agent(wave_id, agent_id);
+        let attempt = AttemptRecord {
+            attempt_id: AttemptId::new(format!("{run_id}-{}", agent_id.to_ascii_lowercase())),
+            wave_id,
+            task_id: task_id.clone(),
+            attempt_number: 1,
+            state: AttemptState::Succeeded,
+            executor: "wave-runtime/codex".to_string(),
+            created_at_ms,
+            started_at_ms: Some(created_at_ms),
+            finished_at_ms: Some(created_at_ms + 1),
+            summary: None,
+            proof_bundle_ids: Vec::new(),
+            result_envelope_id: None,
+            runtime: None,
+        };
+
+        ControlEvent::new(
+            format!("evt-attempt-succeeded-{wave_id}-{agent_id}-{created_at_ms}"),
+            ControlEventKind::AttemptFinished,
+            wave_id,
+        )
+        .with_task_id(task_id)
+        .with_attempt_id(attempt.attempt_id.clone())
+        .with_created_at_ms(created_at_ms + 1)
+        .with_correlation_id(run_id)
+        .with_payload(ControlEventPayload::AttemptUpdated { attempt })
+    }
+
+    fn attempt_started_event(
+        wave_id: u32,
+        run_id: &str,
+        agent_id: &str,
+        created_at_ms: u128,
+    ) -> ControlEvent {
+        let task_id = task_id_for_agent(wave_id, agent_id);
+        let attempt = AttemptRecord {
+            attempt_id: AttemptId::new(format!("{run_id}-{}", agent_id.to_ascii_lowercase())),
+            wave_id,
+            task_id: task_id.clone(),
+            attempt_number: 1,
+            state: AttemptState::Running,
+            executor: "wave-runtime/codex".to_string(),
+            created_at_ms,
+            started_at_ms: Some(created_at_ms),
+            finished_at_ms: None,
+            summary: None,
+            proof_bundle_ids: Vec::new(),
+            result_envelope_id: None,
+            runtime: None,
+        };
+
+        ControlEvent::new(
+            format!("evt-attempt-started-{wave_id}-{agent_id}-{created_at_ms}"),
+            ControlEventKind::AttemptStarted,
+            wave_id,
+        )
+        .with_task_id(task_id)
+        .with_attempt_id(attempt.attempt_id.clone())
+        .with_created_at_ms(created_at_ms)
+        .with_correlation_id(run_id)
+        .with_payload(ControlEventPayload::AttemptUpdated { attempt })
     }
 }

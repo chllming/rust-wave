@@ -1,0 +1,158 @@
+{
+  "version": 1,
+  "initiatives": [
+    {
+      "id": "product-factory-cutover",
+      "title": "Product Factory Cutover",
+      "summary": "Move Wave from wave-level orchestration into a delivery-aware product factory with durable release and acceptance truth.",
+      "state": "in-progress",
+      "soft_state": "advisory",
+      "owners": ["architecture", "delivery"],
+      "wave_ids": [17],
+      "release_ids": ["factory-core-v1", "factory-mas-v2"],
+      "outcome": "Wave 17 establishes the release and acceptance spine that the wider product-factory branch can merge after it completes, after which factory-mas-v2 can move intra-wave execution from serial launch to true multi-agent control-plane scheduling."
+    }
+  ],
+  "releases": [
+    {
+      "id": "factory-core-v1",
+      "title": "Factory Core v1",
+      "summary": "Delivery layer above waves with soft states, adhoc runs, design gates, and machine-facing signal surfaces.",
+      "initiative_id": "product-factory-cutover",
+      "state": "assembling",
+      "soft_state": "advisory",
+      "owners": ["delivery"],
+      "wave_ids": [17],
+      "acceptance_package_ids": ["factory-core-v1-ap"],
+      "milestone_id": "wave-17",
+      "release_train_id": "core",
+      "blocking_risk_ids": ["wave-17-delivery-sprawl"],
+      "blocking_debt_ids": ["adhoc-runtime-hardening"]
+    },
+    {
+      "id": "factory-mas-v2",
+      "title": "Factory MAS v2",
+      "summary": "Opt-in true intra-wave multi-agent execution with explicit agent graphs, per-agent sandboxes, merge queue authority, invalidation, and reducer-backed ready-set selection.",
+      "initiative_id": "product-factory-cutover",
+      "state": "planned",
+      "soft_state": "advisory",
+      "owners": ["architecture", "runtime", "scheduler"],
+      "wave_ids": [],
+      "acceptance_package_ids": ["factory-mas-v2-ap"],
+      "milestone_id": "post-wave-17",
+      "release_train_id": "factory",
+      "blocking_risk_ids": ["mas-graph-contract-churn"],
+      "blocking_debt_ids": ["serial-runtime-compatibility-bridge"]
+    }
+  ],
+  "acceptance_packages": [
+    {
+      "id": "factory-core-v1-ap",
+      "title": "Factory Core v1 Acceptance",
+      "summary": "Ship decision bundle for the first product-factory release cut.",
+      "release_id": "factory-core-v1",
+      "state": "collecting-evidence",
+      "soft_state": "advisory",
+      "wave_ids": [17],
+      "proof_artifacts": [
+        "cargo test -q",
+        "cargo run -q -p wave-cli -- control status --json"
+      ],
+      "design_evidence": [
+        "docs/plans/product-factory-cutover.md"
+      ],
+      "documentation_evidence": [
+        "docs/plans/delivery-catalog.json"
+      ],
+      "signoffs": [
+        "delivery-review-pending"
+      ],
+      "blocking_risk_ids": [
+        "wave-17-delivery-sprawl"
+      ],
+      "blocking_debt_ids": [
+        "adhoc-runtime-hardening"
+      ]
+    },
+    {
+      "id": "factory-mas-v2-ap",
+      "title": "Factory MAS v2 Acceptance",
+      "summary": "Ship decision bundle for the true intra-wave multi-agent release.",
+      "release_id": "factory-mas-v2",
+      "state": "draft",
+      "soft_state": "advisory",
+      "wave_ids": [],
+      "proof_artifacts": [
+        "cargo test -q",
+        "cargo run -q -p wave-cli -- control status --json",
+        "cargo run -q -p wave-cli -- control show --wave <id> --json"
+      ],
+      "design_evidence": [
+        "docs/implementation/true-multi-agent-wave-architecture.md"
+      ],
+      "documentation_evidence": [
+        "docs/plans/true-multi-agent-wave-rollout.md",
+        "docs/plans/product-factory-cutover.md"
+      ],
+      "signoffs": [
+        "architecture-review-pending",
+        "runtime-review-pending",
+        "operator-review-pending"
+      ],
+      "blocking_risk_ids": [
+        "mas-graph-contract-churn"
+      ],
+      "blocking_debt_ids": [
+        "serial-runtime-compatibility-bridge"
+      ]
+    }
+  ],
+  "risks": [
+    {
+      "id": "wave-17-delivery-sprawl",
+      "title": "Wave 17 delivery scope drift",
+      "summary": "Wave 17 is starting soon, so the cutover branch must not redefine release truth in ways that conflict with the main-line landing.",
+      "severity": "blocking",
+      "soft_state": "advisory",
+      "release_id": "factory-core-v1",
+      "acceptance_package_id": "factory-core-v1-ap",
+      "wave_ids": [17],
+      "owners": ["architecture"]
+    },
+    {
+      "id": "mas-graph-contract-churn",
+      "title": "MAS graph contract churn",
+      "summary": "True intra-wave MAS needs new authored-wave graph, barrier, and resource fields, so the release must keep backward compatibility while the serial contract remains live.",
+      "severity": "blocking",
+      "soft_state": "advisory",
+      "release_id": "factory-mas-v2",
+      "acceptance_package_id": "factory-mas-v2-ap",
+      "wave_ids": [],
+      "owners": ["architecture", "planner"]
+    }
+  ],
+  "debts": [
+    {
+      "id": "adhoc-runtime-hardening",
+      "title": "Adhoc runtime hardening",
+      "summary": "The first branch lands isolated adhoc execution and promotion, but the lane still needs wider live-use validation before it should be treated as production-default.",
+      "severity": "blocking",
+      "soft_state": "degraded",
+      "release_id": "factory-core-v1",
+      "acceptance_package_id": "factory-core-v1-ap",
+      "wave_ids": [17],
+      "owners": ["delivery", "runtime"]
+    },
+    {
+      "id": "serial-runtime-compatibility-bridge",
+      "title": "Serial runtime compatibility bridge",
+      "summary": "The live runtime still executes one agent at a time inside each wave, so the MAS release must preserve serial execution as the default while sandbox, merge, and invalidation authority land incrementally.",
+      "severity": "blocking",
+      "soft_state": "degraded",
+      "release_id": "factory-mas-v2",
+      "acceptance_package_id": "factory-mas-v2-ap",
+      "wave_ids": [],
+      "owners": ["runtime", "scheduler"]
+    }
+  ]
+}

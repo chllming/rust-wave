@@ -1,8 +1,11 @@
+use anyhow::Context;
 use anyhow::Result;
 use clap::Parser;
 use clap::Subcommand;
+use clap::ValueEnum;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::env;
 use std::io;
 use std::io::IsTerminal;
 use std::path::Path;
@@ -17,6 +20,7 @@ use wave_app_server::load_relevant_run_records;
 use wave_config::DEFAULT_CONFIG_PATH;
 use wave_config::ProjectConfig;
 use wave_control_plane::ControlStatusReadModel;
+use wave_control_plane::DeliveryReadModel;
 use wave_control_plane::OperatorSnapshotInputs;
 use wave_control_plane::PlanningProjectionReadModel;
 use wave_control_plane::PlanningStatusReadModel;
@@ -29,8 +33,14 @@ use wave_dark_factory::has_errors;
 use wave_dark_factory::lint_project;
 use wave_dark_factory::validate_context7_bundle_catalog;
 use wave_dark_factory::validate_skill_catalog;
+use wave_domain::DirectiveOrigin;
+use wave_domain::OrchestratorMode;
 use wave_domain::RerunScope;
 use wave_domain::WaveClosureOverrideRecord;
+use wave_runtime::AdhocPlanReport;
+use wave_runtime::AdhocPromotionReport;
+use wave_runtime::AdhocRunRecord;
+use wave_runtime::AdhocRunReport;
 use wave_runtime::AutonomousOptions;
 use wave_runtime::DogfoodEvidenceReport;
 use wave_runtime::LaunchOptions;
@@ -39,18 +49,36 @@ use wave_runtime::LaunchPreflightReport;
 use wave_runtime::RerunIntentRecord;
 use wave_runtime::active_closure_override_wave_ids;
 use wave_runtime::apply_closure_override;
+use wave_runtime::approve_agent_merge;
 use wave_runtime::autonomous_launch;
-use wave_runtime::clear_rerun;
 use wave_runtime::clear_closure_override;
+use wave_runtime::clear_rerun;
 use wave_runtime::dogfood_evidence_report;
 use wave_runtime::draft_wave;
+use wave_runtime::latest_orchestrator_session;
 use wave_runtime::launch_wave;
+use wave_runtime::list_adhoc_runs;
 use wave_runtime::list_closure_overrides;
+use wave_runtime::list_control_directives;
 use wave_runtime::load_latest_runs;
+use wave_runtime::pause_agent;
 use wave_runtime::pending_rerun_wave_ids;
+use wave_runtime::plan_adhoc;
+use wave_runtime::promote_adhoc;
+use wave_runtime::rebase_agent_sandbox;
+use wave_runtime::reject_agent_merge;
 use wave_runtime::repair_orphaned_runs;
+use wave_runtime::request_agent_reconciliation;
 use wave_runtime::request_rerun;
+use wave_runtime::rerun_agent;
+use wave_runtime::resume_agent;
+use wave_runtime::run_adhoc;
 use wave_runtime::runtime_boundary_status;
+use wave_runtime::seed_design_authority_live_proof;
+use wave_runtime::set_orchestrator_mode;
+use wave_runtime::show_adhoc_run;
+use wave_runtime::steer_agent;
+use wave_runtime::steer_wave;
 use wave_runtime::trace_inspection_report;
 use wave_spec::WaveDocument;
 use wave_spec::load_wave_documents;
@@ -91,6 +119,10 @@ enum Command {
         #[command(subcommand)]
         command: ControlCommand,
     },
+    Delivery {
+        #[command(subcommand)]
+        command: DeliveryCommand,
+    },
     Launch {
         #[arg(long)]
         wave: Option<u32>,
@@ -112,7 +144,23 @@ enum Command {
         #[command(subcommand)]
         command: TraceCommand,
     },
-    Adhoc,
+    Adhoc {
+        #[command(subcommand)]
+        command: AdhocCommand,
+    },
+    Tui {
+        #[arg(long, value_enum, default_value_t = TuiAltScreenMode::Auto)]
+        alt_screen: TuiAltScreenMode,
+        #[arg(long)]
+        fresh_session: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum TuiAltScreenMode {
+    Auto,
+    Always,
+    Never,
 }
 
 #[derive(Debug, Subcommand)]
@@ -139,6 +187,10 @@ enum ControlCommand {
         #[command(subcommand)]
         command: TaskCommand,
     },
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
     Rerun {
         #[command(subcommand)]
         command: RerunCommand,
@@ -155,6 +207,40 @@ enum ControlCommand {
         #[command(subcommand)]
         command: ProofCommand,
     },
+    Orchestrator {
+        #[command(subcommand)]
+        command: OrchestratorCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DeliveryCommand {
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    Initiative {
+        #[command(subcommand)]
+        command: DeliveryEntityCommand,
+    },
+    Release {
+        #[command(subcommand)]
+        command: DeliveryEntityCommand,
+    },
+    Acceptance {
+        #[command(subcommand)]
+        command: DeliveryEntityCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DeliveryEntityCommand {
+    Show {
+        #[arg(long = "id")]
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -162,6 +248,76 @@ enum TaskCommand {
     List {
         #[arg(long)]
         wave: Option<u32>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentCommand {
+    Pause {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Resume {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Rerun {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Rebase {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Reconcile {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    ApproveMerge {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    RejectMerge {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Steer {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        message: String,
         #[arg(long)]
         json: bool,
     },
@@ -223,6 +379,38 @@ enum ProofCommand {
         #[arg(long)]
         json: bool,
     },
+    SeedDesignAuthority {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum OrchestratorCommand {
+    Show {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    Steer {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        message: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Mode {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        mode: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -236,6 +424,44 @@ enum TraceCommand {
     Replay {
         #[arg(long)]
         wave: Option<u32>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AdhocCommand {
+    Plan {
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        request: String,
+        #[arg(long)]
+        owner: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Run {
+        #[arg(long = "id")]
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    Show {
+        #[arg(long = "id")]
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Promote {
+        #[arg(long = "id")]
+        id: String,
+        #[arg(long = "wave-id")]
+        wave_id: Option<u32>,
         #[arg(long)]
         json: bool,
     },
@@ -267,15 +493,59 @@ struct ControlStatusReport {
     status: PlanningStatusReadModel,
     projection: PlanningProjectionReadModel,
     operator: OperatorSnapshotInputs,
+    delivery: DeliveryReadModel,
     control_status: ControlStatusReadModel,
+}
+
+#[derive(Debug, Serialize)]
+struct DeliveryStatusReport {
+    delivery: DeliveryReadModel,
+}
+
+#[derive(Debug, Serialize)]
+struct AdhocListReport {
+    runs: Vec<AdhocRunRecord>,
 }
 
 #[derive(Debug, Serialize)]
 struct ControlShowReport {
     wave: WaveStatusReadModel,
+    portfolio_focus: Option<PortfolioFocusReport>,
+    design_detail: Option<wave_app_server::WaveDesignDetail>,
     latest_run: Option<ActiveRunDetail>,
+    acceptance_package: Option<wave_app_server::AcceptancePackageSnapshot>,
+    operator_objects: Vec<wave_app_server::OperatorActionableItem>,
     rerun_intent: Option<RerunIntentRecord>,
     closure_override: Option<WaveClosureOverrideRecord>,
+    orchestrator_mode: Option<String>,
+    directives: Vec<wave_domain::ControlDirectiveRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentSteerReport {
+    directive: wave_domain::ControlDirectiveRecord,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentControlReport {
+    directive: wave_domain::ControlDirectiveRecord,
+}
+
+#[derive(Debug, Serialize)]
+struct OrchestratorModeReport {
+    session: Option<wave_domain::OrchestratorSessionRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct OrchestratorShowReport {
+    session: Option<wave_domain::OrchestratorSessionRecord>,
+    wave: Option<wave_app_server::WaveOrchestratorSnapshot>,
+    directives: Vec<wave_app_server::DirectiveSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+struct OrchestratorSteerReport {
+    directive: wave_domain::ControlDirectiveRecord,
 }
 
 #[derive(Debug, Serialize)]
@@ -291,7 +561,53 @@ struct ProofReport {
     run_id: Option<String>,
     run: Option<ActiveRunDetail>,
     proof: Option<ProofSnapshot>,
+    portfolio_focus: Option<PortfolioFocusReport>,
+    acceptance_package: Option<wave_app_server::AcceptancePackageSnapshot>,
     replay: Option<ReplayReport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PortfolioFocusReport {
+    delivery: Option<PortfolioDeliverySummaryReport>,
+    initiatives: Vec<PortfolioEntryReport>,
+    milestones: Vec<PortfolioEntryReport>,
+    release_trains: Vec<PortfolioEntryReport>,
+    outcome_contracts: Vec<PortfolioEntryReport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PortfolioDeliverySummaryReport {
+    ship_state: String,
+    release_state: String,
+    signoff_state: String,
+    summary: String,
+    proof_complete: bool,
+    completed_agents: usize,
+    total_agents: usize,
+    proof_source: String,
+    known_risk_count: usize,
+    outstanding_debt_count: usize,
+    blocking_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PortfolioEntryReport {
+    id: String,
+    title: String,
+    wave_ids: Vec<u32>,
+    ship_ready_waves: usize,
+    accepted_waves: usize,
+    signed_off_waves: usize,
+    wave_delivery: Vec<PortfolioWaveDeliveryReport>,
+    blocking_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PortfolioWaveDeliveryReport {
+    wave_id: u32,
+    ship_state: String,
+    release_state: String,
+    signoff_state: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -409,8 +725,8 @@ impl MaterializedCanonicalAuthoritySurface {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let root = config_root(&cli.config);
-    let config = ProjectConfig::load(&cli.config)?;
+    let (root, config_path) = resolve_cli_root_and_config_path(&cli.config)?;
+    let config = ProjectConfig::load(&config_path)?;
     let waves = load_wave_documents(&config, &root)?;
     let findings = lint_project(&root, &waves);
     let skill_catalog_issues = validate_skill_catalog(&root);
@@ -445,7 +761,7 @@ fn main() -> Result<()> {
             command: ProjectCommand::Show { json },
         }) => render_project(&config, &root, json),
         Some(Command::Doctor { json }) => render_doctor(
-            &cli.config,
+            &config_path,
             &config,
             &root,
             &waves,
@@ -461,6 +777,27 @@ fn main() -> Result<()> {
         Some(Command::Control {
             command: ControlCommand::Status { json },
         }) => render_status(&spine, json),
+        Some(Command::Delivery {
+            command: DeliveryCommand::Status { json },
+        }) => render_delivery_status(&spine.delivery, json),
+        Some(Command::Delivery {
+            command:
+                DeliveryCommand::Initiative {
+                    command: DeliveryEntityCommand::Show { id, json },
+                },
+        }) => render_delivery_initiative_show(&spine.delivery, &id, json),
+        Some(Command::Delivery {
+            command:
+                DeliveryCommand::Release {
+                    command: DeliveryEntityCommand::Show { id, json },
+                },
+        }) => render_delivery_release_show(&spine.delivery, &id, json),
+        Some(Command::Delivery {
+            command:
+                DeliveryCommand::Acceptance {
+                    command: DeliveryEntityCommand::Show { id, json },
+                },
+        }) => render_delivery_acceptance_show(&spine.delivery, &id, json),
         Some(Command::Control {
             command: ControlCommand::Show { wave, json },
         }) => render_control_show(&root, &config, wave, json),
@@ -470,6 +807,179 @@ fn main() -> Result<()> {
                     command: TaskCommand::List { wave, json },
                 },
         }) => render_task_list(&root, &config, wave, json),
+        Some(Command::Control {
+            command:
+                ControlCommand::Agent {
+                    command: AgentCommand::Pause { wave, agent, json },
+                },
+        }) => render_agent_control(
+            &root,
+            &config,
+            wave,
+            &agent,
+            json,
+            "paused",
+            |root, config, wave, agent| {
+                pause_agent(
+                    root,
+                    config,
+                    wave,
+                    agent,
+                    DirectiveOrigin::Operator,
+                    "wave-cli",
+                )
+            },
+        ),
+        Some(Command::Control {
+            command:
+                ControlCommand::Agent {
+                    command: AgentCommand::Resume { wave, agent, json },
+                },
+        }) => render_agent_control(
+            &root,
+            &config,
+            wave,
+            &agent,
+            json,
+            "resumed",
+            |root, config, wave, agent| {
+                resume_agent(
+                    root,
+                    config,
+                    wave,
+                    agent,
+                    DirectiveOrigin::Operator,
+                    "wave-cli",
+                )
+            },
+        ),
+        Some(Command::Control {
+            command:
+                ControlCommand::Agent {
+                    command: AgentCommand::Rerun { wave, agent, json },
+                },
+        }) => render_agent_control(
+            &root,
+            &config,
+            wave,
+            &agent,
+            json,
+            "scheduled for rerun",
+            |root, config, wave, agent| {
+                rerun_agent(
+                    root,
+                    config,
+                    wave,
+                    agent,
+                    DirectiveOrigin::Operator,
+                    "wave-cli",
+                )
+            },
+        ),
+        Some(Command::Control {
+            command:
+                ControlCommand::Agent {
+                    command: AgentCommand::Rebase { wave, agent, json },
+                },
+        }) => render_agent_control(
+            &root,
+            &config,
+            wave,
+            &agent,
+            json,
+            "scheduled for rebase",
+            |root, config, wave, agent| {
+                rebase_agent_sandbox(
+                    root,
+                    config,
+                    wave,
+                    agent,
+                    DirectiveOrigin::Operator,
+                    "wave-cli",
+                )
+            },
+        ),
+        Some(Command::Control {
+            command:
+                ControlCommand::Agent {
+                    command: AgentCommand::Reconcile { wave, agent, json },
+                },
+        }) => render_agent_control(
+            &root,
+            &config,
+            wave,
+            &agent,
+            json,
+            "queued for reconciliation",
+            |root, config, wave, agent| {
+                request_agent_reconciliation(
+                    root,
+                    config,
+                    wave,
+                    agent,
+                    DirectiveOrigin::Operator,
+                    "wave-cli",
+                )
+            },
+        ),
+        Some(Command::Control {
+            command:
+                ControlCommand::Agent {
+                    command: AgentCommand::ApproveMerge { wave, agent, json },
+                },
+        }) => render_agent_control(
+            &root,
+            &config,
+            wave,
+            &agent,
+            json,
+            "merge approved",
+            |root, config, wave, agent| {
+                approve_agent_merge(
+                    root,
+                    config,
+                    wave,
+                    agent,
+                    DirectiveOrigin::Operator,
+                    "wave-cli",
+                )
+            },
+        ),
+        Some(Command::Control {
+            command:
+                ControlCommand::Agent {
+                    command: AgentCommand::RejectMerge { wave, agent, json },
+                },
+        }) => render_agent_control(
+            &root,
+            &config,
+            wave,
+            &agent,
+            json,
+            "merge rejected",
+            |root, config, wave, agent| {
+                reject_agent_merge(
+                    root,
+                    config,
+                    wave,
+                    agent,
+                    DirectiveOrigin::Operator,
+                    "wave-cli",
+                )
+            },
+        ),
+        Some(Command::Control {
+            command:
+                ControlCommand::Agent {
+                    command:
+                        AgentCommand::Steer {
+                            wave,
+                            agent,
+                            message,
+                            json,
+                        },
+                },
+        }) => render_agent_steer(&root, &config, wave, &agent, &message, json),
         Some(Command::Control {
             command:
                 ControlCommand::Rerun {
@@ -532,6 +1042,35 @@ fn main() -> Result<()> {
                     command: ProofCommand::Show { wave, json },
                 },
         }) => render_proof_show(&root, &config, wave, json),
+        Some(Command::Control {
+            command:
+                ControlCommand::Proof {
+                    command: ProofCommand::SeedDesignAuthority { wave, json },
+                },
+        }) => render_proof_seed_design_authority(&root, &config, wave, json),
+        Some(Command::Control {
+            command:
+                ControlCommand::Orchestrator {
+                    command: OrchestratorCommand::Show { wave, json },
+                },
+        }) => render_orchestrator_show(&root, &config, wave, json),
+        Some(Command::Control {
+            command:
+                ControlCommand::Orchestrator {
+                    command:
+                        OrchestratorCommand::Steer {
+                            wave,
+                            message,
+                            json,
+                        },
+                },
+        }) => render_orchestrator_steer(&root, &config, wave, &message, json),
+        Some(Command::Control {
+            command:
+                ControlCommand::Orchestrator {
+                    command: OrchestratorCommand::Mode { wave, mode, json },
+                },
+        }) => render_orchestrator_mode(&root, &config, wave, &mode, json),
         Some(Command::Launch {
             wave,
             dry_run,
@@ -569,10 +1108,46 @@ fn main() -> Result<()> {
         Some(Command::Trace {
             command: TraceCommand::Replay { wave, json },
         }) => render_trace_replay(&latest_runs, wave, json),
-        Some(Command::Adhoc) => render_not_ready(
-            "adhoc",
-            "ad hoc execution is still pending; use draft or launch with a concrete wave",
+        Some(Command::Adhoc {
+            command:
+                AdhocCommand::Plan {
+                    title,
+                    request,
+                    owner,
+                    json,
+                },
+        }) => render_adhoc_plan(&root, &config, &title, &request, owner.as_deref(), json),
+        Some(Command::Adhoc {
+            command: AdhocCommand::Run { id, json },
+        }) => render_adhoc_run(&root, &config, &id, json),
+        Some(Command::Adhoc {
+            command: AdhocCommand::List { json },
+        }) => render_adhoc_list(&root, &config, json),
+        Some(Command::Adhoc {
+            command: AdhocCommand::Show { id, json },
+        }) => render_adhoc_show(&root, &config, &id, json),
+        Some(Command::Adhoc {
+            command: AdhocCommand::Promote { id, wave_id, json },
+        }) => render_adhoc_promote(&root, &config, &id, wave_id, json),
+        Some(Command::Tui {
+            alt_screen,
+            fresh_session,
+        }) => wave_tui::run_with_options(
+            &root,
+            &config,
+            wave_tui::RunOptions {
+                alt_screen: tui_alt_screen_mode(alt_screen),
+                fresh_session,
+            },
         ),
+    }
+}
+
+fn tui_alt_screen_mode(mode: TuiAltScreenMode) -> wave_tui::AltScreenMode {
+    match mode {
+        TuiAltScreenMode::Auto => wave_tui::AltScreenMode::Auto,
+        TuiAltScreenMode::Always => wave_tui::AltScreenMode::Always,
+        TuiAltScreenMode::Never => wave_tui::AltScreenMode::Never,
     }
 }
 
@@ -582,6 +1157,44 @@ fn config_root(config_path: &Path) -> PathBuf {
         .filter(|path| !path.as_os_str().is_empty())
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn resolve_cli_root_and_config_path(config_path: &Path) -> Result<(PathBuf, PathBuf)> {
+    resolve_cli_root_and_config_path_from_cwd(config_path, &env::current_dir()?)
+}
+
+fn resolve_cli_root_and_config_path_from_cwd(
+    config_path: &Path,
+    cwd: &Path,
+) -> Result<(PathBuf, PathBuf)> {
+    if config_path.is_absolute() {
+        return Ok((config_root(config_path), config_path.to_path_buf()));
+    }
+
+    if config_path == Path::new(DEFAULT_CONFIG_PATH) {
+        if let Some(shared_root) = shared_repo_root_from_worktree(cwd) {
+            return Ok((shared_root.clone(), shared_root.join(DEFAULT_CONFIG_PATH)));
+        }
+    }
+
+    let resolved_config_path = cwd.join(config_path);
+    Ok((config_root(&resolved_config_path), resolved_config_path))
+}
+
+fn shared_repo_root_from_worktree(path: &Path) -> Option<PathBuf> {
+    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    for ancestor in resolved.ancestors() {
+        if ancestor.file_name().is_some_and(|name| name == "worktrees") {
+            let state_dir = ancestor.parent()?;
+            let wave_dir = state_dir.parent()?;
+            if state_dir.file_name().is_some_and(|name| name == "state")
+                && wave_dir.file_name().is_some_and(|name| name == ".wave")
+            {
+                return wave_dir.parent().map(Path::to_path_buf);
+            }
+        }
+    }
+    None
 }
 
 fn render_summary(config: &ProjectConfig, spine: &ProjectionSpine) -> Result<()> {
@@ -624,9 +1237,23 @@ fn render_summary(config: &ProjectConfig, spine: &ProjectionSpine) -> Result<()>
         },
         projection.skill_catalog.issue_count
     );
+    println!(
+        "delivery: initiatives={} releases={} acceptance={} blocking_risks={} blocking_debts={}",
+        status.delivery.initiative_count,
+        status.delivery.release_count,
+        status.delivery.acceptance_package_count,
+        status.delivery.blocking_risk_count,
+        status.delivery.blocking_debt_count
+    );
     for line in &control_status.queue_decision.lines {
         println!("{line}");
     }
+    println!(
+        "signal: queue={} soft={} exit_code={}",
+        control_status.signal.queue_state,
+        control_status.signal.delivery_soft_state.label(),
+        control_status.signal.exit_code
+    );
     println!(
         "skill issue paths: {}",
         format_string_list(&control_status.skill_issue_paths)
@@ -1363,9 +1990,23 @@ fn render_status(spine: &ProjectionSpine, json: bool) -> Result<()> {
             },
             projection.skill_catalog.issue_count
         );
+        println!(
+            "delivery: initiatives={} releases={} acceptance={} blocking_risks={} blocking_debts={}",
+            status.delivery.initiative_count,
+            status.delivery.release_count,
+            status.delivery.acceptance_package_count,
+            status.delivery.blocking_risk_count,
+            status.delivery.blocking_debt_count
+        );
         for line in &control_status.queue_decision.lines {
             println!("{line}");
         }
+        println!(
+            "signal: queue={} soft={} exit_code={}",
+            control_status.signal.queue_state,
+            control_status.signal.delivery_soft_state.label(),
+            control_status.signal.exit_code
+        );
         println!(
             "skill issue paths: {}",
             format_string_list(&control_status.skill_issue_paths)
@@ -1380,6 +2021,11 @@ fn render_status(spine: &ProjectionSpine, json: bool) -> Result<()> {
                 println!("{line}");
             }
         }
+        if !control_status.delivery_attention_lines.is_empty() {
+            for line in &control_status.delivery_attention_lines {
+                println!("{line}");
+            }
+        }
         Ok(())
     }
 }
@@ -1389,7 +2035,235 @@ fn build_control_status_report(spine: &ProjectionSpine) -> ControlStatusReport {
         status: spine.planning.status.clone(),
         projection: spine.planning.projection.clone(),
         operator: spine.operator.clone(),
+        delivery: spine.delivery.clone(),
         control_status: build_control_status_read_model_from_spine(spine),
+    }
+}
+
+fn render_delivery_status(delivery: &DeliveryReadModel, json: bool) -> Result<()> {
+    let report = DeliveryStatusReport {
+        delivery: delivery.clone(),
+    };
+    if json {
+        print_json(&report)
+    } else {
+        println!(
+            "delivery: initiatives={} releases={} acceptance={} blocking_risks={} blocking_debts={}",
+            delivery.summary.initiative_count,
+            delivery.summary.release_count,
+            delivery.summary.acceptance_package_count,
+            delivery.summary.blocking_risk_count,
+            delivery.summary.blocking_debt_count
+        );
+        println!(
+            "signal: queue={} soft={} exit_code={}",
+            delivery.signal.queue_state,
+            delivery.signal.delivery_soft_state.label(),
+            delivery.signal.exit_code
+        );
+        if !delivery.attention_lines.is_empty() {
+            for line in &delivery.attention_lines {
+                println!("{line}");
+            }
+        }
+        Ok(())
+    }
+}
+
+fn render_delivery_initiative_show(
+    delivery: &DeliveryReadModel,
+    id: &str,
+    json: bool,
+) -> Result<()> {
+    let initiative = delivery
+        .initiatives
+        .iter()
+        .find(|initiative| initiative.id == id)
+        .cloned()
+        .with_context(|| format!("unknown initiative id {}", id))?;
+    if json {
+        print_json(&initiative)
+    } else {
+        println!("initiative {} {}", initiative.id, initiative.title);
+        println!(
+            "state={} soft={} owners={} waves={} releases={}",
+            initiative
+                .state
+                .map(|state| format!("{state:?}").to_ascii_lowercase())
+                .unwrap_or_else(|| "unspecified".to_string()),
+            initiative.soft_state.label(),
+            format_string_list(&initiative.owners),
+            format_u32_list(&initiative.wave_ids),
+            format_string_list(&initiative.release_ids)
+        );
+        if let Some(outcome) = initiative.outcome {
+            println!("outcome: {outcome}");
+        }
+        println!("summary: {}", initiative.summary);
+        Ok(())
+    }
+}
+
+fn render_delivery_release_show(delivery: &DeliveryReadModel, id: &str, json: bool) -> Result<()> {
+    let release = delivery
+        .releases
+        .iter()
+        .find(|release| release.id == id)
+        .cloned()
+        .with_context(|| format!("unknown release id {}", id))?;
+    if json {
+        print_json(&release)
+    } else {
+        println!("release {} {}", release.id, release.title);
+        println!(
+            "state={} soft={} ready={} initiative={} waves={}",
+            release
+                .state
+                .map(|state| format!("{state:?}").to_ascii_lowercase())
+                .unwrap_or_else(|| "unspecified".to_string()),
+            release.soft_state.label(),
+            yes_no(release.ready),
+            release.initiative_id.unwrap_or_else(|| "none".to_string()),
+            format_u32_list(&release.wave_ids)
+        );
+        println!(
+            "acceptance={} blockers={}",
+            format_string_list(&release.acceptance_package_ids),
+            format_string_list(&release.blocked_reasons)
+        );
+        println!("summary: {}", release.summary);
+        Ok(())
+    }
+}
+
+fn render_delivery_acceptance_show(
+    delivery: &DeliveryReadModel,
+    id: &str,
+    json: bool,
+) -> Result<()> {
+    let acceptance = delivery
+        .acceptance_packages
+        .iter()
+        .find(|acceptance| acceptance.id == id)
+        .cloned()
+        .with_context(|| format!("unknown acceptance package id {}", id))?;
+    if json {
+        print_json(&acceptance)
+    } else {
+        println!("acceptance {} {}", acceptance.id, acceptance.title);
+        println!(
+            "state={} soft={} ship_ready={} release={} waves={}",
+            acceptance
+                .state
+                .map(|state| format!("{state:?}").to_ascii_lowercase())
+                .unwrap_or_else(|| "unspecified".to_string()),
+            acceptance.soft_state.label(),
+            yes_no(acceptance.ship_ready),
+            acceptance.release_id.unwrap_or_else(|| "none".to_string()),
+            format_u32_list(&acceptance.wave_ids)
+        );
+        println!(
+            "signoffs={} blockers={}",
+            format_string_list(&acceptance.signoffs),
+            format_string_list(&acceptance.blocked_reasons)
+        );
+        println!("summary: {}", acceptance.summary);
+        Ok(())
+    }
+}
+
+fn render_adhoc_plan(
+    root: &Path,
+    config: &ProjectConfig,
+    title: &str,
+    request: &str,
+    owner: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let report: AdhocPlanReport = plan_adhoc(root, config, title, request, owner)?;
+    if json {
+        print_json(&report)
+    } else {
+        println!("planned adhoc run {}", report.run_id);
+        println!("run dir: {}", report.run_dir.display());
+        println!("runtime dir: {}", report.runtime_dir.display());
+        println!("wave doc: {}", report.wave_path.display());
+        Ok(())
+    }
+}
+
+fn render_adhoc_run(root: &Path, config: &ProjectConfig, id: &str, json: bool) -> Result<()> {
+    let report: AdhocRunReport = run_adhoc(root, config, id)?;
+    if json {
+        print_json(&report)
+    } else {
+        println!("launched adhoc run {}", report.record.run_id);
+        println!("bundle dir: {}", report.launch.bundle_dir.display());
+        println!("state path: {}", report.launch.state_path.display());
+        println!("trace path: {}", report.launch.trace_path.display());
+        Ok(())
+    }
+}
+
+fn render_adhoc_list(root: &Path, config: &ProjectConfig, json: bool) -> Result<()> {
+    let report = AdhocListReport {
+        runs: list_adhoc_runs(root, config)?,
+    };
+    if json {
+        print_json(&report)
+    } else if report.runs.is_empty() {
+        println!("no adhoc runs recorded");
+        Ok(())
+    } else {
+        for run in report.runs {
+            println!(
+                "{} {} {}",
+                run.run_id,
+                format!("{:?}", run.result.status).to_ascii_lowercase(),
+                run.request.title
+            );
+        }
+        Ok(())
+    }
+}
+
+fn render_adhoc_show(root: &Path, config: &ProjectConfig, id: &str, json: bool) -> Result<()> {
+    let record = show_adhoc_run(root, config, id)?;
+    if json {
+        print_json(&record)
+    } else {
+        println!("adhoc {}", record.run_id);
+        println!("title: {}", record.request.title);
+        println!(
+            "status: {}",
+            format!("{:?}", record.result.status).to_ascii_lowercase()
+        );
+        println!("wave doc: {}", record.wave_path);
+        println!("runtime dir: {}", record.runtime_dir);
+        if let Some(detail) = record.result.detail {
+            println!("detail: {detail}");
+        }
+        Ok(())
+    }
+}
+
+fn render_adhoc_promote(
+    root: &Path,
+    config: &ProjectConfig,
+    id: &str,
+    wave_id: Option<u32>,
+    json: bool,
+) -> Result<()> {
+    let report: AdhocPromotionReport = promote_adhoc(root, config, id, wave_id)?;
+    if json {
+        print_json(&report)
+    } else {
+        println!(
+            "promoted adhoc {} to wave {}",
+            report.record.run_id, report.promoted_wave_id
+        );
+        println!("path: {}", report.promoted_path.display());
+        Ok(())
     }
 }
 
@@ -1416,6 +2290,20 @@ fn render_control_show(
         .iter()
         .find(|run| run.wave_id == wave_id)
         .cloned();
+    let design_detail = design_detail_for_wave(&snapshot, wave_id).cloned();
+    let acceptance_package = snapshot
+        .acceptance_packages
+        .iter()
+        .find(|package| package.wave_id == wave_id)
+        .cloned();
+    let portfolio_focus =
+        portfolio_focus_report(&snapshot.planning, wave_id, &snapshot.acceptance_packages);
+    let operator_objects = snapshot
+        .operator_objects
+        .iter()
+        .filter(|item| item.wave_id == wave_id)
+        .cloned()
+        .collect::<Vec<_>>();
     let rerun_intent = snapshot
         .rerun_intents
         .iter()
@@ -1426,11 +2314,23 @@ fn render_control_show(
         .iter()
         .find(|record| record.wave_id == wave_id)
         .cloned();
+    let directives = list_control_directives(root, config, Some(wave_id))?;
+    let orchestrator_mode =
+        latest_orchestrator_session(root, config, wave_id)?.map(|session| match session.mode {
+            OrchestratorMode::Operator => "operator".to_string(),
+            OrchestratorMode::Autonomous => "autonomous".to_string(),
+        });
     let report = ControlShowReport {
         wave,
+        portfolio_focus,
+        design_detail,
         latest_run,
+        acceptance_package,
+        operator_objects,
         rerun_intent,
         closure_override,
+        orchestrator_mode,
+        directives,
     };
     if json {
         print_json(&report)
@@ -1467,6 +2367,21 @@ fn render_control_show(
             "missing closure: {}",
             format_string_list(&report.wave.missing_closure_agents)
         );
+        if let Some(portfolio_focus) = report.portfolio_focus.as_ref() {
+            for line in portfolio_focus_lines(portfolio_focus) {
+                println!("{line}");
+            }
+        }
+        if let Some(package) = report.acceptance_package.as_ref() {
+            for line in acceptance_package_lines(package) {
+                println!("{line}");
+            }
+        }
+        if let Some(design) = report.design_detail {
+            for line in control_show_design_lines(&design) {
+                println!("{line}");
+            }
+        }
         if let Some(run) = report.latest_run {
             println!("latest run: {}", run.run_id);
             println!("run status: {}", run.status);
@@ -1500,6 +2415,7 @@ fn render_control_show(
             if let Some(reason) = run.stall_reason.clone() {
                 println!("stall reason: {}", reason);
             }
+            println!("proof reuse: {}", proof_reuse_summary(&run));
             for line in control_runtime_lines(&run) {
                 println!("{line}");
             }
@@ -1511,6 +2427,14 @@ fn render_control_show(
                 "launcher unavailable: {}",
                 format_string_list(&snapshot.launcher.unavailable_runtimes)
             );
+        }
+        if !report.operator_objects.is_empty() {
+            for item in &report.operator_objects {
+                println!("{}", operator_object_line(item));
+                for detail_line in operator_object_detail_lines(item) {
+                    println!("{}", detail_line);
+                }
+            }
         }
         if let Some(intent) = report.rerun_intent {
             println!(
@@ -1535,8 +2459,782 @@ fn render_control_show(
                 println!("closure override detail: {}", detail);
             }
         }
+        if let Some(mode) = report.orchestrator_mode {
+            println!("orchestrator mode: {mode}");
+        }
+        if !report.directives.is_empty() {
+            for directive in &report.directives {
+                println!(
+                    "directive {} {} {}",
+                    directive.directive_id,
+                    format!("{:?}", directive.kind).to_ascii_lowercase(),
+                    directive
+                        .agent_id
+                        .clone()
+                        .unwrap_or_else(|| format!("wave-{}", directive.wave_id))
+                );
+            }
+        }
         Ok(())
     }
+}
+
+fn render_agent_steer(
+    root: &Path,
+    config: &ProjectConfig,
+    wave: u32,
+    agent: &str,
+    message: &str,
+    json: bool,
+) -> Result<()> {
+    let report = AgentSteerReport {
+        directive: steer_agent(
+            root,
+            config,
+            wave,
+            agent,
+            message,
+            DirectiveOrigin::Operator,
+            "wave-cli",
+        )?,
+    };
+    if json {
+        print_json(&report)
+    } else {
+        println!("steered wave {wave} agent {agent}");
+        println!("message: {}", message.trim());
+        Ok(())
+    }
+}
+
+fn render_agent_control<F>(
+    root: &Path,
+    config: &ProjectConfig,
+    wave: u32,
+    agent: &str,
+    json: bool,
+    action_label: &str,
+    action: F,
+) -> Result<()>
+where
+    F: FnOnce(&Path, &ProjectConfig, u32, &str) -> Result<wave_domain::ControlDirectiveRecord>,
+{
+    let report = AgentControlReport {
+        directive: action(root, config, wave, agent)?,
+    };
+    if json {
+        print_json(&report)
+    } else {
+        println!("wave {wave} agent {agent} {action_label}");
+        Ok(())
+    }
+}
+
+fn render_orchestrator_show(
+    root: &Path,
+    config: &ProjectConfig,
+    wave: u32,
+    json: bool,
+) -> Result<()> {
+    let snapshot = load_operator_snapshot(root, config)?;
+    let report = OrchestratorShowReport {
+        session: latest_orchestrator_session(root, config, wave)?,
+        wave: snapshot
+            .panels
+            .orchestrator
+            .waves
+            .into_iter()
+            .find(|candidate| candidate.wave_id == wave),
+        directives: snapshot
+            .panels
+            .orchestrator
+            .directives
+            .into_iter()
+            .filter(|directive| directive.wave_id == wave)
+            .collect(),
+    };
+    if json {
+        print_json(&report)
+    } else {
+        let mode = report
+            .session
+            .as_ref()
+            .map(|session| match session.mode {
+                OrchestratorMode::Operator => "operator",
+                OrchestratorMode::Autonomous => "autonomous",
+            })
+            .unwrap_or("operator");
+        println!("wave {wave} orchestrator mode: {mode}");
+        if let Some(wave) = report.wave.as_ref() {
+            println!(
+                "execution model: {} | active run: {}",
+                wave.execution_model,
+                wave.active_run_id.as_deref().unwrap_or("none")
+            );
+            for agent in &wave.agents {
+                println!(
+                    "agent {} {} status={} merge={} sandbox={} barrier={} deps={}",
+                    agent.id,
+                    agent.title,
+                    agent.status,
+                    agent.merge_state.as_deref().unwrap_or("none"),
+                    agent.sandbox_id.as_deref().unwrap_or("none"),
+                    agent.barrier_class,
+                    if agent.depends_on_agents.is_empty() {
+                        "none".to_string()
+                    } else {
+                        agent.depends_on_agents.join(",")
+                    }
+                );
+                if !agent.barrier_reasons.is_empty() {
+                    println!("  barrier reasons: {}", agent.barrier_reasons.join(" | "));
+                }
+            }
+        }
+        if !report.directives.is_empty() {
+            for directive in &report.directives {
+                println!(
+                    "directive {} {} {} state={} detail={}",
+                    directive.directive_id,
+                    directive.kind,
+                    directive
+                        .agent_id
+                        .clone()
+                        .unwrap_or_else(|| format!("wave-{}", directive.wave_id)),
+                    directive.delivery_state.as_deref().unwrap_or("unknown"),
+                    directive.delivery_detail.as_deref().unwrap_or("none"),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+fn render_orchestrator_steer(
+    root: &Path,
+    config: &ProjectConfig,
+    wave: u32,
+    message: &str,
+    json: bool,
+) -> Result<()> {
+    let report = OrchestratorSteerReport {
+        directive: steer_wave(
+            root,
+            config,
+            wave,
+            message,
+            DirectiveOrigin::Operator,
+            "wave-cli",
+        )?,
+    };
+    if json {
+        print_json(&report)
+    } else {
+        println!("steered wave {wave} orchestrator");
+        println!("message: {}", message.trim());
+        Ok(())
+    }
+}
+
+fn render_orchestrator_mode(
+    root: &Path,
+    config: &ProjectConfig,
+    wave: u32,
+    mode: &str,
+    json: bool,
+) -> Result<()> {
+    let parsed = match mode.trim() {
+        "operator" => OrchestratorMode::Operator,
+        "autonomous" => OrchestratorMode::Autonomous,
+        other => anyhow::bail!("unsupported orchestrator mode `{other}`"),
+    };
+    let report = OrchestratorModeReport {
+        session: Some(set_orchestrator_mode(
+            root, config, wave, parsed, "wave-cli",
+        )?),
+    };
+    if json {
+        print_json(&report)
+    } else {
+        println!("wave {wave} orchestrator mode updated");
+        Ok(())
+    }
+}
+
+fn control_show_design_lines(design: &wave_app_server::WaveDesignDetail) -> Vec<String> {
+    let mut lines = vec![
+        format!("design completeness: {:?}", design.completeness),
+        format!(
+            "design blockers: {}",
+            if design.blocker_reasons.is_empty() {
+                "none".to_string()
+            } else {
+                design.blocker_reasons.join(", ")
+            }
+        ),
+    ];
+    if !design.active_contradictions.is_empty() {
+        lines.push(format!(
+            "active contradictions: {}",
+            design
+                .active_contradictions
+                .iter()
+                .map(|contradiction| {
+                    format!("{}:{}", contradiction.contradiction_id, contradiction.state)
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        for contradiction in &design.active_contradictions {
+            lines.push(format!(
+                "contradiction {} state={} summary={}",
+                contradiction.contradiction_id, contradiction.state, contradiction.summary
+            ));
+            if !contradiction.invalidated_refs.is_empty() {
+                lines.push(format!(
+                    "contradiction refs: {}",
+                    contradiction.invalidated_refs.join(", ")
+                ));
+            }
+            if let Some(detail) = contradiction.detail.as_deref() {
+                lines.push(format!("contradiction detail: {}", detail));
+            }
+        }
+    }
+    if !design.unresolved_question_ids.is_empty() {
+        lines.push(format!(
+            "open questions: {}",
+            design.unresolved_question_ids.join(", ")
+        ));
+    }
+    if !design.unresolved_assumption_ids.is_empty() {
+        lines.push(format!(
+            "open assumptions: {}",
+            design.unresolved_assumption_ids.join(", ")
+        ));
+    }
+    if !design.pending_human_inputs.is_empty() {
+        lines.push(format!(
+            "pending human input: {}",
+            design
+                .pending_human_inputs
+                .iter()
+                .map(|request| format!("{} via {}", request.request_id, request.route))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !design.dependency_handshake_routes.is_empty() {
+        lines.push(format!(
+            "dependency handshakes: {}",
+            design.dependency_handshake_routes.join(", ")
+        ));
+    }
+    if !design.invalidated_fact_ids.is_empty() {
+        lines.push(format!(
+            "invalidated facts: {}",
+            design.invalidated_fact_ids.join(", ")
+        ));
+    }
+    if !design.invalidated_decision_ids.is_empty() {
+        lines.push(format!(
+            "invalidated decisions: {}",
+            design.invalidated_decision_ids.join(", ")
+        ));
+    }
+    if !design.invalidation_routes.is_empty() {
+        for route in &design.invalidation_routes {
+            lines.push(format!("invalidation route: {}", route));
+        }
+    }
+    if !design.selectively_invalidated_task_ids.is_empty() {
+        lines.push(format!(
+            "selective rerun tasks: {}",
+            design.selectively_invalidated_task_ids.join(", ")
+        ));
+    }
+    if !design.superseded_decision_ids.is_empty() {
+        lines.push(format!(
+            "superseded decisions: {}",
+            design.superseded_decision_ids.join(", ")
+        ));
+    }
+    if !design.ambiguous_dependency_wave_ids.is_empty() {
+        lines.push(format!(
+            "ambiguous dependency waves: {}",
+            design
+                .ambiguous_dependency_wave_ids
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    lines
+}
+
+fn portfolio_focus_report(
+    status: &PlanningStatusReadModel,
+    wave_id: u32,
+    acceptance_packages: &[wave_app_server::AcceptancePackageSnapshot],
+) -> Option<PortfolioFocusReport> {
+    let delivery = acceptance_packages
+        .iter()
+        .find(|package| package.wave_id == wave_id)
+        .map(portfolio_delivery_summary_report);
+    let packages_by_wave = acceptance_packages
+        .iter()
+        .map(|package| (package.wave_id, package))
+        .collect::<HashMap<_, _>>();
+    let initiatives = status
+        .portfolio
+        .initiatives
+        .iter()
+        .filter(|initiative| initiative.delivery.wave_ids.contains(&wave_id))
+        .map(|initiative| {
+            portfolio_entry_report(
+                initiative.initiative_id.clone(),
+                initiative.title.clone(),
+                initiative.delivery.wave_ids.clone(),
+                initiative.delivery.blocking_reasons.clone(),
+                &packages_by_wave,
+            )
+        })
+        .collect::<Vec<_>>();
+    let milestones = status
+        .portfolio
+        .milestones
+        .iter()
+        .filter(|milestone| milestone.delivery.wave_ids.contains(&wave_id))
+        .map(|milestone| {
+            portfolio_entry_report(
+                milestone.milestone_id.clone(),
+                milestone.title.clone(),
+                milestone.delivery.wave_ids.clone(),
+                milestone.delivery.blocking_reasons.clone(),
+                &packages_by_wave,
+            )
+        })
+        .collect::<Vec<_>>();
+    let release_trains = status
+        .portfolio
+        .release_trains
+        .iter()
+        .filter(|train| train.delivery.wave_ids.contains(&wave_id))
+        .map(|train| {
+            portfolio_entry_report(
+                train.release_train_id.clone(),
+                train.title.clone(),
+                train.delivery.wave_ids.clone(),
+                train.delivery.blocking_reasons.clone(),
+                &packages_by_wave,
+            )
+        })
+        .collect::<Vec<_>>();
+    let outcome_contracts = status
+        .portfolio
+        .outcome_contracts
+        .iter()
+        .filter(|contract| contract.delivery.wave_ids.contains(&wave_id))
+        .map(|contract| {
+            portfolio_entry_report(
+                contract.outcome_contract_id.clone(),
+                contract.title.clone(),
+                contract.delivery.wave_ids.clone(),
+                contract.delivery.blocking_reasons.clone(),
+                &packages_by_wave,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    if initiatives.is_empty()
+        && milestones.is_empty()
+        && release_trains.is_empty()
+        && outcome_contracts.is_empty()
+        && delivery.is_none()
+    {
+        None
+    } else {
+        Some(PortfolioFocusReport {
+            delivery,
+            initiatives,
+            milestones,
+            release_trains,
+            outcome_contracts,
+        })
+    }
+}
+
+fn portfolio_entry_report(
+    id: String,
+    title: String,
+    wave_ids: Vec<u32>,
+    portfolio_blocking_reasons: Vec<String>,
+    packages_by_wave: &HashMap<u32, &wave_app_server::AcceptancePackageSnapshot>,
+) -> PortfolioEntryReport {
+    let mut blocking_reasons = portfolio_blocking_reasons;
+    let mut wave_delivery = Vec::new();
+
+    for wave_id in &wave_ids {
+        if let Some(package) = packages_by_wave.get(wave_id) {
+            wave_delivery.push(PortfolioWaveDeliveryReport {
+                wave_id: *wave_id,
+                ship_state: acceptance_state_label(package.ship_state),
+                release_state: acceptance_state_label(package.release_state),
+                signoff_state: acceptance_state_label(package.signoff.state),
+            });
+            for reason in &package.blocking_reasons {
+                let reason = format!("wave {} {}", wave_id, reason);
+                if !blocking_reasons.iter().any(|existing| existing == &reason) {
+                    blocking_reasons.push(reason);
+                }
+            }
+        } else {
+            wave_delivery.push(PortfolioWaveDeliveryReport {
+                wave_id: *wave_id,
+                ship_state: "missing".to_string(),
+                release_state: "missing".to_string(),
+                signoff_state: "missing".to_string(),
+            });
+            let reason = format!("wave {} acceptance package missing", wave_id);
+            if !blocking_reasons.iter().any(|existing| existing == &reason) {
+                blocking_reasons.push(reason);
+            }
+        }
+    }
+
+    let ship_ready_waves = wave_delivery
+        .iter()
+        .filter(|wave| wave.ship_state == "ship")
+        .count();
+    let accepted_waves = wave_delivery
+        .iter()
+        .filter(|wave| wave.release_state == "accepted")
+        .count();
+    let signed_off_waves = wave_delivery
+        .iter()
+        .filter(|wave| wave.signoff_state == "signed_off")
+        .count();
+
+    PortfolioEntryReport {
+        id,
+        title,
+        wave_ids,
+        ship_ready_waves,
+        accepted_waves,
+        signed_off_waves,
+        wave_delivery,
+        blocking_reasons,
+    }
+}
+
+fn portfolio_delivery_summary_report(
+    package: &wave_app_server::AcceptancePackageSnapshot,
+) -> PortfolioDeliverySummaryReport {
+    PortfolioDeliverySummaryReport {
+        ship_state: acceptance_state_label(package.ship_state),
+        release_state: acceptance_state_label(package.release_state),
+        signoff_state: acceptance_state_label(package.signoff.state),
+        summary: package.summary.clone(),
+        proof_complete: package.implementation.proof_complete,
+        completed_agents: package.implementation.completed_agents,
+        total_agents: package.implementation.total_agents,
+        proof_source: package
+            .implementation
+            .proof_source
+            .clone()
+            .unwrap_or_else(|| "none".to_string()),
+        known_risk_count: package.known_risks.len(),
+        outstanding_debt_count: package.outstanding_debt.len(),
+        blocking_reasons: package.blocking_reasons.clone(),
+    }
+}
+
+fn portfolio_focus_lines(focus: &PortfolioFocusReport) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(delivery) = focus.delivery.as_ref() {
+        lines.push(format!(
+            "portfolio delivery: ship={} release={} signoff={} proof={}/{} complete={} source={} risks={} debt={}",
+            delivery.ship_state,
+            delivery.release_state,
+            delivery.signoff_state,
+            delivery.completed_agents,
+            delivery.total_agents,
+            delivery.proof_complete,
+            delivery.proof_source,
+            delivery.known_risk_count,
+            delivery.outstanding_debt_count
+        ));
+        lines.push(format!("portfolio delivery summary: {}", delivery.summary));
+        if !delivery.blocking_reasons.is_empty() {
+            lines.push(format!(
+                "portfolio delivery blockers: {}",
+                delivery.blocking_reasons.join(" | ")
+            ));
+        }
+    }
+    for entry in &focus.initiatives {
+        lines.push(portfolio_entry_line("portfolio initiative", entry));
+        lines.extend(portfolio_entry_detail_lines(entry));
+    }
+    for entry in &focus.milestones {
+        lines.push(portfolio_entry_line("portfolio milestone", entry));
+        lines.extend(portfolio_entry_detail_lines(entry));
+    }
+    for entry in &focus.release_trains {
+        lines.push(portfolio_entry_line("portfolio release train", entry));
+        lines.extend(portfolio_entry_detail_lines(entry));
+    }
+    for entry in &focus.outcome_contracts {
+        lines.push(portfolio_entry_line("portfolio outcome contract", entry));
+        lines.extend(portfolio_entry_detail_lines(entry));
+    }
+    lines
+}
+
+fn portfolio_entry_line(prefix: &str, entry: &PortfolioEntryReport) -> String {
+    format!(
+        "{prefix}: {} ship={}/{} release={}/{} signoff={}/{} waves={}",
+        entry.title,
+        entry.ship_ready_waves,
+        entry.wave_ids.len(),
+        entry.accepted_waves,
+        entry.wave_ids.len(),
+        entry.signed_off_waves,
+        entry.wave_ids.len(),
+        entry
+            .wave_delivery
+            .iter()
+            .map(|wave| format!(
+                "{}:{}/{}/{}",
+                wave.wave_id, wave.ship_state, wave.release_state, wave.signoff_state
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn portfolio_entry_detail_lines(entry: &PortfolioEntryReport) -> Vec<String> {
+    if entry.blocking_reasons.is_empty() {
+        Vec::new()
+    } else {
+        vec![format!(
+            "portfolio blockers: {}",
+            entry.blocking_reasons.join(" | ")
+        )]
+    }
+}
+
+fn acceptance_package_lines(package: &wave_app_server::AcceptancePackageSnapshot) -> Vec<String> {
+    let mut lines = vec![
+        format!("ship state: {}", acceptance_state_label(package.ship_state)),
+        format!(
+            "release state: {}",
+            acceptance_state_label(package.release_state)
+        ),
+        format!(
+            "signoff state: {}",
+            acceptance_state_label(package.signoff.state)
+        ),
+        format!("acceptance summary: {}", package.summary),
+        format!(
+            "acceptance design: completeness={:?} blockers={} contradictions={} questions={} assumptions={} human_input={} ambiguous_dependencies={}",
+            package.design_intent.completeness,
+            package.design_intent.blocker_count,
+            package.design_intent.contradiction_count,
+            package.design_intent.unresolved_question_count,
+            package.design_intent.unresolved_assumption_count,
+            package.design_intent.pending_human_input_count,
+            package.design_intent.ambiguous_dependency_count
+        ),
+        format!(
+            "acceptance implementation: proof_complete={} proof={}/{} replay_ok={} source={}",
+            package.implementation.proof_complete,
+            package.implementation.completed_agents,
+            package.implementation.total_agents,
+            package
+                .implementation
+                .replay_ok
+                .map(|ok| ok.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            package
+                .implementation
+                .proof_source
+                .clone()
+                .unwrap_or_else(|| "none".to_string())
+        ),
+        format!(
+            "acceptance signoff: complete={} manual_close={} completed={} pending={} operator_actions={}",
+            package.signoff.complete,
+            package.signoff.manual_close_applied,
+            format_string_list(&package.signoff.completed_closure_agents),
+            format_string_list(&package.signoff.pending_closure_agents),
+            format_string_list(&package.signoff.pending_operator_actions)
+        ),
+        format!(
+            "acceptance closure gates: {}",
+            closure_gate_status_summary(&package.signoff.closure_agents)
+        ),
+    ];
+    lines.push(format!(
+        "acceptance release: promotion={} merge_blocked={} closure_blocked={}",
+        package
+            .release
+            .promotion_state
+            .map(acceptance_state_label)
+            .unwrap_or_else(|| "none".to_string()),
+        package.release.merge_blocked,
+        package.release.closure_blocked
+    ));
+    if let Some(decision) = package.release.last_decision.as_deref() {
+        lines.push(format!("acceptance release detail: {}", decision));
+    }
+    if !package.blocking_reasons.is_empty() {
+        lines.push(format!(
+            "ship blockers: {}",
+            package.blocking_reasons.join(" | ")
+        ));
+    }
+    if !package.known_risks.is_empty() {
+        lines.push(format!("known risks: {}", package.known_risks.len()));
+        for item in &package.known_risks {
+            lines.push(format!("risk {}: {}", item.code, item.summary));
+            if let Some(detail) = item.detail.as_deref() {
+                lines.push(format!("risk detail: {}", detail));
+            }
+        }
+    }
+    if !package.outstanding_debt.is_empty() {
+        lines.push(format!(
+            "outstanding debt: {}",
+            package.outstanding_debt.len()
+        ));
+        for item in &package.outstanding_debt {
+            lines.push(format!("debt {}: {}", item.code, item.summary));
+            if let Some(detail) = item.detail.as_deref() {
+                lines.push(format!("debt detail: {}", detail));
+            }
+        }
+    }
+    for agent in package
+        .signoff
+        .closure_agents
+        .iter()
+        .filter(|agent| agent.error.is_some())
+    {
+        lines.push(format!(
+            "acceptance closure error: {} {}",
+            agent.agent_id,
+            agent.error.as_deref().unwrap_or_default()
+        ));
+    }
+    lines
+}
+
+fn closure_gate_status_summary(
+    agents: &[wave_app_server::AcceptanceClosureAgentSnapshot],
+) -> String {
+    if agents.is_empty() {
+        "none".to_string()
+    } else {
+        agents
+            .iter()
+            .map(|agent| {
+                let status = agent
+                    .status
+                    .map(acceptance_state_label)
+                    .unwrap_or_else(|| "not_started".to_string());
+                let proof = if agent.proof_complete {
+                    "proof"
+                } else {
+                    "no-proof"
+                };
+                format!("{}={}/{proof}", agent.agent_id, status)
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+}
+
+fn acceptance_state_label(value: impl std::fmt::Debug) -> String {
+    let debug = format!("{value:?}");
+    let mut label = String::new();
+    for (index, ch) in debug.chars().enumerate() {
+        if ch.is_uppercase() && index > 0 {
+            label.push('_');
+        }
+        for lower in ch.to_lowercase() {
+            label.push(lower);
+        }
+    }
+    label
+}
+
+fn operator_object_label(kind: wave_app_server::OperatorActionableKind) -> &'static str {
+    match kind {
+        wave_app_server::OperatorActionableKind::Approval => "approval-request",
+        wave_app_server::OperatorActionableKind::Proposal => "head-proposal",
+        wave_app_server::OperatorActionableKind::Override => "manual-close-override",
+        wave_app_server::OperatorActionableKind::Escalation => "escalation",
+    }
+}
+
+fn operator_object_line(item: &wave_app_server::OperatorActionableItem) -> String {
+    format!(
+        "{} {} state={} summary={}",
+        operator_object_label(item.kind),
+        item.record_id,
+        item.state,
+        item.summary
+    )
+}
+
+fn operator_object_detail_lines(item: &wave_app_server::OperatorActionableItem) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(route) = item.route.as_deref() {
+        lines.push(format!(
+            "{} route={route}",
+            operator_object_label(item.kind)
+        ));
+    }
+    if let Some(task_id) = item.task_id.as_deref() {
+        lines.push(format!(
+            "{} task={task_id}",
+            operator_object_label(item.kind)
+        ));
+    }
+    if let Some(source_run_id) = item.source_run_id.as_deref() {
+        lines.push(format!(
+            "{} source_run={source_run_id}",
+            operator_object_label(item.kind)
+        ));
+    }
+    if item.evidence_count > 0 {
+        lines.push(format!(
+            "{} evidence={}",
+            operator_object_label(item.kind),
+            item.evidence_count
+        ));
+    }
+    if let Some(waiting_on) = item.waiting_on.as_deref() {
+        lines.push(format!(
+            "{} waiting_on={waiting_on}",
+            operator_object_label(item.kind)
+        ));
+    }
+    if let Some(next_action) = item.next_action.as_deref() {
+        lines.push(format!(
+            "{} next_action={next_action}",
+            operator_object_label(item.kind)
+        ));
+    }
+    if let Some(detail) = item.detail.as_deref() {
+        lines.push(format!(
+            "{} detail={detail}",
+            operator_object_label(item.kind)
+        ));
+    }
+    lines
 }
 
 fn control_runtime_lines(run: &ActiveRunDetail) -> Vec<String> {
@@ -1649,6 +3347,26 @@ fn runtime_decision_summary(runtime: &wave_app_server::RuntimeDetail) -> String 
     )
 }
 
+fn design_detail_for_wave<'a>(
+    snapshot: &'a OperatorSnapshot,
+    wave_id: u32,
+) -> Option<&'a wave_app_server::WaveDesignDetail> {
+    snapshot
+        .design_details
+        .iter()
+        .find(|detail| detail.wave_id == wave_id)
+}
+
+fn proof_reuse_summary(run: &ActiveRunDetail) -> String {
+    let reused = run
+        .agents
+        .iter()
+        .filter(|agent| agent.reused_from_prior_run)
+        .count();
+    let fresh = run.agents.len().saturating_sub(reused);
+    format!("{reused} reused, {fresh} rerun")
+}
+
 fn render_task_list(
     root: &Path,
     config: &ProjectConfig,
@@ -1685,10 +3403,15 @@ fn render_task_list(
         );
         for agent in report.agents {
             println!(
-                "- {} {} | state={} | proof={} | deliverables={}",
+                "- {} {} | state={} | reuse={} | proof={} | deliverables={}",
                 agent.id,
                 agent.title,
                 agent.status,
+                if agent.reused_from_prior_run {
+                    "reused"
+                } else {
+                    "fresh"
+                },
                 if agent.proof_complete {
                     "complete".to_string()
                 } else if agent.missing_markers.is_empty() {
@@ -1863,7 +3586,10 @@ fn render_proof_show(
     let relevant_runs = load_relevant_run_records(root, config)?;
     let report = proof_report_for_wave(
         root,
+        config,
         &waves,
+        &snapshot.planning,
+        &snapshot.acceptance_packages,
         &snapshot.latest_run_details,
         &relevant_runs,
         wave_id,
@@ -1872,6 +3598,16 @@ fn render_proof_show(
     if json {
         print_json(&report)
     } else if let Some(proof) = report.proof {
+        if let Some(portfolio_focus) = report.portfolio_focus.as_ref() {
+            for line in portfolio_focus_lines(portfolio_focus) {
+                println!("{line}");
+            }
+        }
+        if let Some(package) = report.acceptance_package.as_ref() {
+            for line in acceptance_package_lines(package) {
+                println!("{line}");
+            }
+        }
         println!(
             "wave {} proof {}/{} complete={}",
             wave_id, proof.completed_agents, proof.total_agents, proof.complete
@@ -1901,10 +3637,15 @@ fn render_proof_show(
         if let Some(run) = report.run {
             for agent in run.agents {
                 println!(
-                    "- {} {} | state={} | source={} | proof={}",
+                    "- {} {} | state={} | reuse={} | source={} | proof={}",
                     agent.id,
                     agent.title,
                     agent.status,
+                    if agent.reused_from_prior_run {
+                        "reused"
+                    } else {
+                        "fresh"
+                    },
                     agent.proof_source,
                     if agent.proof_complete {
                         "complete".to_string()
@@ -1918,14 +3659,52 @@ fn render_proof_show(
         }
         Ok(())
     } else {
+        if let Some(portfolio_focus) = report.portfolio_focus.as_ref() {
+            for line in portfolio_focus_lines(portfolio_focus) {
+                println!("{line}");
+            }
+        }
+        if let Some(package) = report.acceptance_package.as_ref() {
+            for line in acceptance_package_lines(package) {
+                println!("{line}");
+            }
+        }
         println!("wave {} has no recorded proof snapshot", wave_id);
+        Ok(())
+    }
+}
+
+fn render_proof_seed_design_authority(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    json: bool,
+) -> Result<()> {
+    let report = seed_design_authority_live_proof(root, config, wave_id)?;
+    if json {
+        print_json(&report)
+    } else {
+        if report.already_present {
+            println!(
+                "design-authority proof already present for wave {}",
+                report.wave_id
+            );
+        } else {
+            println!("seeded design-authority proof for wave {}", report.wave_id);
+        }
+        println!("event log: {}", report.event_log_path.display());
+        println!("correlation id: {}", report.correlation_id);
+        println!("events: {}", report.event_ids.join(", "));
         Ok(())
     }
 }
 
 fn proof_report_for_wave(
     root: &Path,
+    config: &ProjectConfig,
     waves: &[WaveDocument],
+    planning: &PlanningStatusReadModel,
+    acceptance_packages: &[wave_app_server::AcceptancePackageSnapshot],
     latest_run_details: &[ActiveRunDetail],
     latest_runs: &HashMap<u32, WaveRunRecord>,
     wave_id: u32,
@@ -1934,13 +3713,20 @@ fn proof_report_for_wave(
         .iter()
         .find(|run| run.wave_id == wave_id)
         .cloned()
-        .or_else(|| latest_relevant_run_detail(root, waves, latest_runs, wave_id));
+        .or_else(|| latest_relevant_run_detail(root, config, waves, latest_runs, wave_id));
+    let acceptance_package = acceptance_packages
+        .iter()
+        .find(|package| package.wave_id == wave_id)
+        .cloned();
+    let portfolio_focus = portfolio_focus_report(planning, wave_id, acceptance_packages);
 
     run_detail
         .map(|run| ProofReport {
             wave_id,
             run_id: Some(run.run_id.clone()),
             proof: Some(run.proof.clone()),
+            portfolio_focus: portfolio_focus.clone(),
+            acceptance_package: acceptance_package.clone(),
             replay: Some(run.replay.clone()),
             run: Some(run),
         })
@@ -1949,6 +3735,8 @@ fn proof_report_for_wave(
             run_id: None,
             run: None,
             proof: None,
+            portfolio_focus,
+            acceptance_package,
             replay: None,
         })
 }
@@ -2254,6 +4042,22 @@ fn format_string_list(values: &[String]) -> String {
     }
 }
 
+fn format_u32_list(values: &[u32]) -> String {
+    if values.is_empty() {
+        "none".to_string()
+    } else {
+        values
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
 fn materialized_path_surface(path: PathBuf) -> MaterializedPathSurface {
     let exists = path.exists();
     MaterializedPathSurface { path, exists }
@@ -2330,6 +4134,213 @@ mod tests {
         }
     }
 
+    fn empty_recovery() -> wave_control_plane::WaveRecoveryState {
+        wave_control_plane::WaveRecoveryState::default()
+    }
+
+    fn default_delivery() -> wave_control_plane::DeliveryReadModel {
+        wave_control_plane::DeliveryReadModel::default()
+    }
+
+    fn default_wave_metadata() -> WaveMetadata {
+        WaveMetadata {
+            id: 0,
+            slug: String::new(),
+            title: String::new(),
+            mode: wave_config::ExecutionMode::DarkFactory,
+            execution_model: wave_spec::WaveExecutionModel::Serial,
+            concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
+            owners: Vec::new(),
+            depends_on: Vec::new(),
+            validation: Vec::new(),
+            rollback: Vec::new(),
+            proof: Vec::new(),
+            wave_class: wave_spec::WaveClass::Implementation,
+            intent: None,
+            delivery: None,
+            design_gate: None,
+        }
+    }
+
+    fn empty_planning_status() -> PlanningStatusReadModel {
+        PlanningStatusReadModel {
+            project_name: "Test".to_string(),
+            default_mode: wave_config::ExecutionMode::DarkFactory,
+            summary: PlanningStatusSummary {
+                total_waves: 0,
+                ready_waves: 0,
+                blocked_waves: 0,
+                active_waves: 0,
+                completed_waves: 0,
+                design_incomplete_waves: 0,
+                total_agents: 0,
+                implementation_agents: 0,
+                closure_agents: 0,
+                waves_with_complete_closure: 0,
+                waves_missing_closure: 0,
+                total_missing_closure_agents: 0,
+                lint_error_waves: 0,
+                skill_catalog_issue_count: 0,
+            },
+            delivery: default_delivery().summary.clone(),
+            portfolio: Default::default(),
+            skill_catalog: SkillCatalogHealth {
+                ok: true,
+                issue_count: 0,
+                issues: Vec::new(),
+            },
+            queue: QueueReadinessReadModel {
+                next_ready_wave_ids: Vec::new(),
+                next_ready_wave_id: None,
+                claimable_wave_ids: Vec::new(),
+                claimed_wave_ids: Vec::new(),
+                ready_wave_count: 0,
+                claimed_wave_count: 0,
+                blocked_wave_count: 0,
+                active_wave_count: 0,
+                completed_wave_count: 0,
+                queue_ready: false,
+                queue_ready_reason: "no waves are ready to claim".to_string(),
+            },
+            next_ready_wave_ids: Vec::new(),
+            waves: Vec::new(),
+            has_errors: false,
+        }
+    }
+
+    fn sample_acceptance_package() -> wave_app_server::AcceptancePackageSnapshot {
+        wave_app_server::AcceptancePackageSnapshot {
+            package_id: "acceptance-package-wave-17".to_string(),
+            wave_id: 17,
+            wave_slug: "portfolio-release-and-acceptance-packages".to_string(),
+            wave_title: "Wave 17".to_string(),
+            run_id: Some("wave-17-test".to_string()),
+            ship_state: wave_app_server::ShipReadinessState::NoShip,
+            release_state: wave_app_server::ReleaseReadinessState::BuildingEvidence,
+            summary: "no ship: implementation proof is only 2/6 complete".to_string(),
+            blocking_reasons: vec![
+                "implementation proof is only 2/6 complete".to_string(),
+                "signoff cannot begin until proof and release evidence are complete".to_string(),
+            ],
+            design_intent: wave_app_server::AcceptanceDesignIntentSnapshot {
+                completeness: wave_domain::DesignCompletenessState::StructurallyComplete,
+                blocker_count: 0,
+                contradiction_count: 0,
+                unresolved_question_count: 0,
+                unresolved_assumption_count: 0,
+                pending_human_input_count: 0,
+                ambiguous_dependency_count: 0,
+            },
+            implementation: wave_app_server::AcceptanceImplementationSnapshot {
+                proof_complete: false,
+                proof_source: Some("mixed-envelope-and-compatibility".to_string()),
+                replay_ok: Some(true),
+                completed_agents: 2,
+                total_agents: 6,
+            },
+            release: wave_app_server::AcceptanceReleaseSnapshot {
+                promotion_state: None,
+                merge_blocked: false,
+                closure_blocked: true,
+                scheduler_phase: None,
+                scheduler_state: None,
+                last_decision: Some("A6 failed; run released".to_string()),
+            },
+            signoff: wave_app_server::AcceptanceSignoffSnapshot {
+                state: wave_app_server::AcceptanceSignoffState::PendingEvidence,
+                complete: false,
+                manual_close_applied: false,
+                required_closure_agents: vec![
+                    "A6".to_string(),
+                    "A8".to_string(),
+                    "A9".to_string(),
+                    "A0".to_string(),
+                ],
+                completed_closure_agents: vec!["A9".to_string(), "A0".to_string()],
+                pending_closure_agents: vec!["A6".to_string(), "A8".to_string()],
+                pending_operator_actions: Vec::new(),
+                closure_agents: vec![
+                    wave_app_server::AcceptanceClosureAgentSnapshot {
+                        agent_id: "A6".to_string(),
+                        title: Some("Design Review Steward".to_string()),
+                        status: Some(wave_trace::WaveRunStatus::Failed),
+                        proof_complete: false,
+                        satisfied: false,
+                        error: Some("design review blocked".to_string()),
+                    },
+                    wave_app_server::AcceptanceClosureAgentSnapshot {
+                        agent_id: "A8".to_string(),
+                        title: Some("Integration Steward".to_string()),
+                        status: Some(wave_trace::WaveRunStatus::Planned),
+                        proof_complete: false,
+                        satisfied: false,
+                        error: None,
+                    },
+                    wave_app_server::AcceptanceClosureAgentSnapshot {
+                        agent_id: "A9".to_string(),
+                        title: Some("Wave Documentation Steward".to_string()),
+                        status: Some(wave_trace::WaveRunStatus::Succeeded),
+                        proof_complete: true,
+                        satisfied: true,
+                        error: None,
+                    },
+                    wave_app_server::AcceptanceClosureAgentSnapshot {
+                        agent_id: "A0".to_string(),
+                        title: Some("Running cont-QA".to_string()),
+                        status: Some(wave_trace::WaveRunStatus::Succeeded),
+                        proof_complete: true,
+                        satisfied: true,
+                        error: None,
+                    },
+                ],
+            },
+            known_risks: vec![wave_app_server::DeliveryStateItem {
+                code: "agent-error".to_string(),
+                summary: "agent A6 failed".to_string(),
+                detail: Some("design review blocked".to_string()),
+            }],
+            outstanding_debt: vec![wave_app_server::DeliveryStateItem {
+                code: "proof-incomplete".to_string(),
+                summary: "implementation proof is incomplete (2/6)".to_string(),
+                detail: Some("proof source mixed-envelope-and-compatibility".to_string()),
+            }],
+        }
+    }
+
+    #[test]
+    fn portfolio_focus_report_carries_delivery_summary_without_portfolio_entries() {
+        let package = sample_acceptance_package();
+
+        let report =
+            portfolio_focus_report(&empty_planning_status(), 17, std::slice::from_ref(&package))
+                .expect("portfolio focus with delivery summary");
+
+        let delivery = report.delivery.expect("delivery summary");
+        assert_eq!(delivery.ship_state, "no_ship");
+        assert_eq!(delivery.release_state, "building_evidence");
+        assert_eq!(delivery.signoff_state, "pending_evidence");
+        assert_eq!(delivery.completed_agents, 2);
+        assert_eq!(delivery.total_agents, 6);
+        assert_eq!(delivery.known_risk_count, 1);
+        assert_eq!(delivery.outstanding_debt_count, 1);
+        assert!(report.initiatives.is_empty());
+    }
+
+    #[test]
+    fn acceptance_package_lines_expose_closure_gate_statuses() {
+        let package = sample_acceptance_package();
+
+        let lines = acceptance_package_lines(&package);
+
+        assert!(lines.iter().any(|line| {
+            line == "acceptance closure gates: A6=failed/no-proof | A8=planned/no-proof | A9=succeeded/proof | A0=succeeded/proof"
+        }));
+        assert!(
+            lines
+                .iter()
+                .any(|line| { line == "acceptance closure error: A6 design review blocked" })
+        );
+    }
     #[test]
     fn config_root_uses_parent() {
         let root = config_root(Path::new("/tmp/example/wave.toml"));
@@ -2340,6 +4351,25 @@ mod tests {
     fn config_root_defaults_to_current_directory() {
         let root = config_root(Path::new("wave.toml"));
         assert_eq!(root, PathBuf::from("."));
+    }
+
+    #[test]
+    fn shared_repo_root_from_worktree_detects_repo_root() {
+        let worktree = Path::new("/repo/.wave/state/worktrees/wave-16-worktree");
+        assert_eq!(
+            shared_repo_root_from_worktree(worktree),
+            Some(PathBuf::from("/repo"))
+        );
+    }
+
+    #[test]
+    fn resolve_cli_root_uses_shared_repo_root_inside_worktree() {
+        let cwd = Path::new("/repo/.wave/state/worktrees/wave-16-worktree");
+        let (root, config_path) =
+            resolve_cli_root_and_config_path_from_cwd(Path::new("wave.toml"), cwd)
+                .expect("resolve cli root");
+        assert_eq!(root, PathBuf::from("/repo"));
+        assert_eq!(config_path, PathBuf::from("/repo/wave.toml"));
     }
 
     #[test]
@@ -2398,6 +4428,7 @@ mod tests {
                 blocked_waves: 0,
                 active_waves: 0,
                 completed_waves: 0,
+                design_incomplete_waves: 0,
                 total_agents: 3,
                 implementation_agents: 1,
                 closure_agents: 2,
@@ -2407,6 +4438,8 @@ mod tests {
                 lint_error_waves: 0,
                 skill_catalog_issue_count: 0,
             },
+            delivery: default_delivery().summary.clone(),
+            portfolio: Default::default(),
             skill_catalog: SkillCatalogHealth {
                 ok: true,
                 issue_count: 0,
@@ -2433,10 +4466,12 @@ mod tests {
                 depends_on: Vec::new(),
                 blocked_by: Vec::new(),
                 blocker_state: Vec::new(),
+                design_completeness: wave_domain::DesignCompletenessState::ImplementationReady,
                 lint_errors: 0,
                 ready: true,
                 ownership: empty_ownership(),
                 execution: empty_execution(),
+                recovery: empty_recovery(),
                 agent_count: 3,
                 implementation_agent_count: 1,
                 closure_agent_count: 2,
@@ -2455,6 +4490,7 @@ mod tests {
                 closure_override_applied: false,
                 completed: false,
                 last_run_status: None,
+                soft_state: wave_domain::SoftState::Clear,
             }],
             has_errors: false,
         };
@@ -2463,8 +4499,13 @@ mod tests {
             status: status.clone(),
             projection: projection.clone(),
         };
-        let operator = build_operator_snapshot_inputs(&planning, &HashMap::new(), true);
-        let spine = ProjectionSpine { planning, operator };
+        let delivery = default_delivery();
+        let operator = build_operator_snapshot_inputs(&planning, &delivery, &HashMap::new(), true);
+        let spine = ProjectionSpine {
+            planning,
+            operator,
+            delivery,
+        };
 
         let report = build_control_status_report(&spine);
 
@@ -2493,12 +4534,85 @@ mod tests {
     }
 
     #[test]
+    fn control_show_design_lines_surface_lineage_details() {
+        let design = wave_app_server::WaveDesignDetail {
+            wave_id: 16,
+            completeness: wave_domain::DesignCompletenessState::Underspecified,
+            blocker_reasons: vec![
+                "design:open-question:question-api-shape".to_string(),
+                "design:invalidated-decision:decision-api-shape".to_string(),
+            ],
+            active_contradictions: vec![wave_app_server::ContradictionDetail {
+                contradiction_id: "contradiction-16".to_string(),
+                state: "detected".to_string(),
+                summary: "API shape contradicts dependency result".to_string(),
+                detail: Some("wave 16 still depends on an invalidated API fact".to_string()),
+                invalidated_refs: vec![
+                    "fact:fact-api".to_string(),
+                    "decision:decision-api-shape".to_string(),
+                ],
+            }],
+            unresolved_question_ids: vec!["question-api-shape".to_string()],
+            unresolved_assumption_ids: vec!["assumption-cache-valid".to_string()],
+            pending_human_inputs: vec![wave_app_server::PendingHumanInputDetail {
+                request_id: "human-16".to_string(),
+                task_id: Some("wave-16:agent-a2".to_string()),
+                state: wave_domain::HumanInputState::Pending,
+                workflow_kind: wave_domain::HumanInputWorkflowKind::DependencyHandshake,
+                route: "dependency:wave-15".to_string(),
+                prompt: "Need dependency confirmation".to_string(),
+                requested_by: "A2".to_string(),
+                answer: None,
+            }],
+            dependency_handshake_routes: vec!["dependency:wave-15".to_string()],
+            invalidated_fact_ids: vec!["fact-api".to_string()],
+            invalidated_decision_ids: vec!["decision-api-shape".to_string()],
+            invalidation_routes: vec![
+                "contradiction contradiction-16 invalidates fact fact-api -> decision decision-api-shape"
+                    .to_string(),
+            ],
+            selectively_invalidated_task_ids: vec!["wave-16:agent-a2".to_string()],
+            superseded_decision_ids: vec!["decision-api-v1".to_string()],
+            ambiguous_dependency_wave_ids: vec![15],
+        };
+
+        let lines = control_show_design_lines(&design);
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "open questions: question-api-shape")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "open assumptions: assumption-cache-valid")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "invalidated facts: fact-api")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "superseded decisions: decision-api-v1")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "ambiguous dependency waves: 15")
+        );
+    }
+
+    #[test]
     fn proof_report_falls_back_to_latest_completed_run() {
         let root = std::env::temp_dir().join(format!(
             "wave-cli-proof-test-{}-{}",
             std::process::id(),
             wave_trace::now_epoch_ms().expect("timestamp")
         ));
+        let config = ProjectConfig::default();
         std::fs::create_dir_all(&root).expect("create temp root");
         let bundle_dir = root.join(".wave/state/build/specs/wave-12-1");
         let agent_dir = bundle_dir.join("agents/A1");
@@ -2596,7 +4710,16 @@ mod tests {
         wave_trace::write_trace_bundle(&trace_path, &run).expect("write trace bundle");
         let latest_runs = HashMap::from([(12, run)]);
 
-        let report = proof_report_for_wave(&root, &[wave], &[], &latest_runs, 12);
+        let report = proof_report_for_wave(
+            &root,
+            &config,
+            &[wave],
+            &empty_planning_status(),
+            &[],
+            &[],
+            &latest_runs,
+            12,
+        );
 
         assert_eq!(report.run_id.as_deref(), Some("wave-12-1"));
         assert!(report.proof.as_ref().expect("proof").complete);
@@ -2647,6 +4770,7 @@ mod tests {
                 blocked_waves: 0,
                 active_waves: 0,
                 completed_waves: 0,
+                design_incomplete_waves: 0,
                 total_agents: 3,
                 implementation_agents: 1,
                 closure_agents: 2,
@@ -2656,6 +4780,8 @@ mod tests {
                 lint_error_waves: 0,
                 skill_catalog_issue_count: 0,
             },
+            delivery: default_delivery().summary.clone(),
+            portfolio: Default::default(),
             skill_catalog: SkillCatalogHealth {
                 ok: true,
                 issue_count: 0,
@@ -2682,10 +4808,12 @@ mod tests {
                 depends_on: Vec::new(),
                 blocked_by: Vec::new(),
                 blocker_state: Vec::new(),
+                design_completeness: wave_domain::DesignCompletenessState::ImplementationReady,
                 lint_errors: 0,
                 ready: true,
                 ownership: empty_ownership(),
                 execution: empty_execution(),
+                recovery: empty_recovery(),
                 agent_count: 3,
                 implementation_agent_count: 1,
                 closure_agent_count: 2,
@@ -2704,6 +4832,7 @@ mod tests {
                 closure_override_applied: false,
                 completed: false,
                 last_run_status: None,
+                soft_state: wave_domain::SoftState::Clear,
             }],
             has_errors: false,
         };
@@ -2712,8 +4841,13 @@ mod tests {
             status: status.clone(),
             projection,
         };
-        let operator = build_operator_snapshot_inputs(&planning, &HashMap::new(), true);
-        let spine = ProjectionSpine { planning, operator };
+        let delivery = default_delivery();
+        let operator = build_operator_snapshot_inputs(&planning, &delivery, &HashMap::new(), true);
+        let spine = ProjectionSpine {
+            planning,
+            operator,
+            delivery,
+        };
 
         let report = build_doctor_report(
             &root.join("wave.toml"),
@@ -2792,6 +4926,7 @@ mod tests {
                     title: "Codex Adapter".to_string(),
                     status: wave_trace::WaveRunStatus::Succeeded,
                     current_task: "done".to_string(),
+                    reused_from_prior_run: false,
                     proof_complete: true,
                     proof_source: "structured-envelope".to_string(),
                     expected_markers: vec!["[wave-proof]".to_string()],
@@ -2811,6 +4946,7 @@ mod tests {
                     title: "Claude Adapter".to_string(),
                     status: wave_trace::WaveRunStatus::Running,
                     current_task: "running".to_string(),
+                    reused_from_prior_run: true,
                     proof_complete: false,
                     proof_source: "structured-envelope".to_string(),
                     expected_markers: vec!["[wave-proof]".to_string()],
@@ -2826,6 +4962,7 @@ mod tests {
                     )),
                 },
             ],
+            mas: None,
         };
 
         let lines = control_runtime_lines(&run);
@@ -2893,6 +5030,7 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["README.md".to_string()],
+                ..default_wave_metadata()
             },
             heading_title: Some("Wave 12".to_string()),
             commit_message: Some("Feat: result envelope".to_string()),
@@ -2919,6 +5057,13 @@ mod tests {
                 }),
                 deliverables: vec!["README.md".to_string()],
                 file_ownership: vec!["README.md".to_string()],
+                depends_on_agents: Vec::new(),
+                reads_artifacts_from: Vec::new(),
+                writes_artifacts: Vec::new(),
+                barrier_class: wave_spec::BarrierClass::Independent,
+                parallel_safety: wave_spec::ParallelSafetyClass::Serialized,
+                exclusive_resources: Vec::new(),
+                parallel_with: Vec::new(),
                 final_markers: vec!["[wave-proof]".to_string()],
                 prompt: "Primary goal:\n- noop\n\nRequired context before coding:\n- Read README.md.\n\nFile ownership (only touch these paths):\n- README.md".to_string(),
             }],

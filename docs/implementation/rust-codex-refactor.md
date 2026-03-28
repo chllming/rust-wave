@@ -63,7 +63,7 @@ The canonical Wave 0.2 authority roots under `.wave/state/` are:
 - projections: `.wave/state/projections/`
 - canonical traces: `.wave/state/traces/`
 
-This is now an authority-core plus projection-spine landing. Scheduler ownership is canonical in the reducer through explicit claim, lease, and budget events, so readiness is no longer treated as ownership. Wave 0.2 still keeps compatibility run and trace artifacts under `.wave/state/runs/` and `.wave/traces/runs/` as adapter inputs, and the live runtime still executes serially. True parallel waves, per-wave worktrees, and multi-runtime execution remain later work.
+This is now an authority-core plus projection-spine landing. Scheduler ownership is canonical in the reducer through explicit claim, lease, and budget events, so readiness is no longer treated as ownership. Wave 0.2 still keeps compatibility run and trace artifacts under `.wave/state/runs/` and `.wave/traces/runs/` as adapter inputs, but the live repo now spans both serial waves and opt-in MAS waves: parallel wave execution, wave-scoped worktrees, multi-runtime selection, and the partial Wave 18 intra-wave MAS cut are all code-landed in this checkout, while the remaining gap is the final live Wave 18 proof run.
 
 ## Authored-Wave Contract
 
@@ -133,7 +133,7 @@ That same model feeds the operator surfaces today:
 - `wave-app-server`
   assembles transport snapshots from reducer-backed operator snapshot inputs plus compatibility-backed active-run details, rerun intents, and replay state; it now carries the projection-owned control-status payload alongside the operator panels instead of re-deriving queue/control truth locally
 - `wave-tui`
-  renders the right-side operator panel for `Run`, `Agents`, `Queue`, and `Control`, with the queue story and control attention lines coming from the app-server snapshot's reducer-backed control-status payload rather than terminal-local recomputation
+  renders the right-side operator panel for `Overview`, `Agents`, `Queue`, `Proof`, and `Control`, with the queue story, proof state, and control attention lines coming from the app-server snapshot's reducer-backed transport rather than terminal-local recomputation
 
 The current repo-local cutover point is therefore explicit:
 
@@ -156,14 +156,16 @@ The live Rust implementation now routes this through `wave-reducer` into `wave-p
 
 The current status model should be read as:
 
-- `Run`
-  the active wave, run id, elapsed time, proof counts, and declared proof artifacts
+- `Overview`
+  shell target, active-wave summary, delivery posture, and cross-wave autonomous context
 - `Agents`
-  per-agent state, proof or marker completeness, and deliverables
+  per-agent state, proof or marker completeness, MAS merge/sandbox state, and directive context
 - `Queue`
   readiness, blockers, dependency-driven ordering, and the reducer-owned distinction between ready, claimed, active, stale-lease, and claimable waves
+- `Proof`
+  acceptance, signoff, proof artifacts, replay, risk, and debt state
 - `Control`
-  rerun intents, replay/proof state, and operator actions
+  rerun intents, manual-close state, proposals/approvals/escalations, and operator actions
 
 The important constraint is that `Queue` and `control status` are not separate truths. They are projections from the same control-plane model. If the queue says a wave is blocked, the status output and the TUI should agree on the blocker until the underlying state changes.
 
@@ -201,7 +203,7 @@ The proof-lifecycle parity fixtures for Wave 12 are intentionally narrow and sha
 This is especially relevant for the future TUI dependency: the UI should consume the same structured queue/status truth, not re-derive planning state from ad hoc terminal-specific logic.
 
 The right-side operator panel is the built-in dashboard surface in the shipped shell. It renders the repo's runtime truth today, rather than a separate dashboard app or a placeholder for later UI work. Trace and replay state appear there as recorded evidence, not as transient debug output.
-In narrow terminals, the shipped shell degrades to a text-summary fallback that shows the same operator snapshot in condensed form instead of attempting to preserve the split-panel layout.
+In narrow terminals, the shipped shell now switches to a one-column shell with the same transcript, composer, and dashboard stack instead of attempting to preserve the split-panel layout.
 
 ## Closure And Marker Baseline
 
@@ -285,20 +287,25 @@ If a future wave changes the contract, update the parser, lint rules, queue/stat
   Validates wave files and dark-factory requirements.
 - `wave control status [--json]`
   Shows dependency-driven wave readiness, closure coverage, blocker state, and skill-catalog state.
-- `wave control show|task|rerun|proof`
-  Exposes wave detail, active tasks, rerun intents, and proof/replay state from the same operator snapshot used by the TUI.
+- `wave control show|task|agent|rerun|close|proof|orchestrator`
+  Exposes wave detail, active tasks, MAS agent state, rerun/manual-close state, proof/replay state, and orchestrator detail from the same operator snapshot used by the TUI.
+- `wave delivery status [--json]`
+  Exposes release, acceptance-package, risk, debt, and delivery-signal truth from the repo-local delivery catalog.
+- `wave delivery initiative|release|acceptance show --id <id> [--json]`
+  Shows one delivery object in the same projection family as the TUI and app-server.
 - `wave draft`
   Compiles a wave bundle and writes per-agent prompt files under `.wave/state/build/specs/`.
 - `wave launch [--dry-run]`
   Runs a single ready wave through the Codex-backed launcher.
 - `wave autonomous [--dry-run]`
   Runs the current ready queue through the same launcher contract.
+- `wave adhoc plan|run|list|show|promote`
+  Uses repo-local adhoc state under `.wave/state/adhoc/` and can promote a planned run back into `waves/`.
 - `wave trace latest|replay`
   Shows compatibility run and trace outputs and validates replay semantics against stored artifacts in `.wave/traces/runs/`.
 
-Two areas are still intentionally incomplete:
+One area is still intentionally incomplete:
 
-- `wave adhoc`
 - `wave dep`
 
 ## Self-Host Runbook
@@ -312,13 +319,13 @@ This repo now dogfoods the Rust operator on itself through the surfaces that alr
 5. Run `wave launch --wave <id> --dry-run --json` before any live local mutation.
 6. If the dry run is clean, run `wave launch --wave <id> --json`.
 7. Watch the attempt through `wave trace latest --json` and `wave trace replay --json`.
-8. Open `wave` in an interactive terminal to inspect `Run`, `Agents`, `Queue`, and `Control` in the built-in Ratatui shell.
+8. Open `wave` in an interactive terminal to inspect `Overview`, `Agents`, `Queue`, `Proof`, and `Control` in the built-in Ratatui operator shell.
 
 This is a real self-host loop, but it is local and repo-scoped. It uses the launcher, queue, TUI, and trace surfaces already shipped in this slice; it does not claim live-host deployment or remote fleet control.
 
 Remaining gaps stay explicit:
 
-- `wave adhoc` and `wave dep` are still stubs.
+- `wave dep` is still a stub.
 - The operator shell is the built-in TUI, not a separate dashboard product.
 - Queue and replay visibility are evidence surfaces, not a guarantee that every future orchestration feature has shipped.
 
@@ -369,34 +376,35 @@ Keep these assumptions aligned with the launcher code. If one changes, update th
 
 ## Operator Shell
 
-The built-in TUI is the current dashboard surface for this repo. It uses a right-side operator panel instead of a separate browser/dashboard app, and the non-interactive fallback is a text summary rather than a second dashboard mode.
-This panel is the shipped operator surface, not a future affordance.
+The built-in TUI is now the live operator shell for this repo. It is no longer just a narrow right-side dashboard panel plus a few queue actions.
 
-The live right-side panel contract is intentionally narrow:
+The shipped shell contract is:
 
-- `Run`
-  active wave, run id, elapsed time, envelope-backed proof counts, and declared proof artifacts
-- `Agents`
-  per-agent state, typed proof source, final-marker completeness, and deliverables
-- `Queue`
-  readiness, blockers, dependency state, and claimability
-- `Control`
-  rerun intents, replay/proof state, and operator keybindings
+- left side: header, transcript, and composer
+- right side: stable `Overview`, `Agents`, `Queue`, `Proof`, and `Control` dashboard
+- explicit `head`, `wave`, and `agent` scopes
+- operator and autonomous modes on the same durable control path
+- reducer/projection-backed queue, proof, autonomy, and recovery visibility
+- shell-local transcript search and compare views
+- explicit `wave tui --alt-screen auto|always|never` and `wave tui --fresh-session`
 
-Only the tab-switching, wave-navigation, rerun-intent, and quit bindings are live today. Other dashboard affordances mentioned in older docs should be treated as planned until the TUI actually ships them.
+The TUI remains a consumer of control-plane truth, not an independent planner. Queue, proof, recovery, and control state still come from the same reducer/projection/app-server path the CLI uses. Replay is still an explicit compatibility boundary here: it compares normalized run, trace, and result-envelope references, but it still ratifies the compatibility run and trace artifacts rather than a final canonical replay v2 surface.
 
-The TUI is a consumer of control-plane truth, not an independent planner. Any future terminal-surface changes should preserve that dependency so the queue view, `wave control status`, and replay/proof surfaces remain consistent. The current app-server snapshot now carries the projection-owned control-status read model directly so the TUI does not have to rebuild the queue decision story from planning status in its own process, and proof views now resolve the latest relevant run for a wave instead of only currently active runs. Replay is still an explicit compatibility boundary here: it compares normalized run, trace, and result-envelope references, but it still ratifies the compatibility run and trace artifacts rather than a final canonical replay v2 surface.
-When there are multiple active runs, the `Run`, `Agents`, and `Control` tabs should bind to the currently selected wave rather than drifting to an unrelated first-active-run snapshot.
+The live interaction model now includes:
 
-Only these actions are shipped today:
+- `Tab` / `Shift+Tab` to cycle transcript, composer, and dashboard focus
+- dashboard focus by default on startup so shell hotkeys work immediately
+- `[` / `]` to cycle dashboard tabs
+- `j` / `k` or arrows to scroll transcript or move dashboard selection
+- `r` / `c` for rerun request and clear
+- `m` / `M` for manual close apply and clear
+- `u` / `x` for operator-action approval or rejection
+- slash commands for scope/mode/launch/rerun/MAS control/search/compare/help
+- plain-text guidance bound to the shell target while wave hotkeys and implicit wave commands use the visible dashboard selection
+- repo-level `head` scope keeps `Control` as a visible cross-wave review queue, and `u` / `x` act on the selected review row
+- real `/follow run|agent|off` behavior for active-run following, pinned-agent following, or manual selection
 
-- `Tab` / `Shift+Tab` to cycle tabs
-- `j` / `k` to move the selected wave
-- `r` to request a rerun for the selected wave
-- `c` to clear a rerun intent
-- `q` to quit
-
-If a broader dashboard interaction is proposed later, it should be documented as planned until the implementation lands.
+If broader shell behavior is proposed later, it should build on this operator-shell contract rather than describe the TUI as a passive dashboard again.
 
 ## Self-Host Evidence
 
@@ -408,13 +416,12 @@ The intended self-host loop for this repository is the same one the code already
 4. `wave launch --wave <id> --dry-run --json` writes the preflight report before mutation.
 5. `wave launch --wave <id> --json` runs the local operator slice when the dry run is clean.
 6. `wave control show --wave <id> --json`, `wave control proof show --wave <id> --json`, `wave control task list --wave <id> --json`, `wave trace latest --json`, and `wave trace replay --json` expose queue, proof, and trace evidence for the latest relevant run. Proof state is recomputed from the current stored result envelopes first, with compatibility run records used only through the explicit `wave-results` legacy adapter while `wave-trace` stays limited to persisted envelope loading and replay over compatibility-backed artifacts with normalized envelope references.
-7. `wave` on an interactive terminal shows the same state in the built-in TUI.
+7. `wave` on an interactive terminal shows the same state in the built-in operator shell, and `wave tui --help` exposes the explicit shell startup controls.
 
-This is dogfood evidence, not a claim that live-host deployment, remote fleet control, or a separate dashboard product has landed. Wave 13 is now the landed scheduler-authority and serial lease-enforcement checkpoint. True parallel-wave execution and per-wave worktree isolation remain future work in Wave 14-class follow-through.
+This is dogfood evidence, not a claim that live-host deployment, remote fleet control, or a separate dashboard product has landed. Wave 13 remains the scheduler-authority checkpoint, Wave 14-class parallel-wave execution and worktree isolation are live in the repo-local runtime, and Wave 18 now partially lands intra-wave MAS; the remaining open boundary is the final live Wave 18 proof run rather than the existence of those runtime surfaces.
 
 ## Narrow-Terminal Fallback
 
-When the terminal is too narrow for the split layout, the shell does not try to force the right-side panel into a broken view. It falls back to the same text-summary surface used for non-interactive runs.
+When the terminal is too narrow for the split layout, the shell does not try to force the wide view into a broken layout. It switches to a one-column shell that still renders the transcript, composer, and dashboard stack in one vertical flow.
 
-That fallback is part of the shipped behavior. It preserves the same control-plane truth by rendering condensed `Run`, `Agents`, `Queue`, and `Control` sections from the same operator snapshot, but it does not expose the full right-side dashboard tabs until there is enough room for the TUI layout.
-In other words, narrow terminals get truthful status output, not a degraded split-pane rendering.
+That fallback is part of the shipped behavior. It preserves the same control-plane truth without hiding input behind an invisible composer, so narrow terminals stay interactive instead of degrading to a blind summary surface.

@@ -6,12 +6,25 @@
 //! re-deriving queue/blocker semantics from raw run records inline.
 
 use serde::Serialize;
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use wave_dark_factory::FindingSeverity;
 use wave_dark_factory::LintFinding;
 use wave_dark_factory::SkillCatalogIssue;
 use wave_dark_factory::has_errors;
+use wave_domain::ControlEventPayload;
+use wave_domain::DesignCompletenessState;
+use wave_domain::LineageRecord;
+use wave_domain::LineageRecordSubject;
+use wave_domain::LineageRef;
+use wave_domain::LineageState;
+use wave_domain::PortfolioDeliveryModel;
+use wave_domain::RecoveryActionKind;
+use wave_domain::RecoveryCause;
+use wave_domain::RecoveryPlanRecord;
+use wave_domain::RecoveryPlanStatus;
 use wave_domain::SchedulerBudget;
 use wave_domain::SchedulerBudgetRecord;
 use wave_domain::SchedulerEventPayload;
@@ -25,6 +38,8 @@ use wave_domain::WavePromotionState;
 use wave_domain::WaveSchedulingRecord;
 use wave_domain::WaveSchedulingState;
 use wave_domain::WaveWorktreeRecord;
+use wave_domain::task_id_for_agent;
+use wave_events::ControlEvent;
 use wave_events::SchedulerEvent;
 use wave_gates::CompatibilityRunFacts;
 use wave_gates::CompatibilityRunInput;
@@ -42,6 +57,8 @@ use wave_trace::WaveRunStatus;
 #[serde(rename_all = "snake_case")]
 pub enum WaveBlockerKind {
     Dependency,
+    Design,
+    Recovery,
     Lint,
     Closure,
     Ownership,
@@ -146,6 +163,33 @@ pub struct WaveExecutionState {
     pub closure_blocked_by_promotion: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WaveDesignAuthorityState {
+    pub completeness: DesignCompletenessState,
+    pub unresolved_question_ids: Vec<String>,
+    pub unresolved_assumption_ids: Vec<String>,
+    pub pending_human_input_request_ids: Vec<String>,
+    pub active_decision_ids: Vec<String>,
+    pub superseded_decision_ids: Vec<String>,
+    pub invalidated_fact_ids: Vec<String>,
+    pub invalidated_decision_ids: Vec<String>,
+    pub selectively_invalidated_task_ids: Vec<String>,
+    pub ambiguous_dependency_wave_ids: Vec<u32>,
+    pub blocker_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct WaveRecoveryState {
+    pub required: bool,
+    pub status: Option<RecoveryPlanStatus>,
+    pub causes: Vec<RecoveryCause>,
+    pub affected_agent_ids: Vec<String>,
+    pub preserved_accepted_agent_ids: Vec<String>,
+    pub required_actions: Vec<RecoveryActionKind>,
+    pub source_run_id: Option<String>,
+    pub detail: Option<String>,
+}
+
 pub fn wave_execution_state_from_records(
     worktree: Option<WaveWorktreeRecord>,
     promotion: Option<WavePromotionRecord>,
@@ -199,6 +243,8 @@ pub struct WaveRef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct WaveBlockerFlags {
     pub dependency: bool,
+    pub design: bool,
+    pub recovery: bool,
     pub lint: bool,
     pub closure: bool,
     pub ownership: bool,
@@ -249,6 +295,8 @@ pub struct WavePlanningState {
     pub ready: bool,
     pub ownership: WaveOwnershipState,
     pub execution: WaveExecutionState,
+    pub design: WaveDesignAuthorityState,
+    pub recovery: WaveRecoveryState,
     pub agents: WaveAgentCounts,
     pub closure: WaveClosureFacts,
     pub lifecycle: WaveLifecycleSummary,
@@ -265,6 +313,7 @@ pub struct PlanningSummary {
     pub blocked_waves: usize,
     pub active_waves: usize,
     pub completed_waves: usize,
+    pub design_incomplete_waves: usize,
     pub total_agents: usize,
     pub implementation_agents: usize,
     pub closure_agents: usize,
@@ -285,6 +334,8 @@ pub struct SkillCatalogHealth {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct QueueBlockerSummary {
     pub dependency: usize,
+    pub design: usize,
+    pub recovery: usize,
     pub lint: usize,
     pub closure: usize,
     pub ownership: usize,
@@ -298,6 +349,8 @@ pub struct QueueBlockerSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct QueueBlockerWaves {
     pub dependency: Vec<WaveRef>,
+    pub design: Vec<WaveRef>,
+    pub recovery: Vec<WaveRef>,
     pub lint: Vec<WaveRef>,
     pub closure: Vec<WaveRef>,
     pub ownership: Vec<WaveRef>,
@@ -316,6 +369,7 @@ pub struct BlockedWaveProjection {
     pub depends_on: Vec<u32>,
     pub blocked_by: Vec<String>,
     pub blocker_state: Vec<WaveBlockerState>,
+    pub design_completeness: DesignCompletenessState,
     pub lint_errors: usize,
     pub missing_closure_agents: Vec<String>,
     pub rerun_requested: bool,
@@ -370,8 +424,121 @@ pub struct PlanningReducerState {
     pub closure_coverage: ClosureCoverageProjection,
     pub queue: QueueProjection,
     pub skill_catalog: SkillCatalogHealth,
+    pub portfolio: PortfolioReducerState,
     pub waves: Vec<WavePlanningState>,
     pub has_errors: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PortfolioDeliveryState {
+    Planned,
+    Ready,
+    Claimed,
+    Active,
+    Blocked,
+    Mixed,
+    Completed,
+}
+
+impl Default for PortfolioDeliveryState {
+    fn default() -> Self {
+        Self::Planned
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct PortfolioWaveCounts {
+    pub total_waves: usize,
+    pub ready_waves: usize,
+    pub claimed_waves: usize,
+    pub active_waves: usize,
+    pub blocked_waves: usize,
+    pub completed_waves: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct PortfolioDeliverySummary {
+    pub wave_ids: Vec<u32>,
+    pub missing_wave_ids: Vec<u32>,
+    pub ready_wave_ids: Vec<u32>,
+    pub claimed_wave_ids: Vec<u32>,
+    pub active_wave_ids: Vec<u32>,
+    pub blocked_wave_ids: Vec<u32>,
+    pub completed_wave_ids: Vec<u32>,
+    pub counts: PortfolioWaveCounts,
+    pub state: PortfolioDeliveryState,
+    pub blocking_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PortfolioInitiativeState {
+    pub initiative_id: String,
+    pub slug: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub milestone_ids: Vec<String>,
+    pub release_train_id: Option<String>,
+    pub outcome_contract_ids: Vec<String>,
+    pub delivery: PortfolioDeliverySummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PortfolioMilestoneState {
+    pub milestone_id: String,
+    pub initiative_id: String,
+    pub slug: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub delivery: PortfolioDeliverySummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PortfolioReleaseTrainState {
+    pub release_train_id: String,
+    pub slug: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub initiative_ids: Vec<String>,
+    pub milestone_ids: Vec<String>,
+    pub delivery: PortfolioDeliverySummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PortfolioOutcomeContractState {
+    pub outcome_contract_id: String,
+    pub slug: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub initiative_ids: Vec<String>,
+    pub milestone_ids: Vec<String>,
+    pub release_train_id: Option<String>,
+    pub delivery: PortfolioDeliverySummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct PortfolioSummary {
+    pub initiative_count: usize,
+    pub milestone_count: usize,
+    pub release_train_count: usize,
+    pub outcome_contract_count: usize,
+    pub mapped_wave_count: usize,
+    pub unmapped_wave_count: usize,
+    pub completed_initiatives: usize,
+    pub blocked_initiatives: usize,
+    pub active_initiatives: usize,
+    pub ready_initiatives: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct PortfolioReducerState {
+    pub summary: PortfolioSummary,
+    pub initiatives: Vec<PortfolioInitiativeState>,
+    pub milestones: Vec<PortfolioMilestoneState>,
+    pub release_trains: Vec<PortfolioReleaseTrainState>,
+    pub outcome_contracts: Vec<PortfolioOutcomeContractState>,
+    pub mapped_wave_ids: Vec<u32>,
+    pub unmapped_wave_ids: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -397,6 +564,29 @@ pub struct SchedulerWaveState {
     pub contention_reasons: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct DesignAuthorityIndex {
+    waves: BTreeMap<u32, DesignWaveAuthority>,
+    impacted_tasks: BTreeMap<String, BTreeSet<String>>,
+    impacted_waves: BTreeMap<u32, BTreeSet<String>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RecoveryAuthorityState {
+    plans_by_wave: BTreeMap<u32, RecoveryPlanRecord>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DesignWaveAuthority {
+    unresolved_question_ids: BTreeSet<String>,
+    unresolved_assumption_ids: BTreeSet<String>,
+    pending_human_input_request_ids: BTreeSet<String>,
+    active_decision_ids: BTreeSet<String>,
+    superseded_decision_ids: BTreeSet<String>,
+    invalidated_fact_ids: BTreeSet<String>,
+    invalidated_decision_ids: BTreeSet<String>,
+}
+
 pub fn reduce_planning_state(
     waves: &[WaveDocument],
     findings: &[LintFinding],
@@ -405,13 +595,14 @@ pub fn reduce_planning_state(
     rerun_wave_ids: &HashSet<u32>,
     closure_override_wave_ids: &HashSet<u32>,
 ) -> PlanningReducerState {
-    reduce_planning_state_with_scheduler(
+    reduce_planning_state_with_authorities(
         waves,
         findings,
         skill_catalog_issues,
         latest_runs,
         rerun_wave_ids,
         closure_override_wave_ids,
+        &[],
         &[],
     )
 }
@@ -425,6 +616,28 @@ pub fn reduce_planning_state_with_scheduler(
     closure_override_wave_ids: &HashSet<u32>,
     scheduler_events: &[SchedulerEvent],
 ) -> PlanningReducerState {
+    reduce_planning_state_with_authorities(
+        waves,
+        findings,
+        skill_catalog_issues,
+        latest_runs,
+        rerun_wave_ids,
+        closure_override_wave_ids,
+        scheduler_events,
+        &[],
+    )
+}
+
+pub fn reduce_planning_state_with_authorities(
+    waves: &[WaveDocument],
+    findings: &[LintFinding],
+    skill_catalog_issues: &[SkillCatalogIssue],
+    latest_runs: &HashMap<u32, CompatibilityRunInput>,
+    rerun_wave_ids: &HashSet<u32>,
+    closure_override_wave_ids: &HashSet<u32>,
+    scheduler_events: &[SchedulerEvent],
+    control_events: &[ControlEvent],
+) -> PlanningReducerState {
     let mut findings_by_wave: HashMap<u32, usize> = HashMap::new();
     for finding in findings {
         if matches!(finding.severity, FindingSeverity::Error) {
@@ -433,6 +646,8 @@ pub fn reduce_planning_state_with_scheduler(
     }
 
     let scheduler_state = reduce_scheduler_authority(scheduler_events);
+    let design_authority = reduce_design_authority(control_events);
+    let recovery_authority = reduce_recovery_authority(control_events);
     let mut waves_state = Vec::new();
     for wave in waves {
         let latest_run = latest_runs.get(&wave.metadata.id);
@@ -469,12 +684,17 @@ pub fn reduce_planning_state_with_scheduler(
             &closure,
             &run_gate,
         );
-        let planning_ready = planning_gate.blocking_reasons.is_empty();
+        let design = build_wave_design_state(&design_authority, wave, run_gate.completed);
+        let recovery = build_wave_recovery_state(&recovery_authority, wave.metadata.id);
+        let planning_ready =
+            planning_gate.blocking_reasons.is_empty() && design.blocker_reasons.is_empty();
         let ownership =
             build_wave_ownership_state(&scheduler_state, wave.metadata.id, planning_ready);
         let execution = build_wave_execution_state(&scheduler_state, wave.metadata.id);
         let blocked_by = combined_blockers(
             &planning_gate.blocking_reasons,
+            &design.blocker_reasons,
+            &recovery,
             &ownership,
             &execution,
             planning_ready,
@@ -488,6 +708,7 @@ pub fn reduce_planning_state_with_scheduler(
             planning_ready,
             &ownership,
             &blocker_state,
+            rerun_requested,
         );
 
         waves_state.push(WavePlanningState {
@@ -502,6 +723,8 @@ pub fn reduce_planning_state_with_scheduler(
             ready: readiness.claimable,
             ownership,
             execution,
+            design,
+            recovery,
             agents: WaveAgentCounts {
                 total: wave.agents.len(),
                 implementation: wave.implementation_agents().count(),
@@ -552,6 +775,17 @@ pub fn reduce_planning_state_with_scheduler(
         .iter()
         .filter(|wave| matches!(wave.readiness.state, QueueReadinessState::Completed))
         .count();
+    let design_incomplete_waves = waves_state
+        .iter()
+        .filter(|wave| {
+            !matches!(
+                wave.design.completeness,
+                DesignCompletenessState::ImplementationReady
+                    | DesignCompletenessState::Verified
+                    | DesignCompletenessState::StructurallyComplete
+            )
+        })
+        .count();
     let blocked_waves = waves_state
         .iter()
         .filter(|wave| matches!(wave.readiness.state, QueueReadinessState::Blocked))
@@ -580,6 +814,8 @@ pub fn reduce_planning_state_with_scheduler(
         "ready waves are available to claim".to_string()
     } else if budget_blocked_waves > 0 {
         "capacity is exhausted by scheduler budget".to_string()
+    } else if waves_state.iter().any(|wave| wave.blockers.design) {
+        "design ambiguity blocks implementation readiness".to_string()
     } else if claimed_waves > 0 {
         "waves are already claimed by scheduler authority".to_string()
     } else if active_waves > 0 {
@@ -600,6 +836,7 @@ pub fn reduce_planning_state_with_scheduler(
         blocked_waves,
         active_waves,
         completed_waves,
+        design_incomplete_waves,
         total_agents: waves_state.iter().map(|wave| wave.agents.total).sum(),
         implementation_agents: waves_state
             .iter()
@@ -680,6 +917,7 @@ pub fn reduce_planning_state_with_scheduler(
                 depends_on: wave.depends_on.clone(),
                 blocked_by: wave.blocked_by.clone(),
                 blocker_state: wave.blocker_state.clone(),
+                design_completeness: wave.design.completeness,
                 lint_errors: wave.lint_errors,
                 missing_closure_agents: wave.closure.missing_agent_ids.clone(),
                 rerun_requested: wave.lifecycle.rerun_requested,
@@ -730,8 +968,768 @@ pub fn reduce_planning_state_with_scheduler(
             issue_count: skill_catalog_issues.len(),
             issues: skill_catalog_issues.to_vec(),
         },
+        portfolio: PortfolioReducerState::default(),
         waves: waves_state,
         has_errors: has_errors(findings) || !skill_catalog_issues.is_empty(),
+    }
+}
+
+pub fn with_portfolio_delivery_model(
+    mut state: PlanningReducerState,
+    portfolio_model: &PortfolioDeliveryModel,
+) -> PlanningReducerState {
+    state.portfolio = reduce_portfolio_state(portfolio_model, &state.waves);
+    state
+}
+
+pub fn reduce_portfolio_state(
+    portfolio_model: &PortfolioDeliveryModel,
+    waves: &[WavePlanningState],
+) -> PortfolioReducerState {
+    if portfolio_model.is_empty() {
+        return PortfolioReducerState::default();
+    }
+
+    let waves_by_id = waves
+        .iter()
+        .map(|wave| (wave.id, wave))
+        .collect::<BTreeMap<_, _>>();
+    let milestone_wave_ids = portfolio_model
+        .milestones
+        .iter()
+        .map(|milestone| {
+            (
+                milestone.milestone_id.as_str().to_string(),
+                milestone.wave_ids.iter().copied().collect::<BTreeSet<_>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let initiative_wave_ids = portfolio_model
+        .initiatives
+        .iter()
+        .map(|initiative| {
+            let mut wave_ids = initiative.wave_ids.iter().copied().collect::<BTreeSet<_>>();
+            for milestone_id in &initiative.milestone_ids {
+                if let Some(milestone_waves) = milestone_wave_ids.get(milestone_id.as_str()) {
+                    wave_ids.extend(milestone_waves.iter().copied());
+                }
+            }
+            (initiative.initiative_id.as_str().to_string(), wave_ids)
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let release_train_wave_ids = portfolio_model
+        .release_trains
+        .iter()
+        .map(|release_train| {
+            let mut wave_ids = release_train
+                .wave_ids
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>();
+            for initiative_id in &release_train.initiative_ids {
+                if let Some(initiative_waves) = initiative_wave_ids.get(initiative_id.as_str()) {
+                    wave_ids.extend(initiative_waves.iter().copied());
+                }
+            }
+            for milestone_id in &release_train.milestone_ids {
+                if let Some(milestone_waves) = milestone_wave_ids.get(milestone_id.as_str()) {
+                    wave_ids.extend(milestone_waves.iter().copied());
+                }
+            }
+            (
+                release_train.release_train_id.as_str().to_string(),
+                wave_ids,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let initiatives = portfolio_model
+        .initiatives
+        .iter()
+        .map(|initiative| {
+            let wave_ids = initiative_wave_ids
+                .get(initiative.initiative_id.as_str())
+                .cloned()
+                .unwrap_or_default();
+            PortfolioInitiativeState {
+                initiative_id: initiative.initiative_id.as_str().to_string(),
+                slug: initiative.slug.clone(),
+                title: initiative.title.clone(),
+                summary: initiative.summary.clone(),
+                milestone_ids: initiative
+                    .milestone_ids
+                    .iter()
+                    .map(|milestone_id| milestone_id.as_str().to_string())
+                    .collect(),
+                release_train_id: initiative
+                    .release_train_id
+                    .as_ref()
+                    .map(|release_train_id| release_train_id.as_str().to_string()),
+                outcome_contract_ids: initiative
+                    .outcome_contract_ids
+                    .iter()
+                    .map(|outcome_contract_id| outcome_contract_id.as_str().to_string())
+                    .collect(),
+                delivery: portfolio_delivery_summary(&wave_ids, &waves_by_id),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let milestones = portfolio_model
+        .milestones
+        .iter()
+        .map(|milestone| {
+            let wave_ids = milestone_wave_ids
+                .get(milestone.milestone_id.as_str())
+                .cloned()
+                .unwrap_or_default();
+            PortfolioMilestoneState {
+                milestone_id: milestone.milestone_id.as_str().to_string(),
+                initiative_id: milestone.initiative_id.as_str().to_string(),
+                slug: milestone.slug.clone(),
+                title: milestone.title.clone(),
+                summary: milestone.summary.clone(),
+                delivery: portfolio_delivery_summary(&wave_ids, &waves_by_id),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let release_trains = portfolio_model
+        .release_trains
+        .iter()
+        .map(|release_train| {
+            let wave_ids = release_train_wave_ids
+                .get(release_train.release_train_id.as_str())
+                .cloned()
+                .unwrap_or_default();
+            PortfolioReleaseTrainState {
+                release_train_id: release_train.release_train_id.as_str().to_string(),
+                slug: release_train.slug.clone(),
+                title: release_train.title.clone(),
+                summary: release_train.summary.clone(),
+                initiative_ids: release_train
+                    .initiative_ids
+                    .iter()
+                    .map(|initiative_id| initiative_id.as_str().to_string())
+                    .collect(),
+                milestone_ids: release_train
+                    .milestone_ids
+                    .iter()
+                    .map(|milestone_id| milestone_id.as_str().to_string())
+                    .collect(),
+                delivery: portfolio_delivery_summary(&wave_ids, &waves_by_id),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let outcome_contracts = portfolio_model
+        .outcome_contracts
+        .iter()
+        .map(|outcome_contract| {
+            let mut wave_ids = outcome_contract
+                .wave_ids
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>();
+            for initiative_id in &outcome_contract.initiative_ids {
+                if let Some(initiative_waves) = initiative_wave_ids.get(initiative_id.as_str()) {
+                    wave_ids.extend(initiative_waves.iter().copied());
+                }
+            }
+            for milestone_id in &outcome_contract.milestone_ids {
+                if let Some(milestone_waves) = milestone_wave_ids.get(milestone_id.as_str()) {
+                    wave_ids.extend(milestone_waves.iter().copied());
+                }
+            }
+            if let Some(release_train_id) = &outcome_contract.release_train_id {
+                if let Some(release_train_waves) =
+                    release_train_wave_ids.get(release_train_id.as_str())
+                {
+                    wave_ids.extend(release_train_waves.iter().copied());
+                }
+            }
+
+            PortfolioOutcomeContractState {
+                outcome_contract_id: outcome_contract.outcome_contract_id.as_str().to_string(),
+                slug: outcome_contract.slug.clone(),
+                title: outcome_contract.title.clone(),
+                summary: outcome_contract.summary.clone(),
+                initiative_ids: outcome_contract
+                    .initiative_ids
+                    .iter()
+                    .map(|initiative_id| initiative_id.as_str().to_string())
+                    .collect(),
+                milestone_ids: outcome_contract
+                    .milestone_ids
+                    .iter()
+                    .map(|milestone_id| milestone_id.as_str().to_string())
+                    .collect(),
+                release_train_id: outcome_contract
+                    .release_train_id
+                    .as_ref()
+                    .map(|release_train_id| release_train_id.as_str().to_string()),
+                delivery: portfolio_delivery_summary(&wave_ids, &waves_by_id),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mapped_wave_ids = portfolio_model.referenced_wave_ids();
+    let mapped_wave_id_set = mapped_wave_ids.iter().copied().collect::<BTreeSet<_>>();
+    let unmapped_wave_ids = waves
+        .iter()
+        .filter_map(|wave| (!mapped_wave_id_set.contains(&wave.id)).then_some(wave.id))
+        .collect::<Vec<_>>();
+
+    PortfolioReducerState {
+        summary: PortfolioSummary {
+            initiative_count: initiatives.len(),
+            milestone_count: milestones.len(),
+            release_train_count: release_trains.len(),
+            outcome_contract_count: outcome_contracts.len(),
+            mapped_wave_count: mapped_wave_ids.len(),
+            unmapped_wave_count: unmapped_wave_ids.len(),
+            completed_initiatives: initiatives
+                .iter()
+                .filter(|initiative| {
+                    matches!(initiative.delivery.state, PortfolioDeliveryState::Completed)
+                })
+                .count(),
+            blocked_initiatives: initiatives
+                .iter()
+                .filter(|initiative| {
+                    matches!(initiative.delivery.state, PortfolioDeliveryState::Blocked)
+                })
+                .count(),
+            active_initiatives: initiatives
+                .iter()
+                .filter(|initiative| {
+                    matches!(initiative.delivery.state, PortfolioDeliveryState::Active)
+                })
+                .count(),
+            ready_initiatives: initiatives
+                .iter()
+                .filter(|initiative| {
+                    matches!(initiative.delivery.state, PortfolioDeliveryState::Ready)
+                })
+                .count(),
+        },
+        initiatives,
+        milestones,
+        release_trains,
+        outcome_contracts,
+        mapped_wave_ids,
+        unmapped_wave_ids,
+    }
+}
+
+fn portfolio_delivery_summary(
+    wave_ids: &BTreeSet<u32>,
+    waves_by_id: &BTreeMap<u32, &WavePlanningState>,
+) -> PortfolioDeliverySummary {
+    let mut summary = PortfolioDeliverySummary {
+        wave_ids: wave_ids.iter().copied().collect(),
+        counts: PortfolioWaveCounts {
+            total_waves: wave_ids.len(),
+            ..PortfolioWaveCounts::default()
+        },
+        ..PortfolioDeliverySummary::default()
+    };
+    let mut blocking_reasons = BTreeSet::new();
+
+    for wave_id in &summary.wave_ids {
+        if let Some(wave) = waves_by_id.get(wave_id) {
+            match wave.readiness.state {
+                QueueReadinessState::Ready => {
+                    summary.ready_wave_ids.push(*wave_id);
+                    summary.counts.ready_waves += 1;
+                }
+                QueueReadinessState::Claimed => {
+                    summary.claimed_wave_ids.push(*wave_id);
+                    summary.counts.claimed_waves += 1;
+                }
+                QueueReadinessState::Active => {
+                    summary.active_wave_ids.push(*wave_id);
+                    summary.counts.active_waves += 1;
+                }
+                QueueReadinessState::Blocked => {
+                    summary.blocked_wave_ids.push(*wave_id);
+                    summary.counts.blocked_waves += 1;
+                    blocking_reasons.extend(wave.blocked_by.iter().cloned());
+                }
+                QueueReadinessState::Completed => {
+                    summary.completed_wave_ids.push(*wave_id);
+                    summary.counts.completed_waves += 1;
+                }
+            }
+        } else {
+            summary.missing_wave_ids.push(*wave_id);
+            blocking_reasons.insert(format!("portfolio:missing-wave:{wave_id}"));
+        }
+    }
+
+    summary.state = classify_portfolio_delivery_state(&summary);
+    summary.blocking_reasons = blocking_reasons.into_iter().collect();
+    summary
+}
+
+fn classify_portfolio_delivery_state(summary: &PortfolioDeliverySummary) -> PortfolioDeliveryState {
+    let counts = &summary.counts;
+    let blocked_or_missing = counts.blocked_waves > 0 || !summary.missing_wave_ids.is_empty();
+
+    if counts.total_waves == 0 {
+        PortfolioDeliveryState::Planned
+    } else if counts.completed_waves == counts.total_waves && summary.missing_wave_ids.is_empty() {
+        PortfolioDeliveryState::Completed
+    } else if counts.active_waves > 0
+        && counts.ready_waves == 0
+        && counts.claimed_waves == 0
+        && counts.completed_waves == 0
+        && !blocked_or_missing
+    {
+        PortfolioDeliveryState::Active
+    } else if counts.claimed_waves > 0
+        && counts.ready_waves == 0
+        && counts.active_waves == 0
+        && counts.completed_waves == 0
+        && !blocked_or_missing
+    {
+        PortfolioDeliveryState::Claimed
+    } else if counts.ready_waves > 0
+        && counts.claimed_waves == 0
+        && counts.active_waves == 0
+        && counts.completed_waves == 0
+        && !blocked_or_missing
+    {
+        PortfolioDeliveryState::Ready
+    } else if blocked_or_missing
+        && counts.ready_waves == 0
+        && counts.claimed_waves == 0
+        && counts.active_waves == 0
+    {
+        PortfolioDeliveryState::Blocked
+    } else {
+        PortfolioDeliveryState::Mixed
+    }
+}
+
+fn reduce_design_authority(control_events: &[ControlEvent]) -> DesignAuthorityIndex {
+    let mut sorted_events = control_events.to_vec();
+    sorted_events.sort_by_key(|event| (event.created_at_ms, event.event_id.clone()));
+
+    let mut facts = BTreeMap::new();
+    let mut contradictions = BTreeMap::new();
+    let mut human_inputs = BTreeMap::new();
+    let mut lineages = BTreeMap::new();
+
+    for event in sorted_events {
+        match event.payload {
+            ControlEventPayload::FactObserved { fact } => {
+                facts.insert(fact.fact_id.clone(), fact);
+            }
+            ControlEventPayload::ContradictionUpdated { contradiction } => {
+                contradictions.insert(contradiction.contradiction_id.clone(), contradiction);
+            }
+            ControlEventPayload::HumanInputUpdated { request } => {
+                human_inputs.insert(request.request_id.clone(), request);
+            }
+            ControlEventPayload::LineageUpdated { lineage } => {
+                lineages.insert(lineage_subject_key(&lineage), lineage);
+            }
+            _ => {}
+        }
+    }
+
+    let mut waves = BTreeMap::<u32, DesignWaveAuthority>::new();
+    let mut impacted_tasks = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut impacted_waves = BTreeMap::<u32, BTreeSet<String>>::new();
+    let mut invalidated_facts = BTreeSet::<String>::new();
+    let mut invalidated_decisions = BTreeSet::<String>::new();
+    let mut invalidated_by_fact = BTreeSet::<String>::new();
+    let mut decision_records = BTreeMap::<String, LineageRecord>::new();
+
+    for contradiction in contradictions
+        .values()
+        .filter(|record| record.state.is_active())
+    {
+        for invalidated in &contradiction.invalidated_refs {
+            match invalidated {
+                LineageRef::Fact(fact_id) => {
+                    invalidated_facts.insert(fact_id.as_str().to_string());
+                }
+                LineageRef::Decision(decision_id) => {
+                    invalidated_decisions.insert(decision_id.as_str().to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for lineage in lineages.values() {
+        if let Some(decision_id) = lineage.decision_id() {
+            decision_records.insert(decision_id.as_str().to_string(), lineage.clone());
+        }
+    }
+
+    for lineage in decision_records.values() {
+        if let Some(decision_id) = lineage.decision_id() {
+            if matches!(
+                lineage.subject,
+                LineageRecordSubject::SupersededDecision { .. }
+            ) || matches!(
+                lineage.state,
+                LineageState::Superseded | LineageState::Invalidated
+            ) {
+                invalidated_decisions.insert(decision_id.as_str().to_string());
+            }
+
+            let depends_on_invalidated_fact = lineage
+                .supporting_fact_ids
+                .iter()
+                .any(|fact_id| invalidated_facts.contains(fact_id.as_str()))
+                || lineage
+                    .upstream_refs
+                    .iter()
+                    .any(|reference| match reference {
+                        LineageRef::Fact(fact_id) => invalidated_facts.contains(fact_id.as_str()),
+                        _ => false,
+                    });
+            if depends_on_invalidated_fact {
+                invalidated_by_fact.insert(decision_id.as_str().to_string());
+            }
+        }
+    }
+
+    invalidated_decisions.extend(invalidated_by_fact);
+
+    for request in human_inputs
+        .values()
+        .filter(|request| !request.state.is_resolved())
+    {
+        waves
+            .entry(request.wave_id)
+            .or_default()
+            .pending_human_input_request_ids
+            .insert(request.request_id.as_str().to_string());
+    }
+
+    for fact in facts.values() {
+        if invalidated_facts.contains(fact.fact_id.as_str()) {
+            waves
+                .entry(fact.wave_id)
+                .or_default()
+                .invalidated_fact_ids
+                .insert(fact.fact_id.as_str().to_string());
+        }
+    }
+
+    for lineage in lineages.values() {
+        let wave_state = waves.entry(lineage.wave_id).or_default();
+        let requires_pending_human_input = lineage
+            .required_human_input_request_ids
+            .iter()
+            .filter(|request_id| {
+                human_inputs
+                    .get(*request_id)
+                    .map(|request| !request.state.is_resolved())
+                    .unwrap_or(true)
+            })
+            .map(|request_id| request_id.as_str().to_string())
+            .collect::<Vec<_>>();
+        for request_id in requires_pending_human_input {
+            wave_state
+                .pending_human_input_request_ids
+                .insert(request_id);
+        }
+
+        if let Some(question_id) = lineage.question_id() {
+            if matches!(
+                lineage.state,
+                LineageState::Open | LineageState::PendingHuman
+            ) {
+                wave_state
+                    .unresolved_question_ids
+                    .insert(question_id.as_str().to_string());
+            }
+        }
+
+        if let Some(assumption_id) = lineage.assumption_id() {
+            if matches!(
+                lineage.state,
+                LineageState::Open | LineageState::PendingHuman
+            ) {
+                wave_state
+                    .unresolved_assumption_ids
+                    .insert(assumption_id.as_str().to_string());
+            }
+        }
+
+        if let Some(decision_id) = lineage.decision_id() {
+            let decision_id = decision_id.as_str().to_string();
+            if invalidated_decisions.contains(&decision_id) {
+                wave_state
+                    .invalidated_decision_ids
+                    .insert(decision_id.clone());
+                for task_id in &lineage.downstream_task_ids {
+                    impacted_tasks
+                        .entry(task_id.as_str().to_string())
+                        .or_default()
+                        .insert(decision_id.clone());
+                }
+                for wave_id in &lineage.downstream_wave_ids {
+                    impacted_waves
+                        .entry(*wave_id)
+                        .or_default()
+                        .insert(decision_id.clone());
+                }
+            } else if matches!(lineage.state, LineageState::Decided) {
+                wave_state.active_decision_ids.insert(decision_id.clone());
+            }
+
+            if matches!(
+                lineage.subject,
+                LineageRecordSubject::SupersededDecision { .. }
+            ) || matches!(lineage.state, LineageState::Superseded)
+            {
+                wave_state.superseded_decision_ids.insert(decision_id);
+            }
+        }
+    }
+
+    DesignAuthorityIndex {
+        waves,
+        impacted_tasks,
+        impacted_waves,
+    }
+}
+
+fn reduce_recovery_authority(control_events: &[ControlEvent]) -> RecoveryAuthorityState {
+    let mut sorted_events = control_events.to_vec();
+    sorted_events.sort_by_key(|event| (event.created_at_ms, event.event_id.clone()));
+    let mut plans_by_wave = BTreeMap::<u32, RecoveryPlanRecord>::new();
+
+    for event in sorted_events {
+        if let ControlEventPayload::RecoveryPlanUpdated { recovery_plan } = event.payload {
+            let replace = plans_by_wave
+                .get(&recovery_plan.wave_id)
+                .map(|current| {
+                    (
+                        recovery_plan.updated_at_ms.max(recovery_plan.created_at_ms),
+                        recovery_plan.recovery_plan_id.as_str(),
+                    ) >= (
+                        current.updated_at_ms.max(current.created_at_ms),
+                        current.recovery_plan_id.as_str(),
+                    )
+                })
+                .unwrap_or(true);
+            if replace {
+                plans_by_wave.insert(recovery_plan.wave_id, recovery_plan);
+            }
+        }
+    }
+
+    RecoveryAuthorityState { plans_by_wave }
+}
+
+fn build_wave_recovery_state(
+    authority: &RecoveryAuthorityState,
+    wave_id: u32,
+) -> WaveRecoveryState {
+    let Some(plan) = authority.plans_by_wave.get(&wave_id) else {
+        return WaveRecoveryState::default();
+    };
+    let mut required_actions = plan
+        .agent_plans
+        .iter()
+        .flat_map(|agent| agent.required_actions.iter().copied())
+        .collect::<Vec<_>>();
+    required_actions.sort_by_key(|action| format!("{action:?}"));
+    required_actions.dedup();
+
+    WaveRecoveryState {
+        required: !matches!(plan.status, RecoveryPlanStatus::Resolved),
+        status: Some(plan.status),
+        causes: plan.causes.clone(),
+        affected_agent_ids: plan.affected_agent_ids.clone(),
+        preserved_accepted_agent_ids: plan.preserved_accepted_agent_ids.clone(),
+        required_actions,
+        source_run_id: Some(plan.run_id.clone()),
+        detail: plan.detail.clone(),
+    }
+}
+
+fn build_wave_design_state(
+    authority: &DesignAuthorityIndex,
+    wave: &WaveDocument,
+    completed: bool,
+) -> WaveDesignAuthorityState {
+    let wave_authority = authority
+        .waves
+        .get(&wave.metadata.id)
+        .cloned()
+        .unwrap_or_default();
+    let wave_task_ids = wave
+        .agents
+        .iter()
+        .map(|agent| task_id_for_agent(wave.metadata.id, agent.id.as_str()))
+        .map(|task_id| task_id.as_str().to_string())
+        .collect::<BTreeSet<_>>();
+
+    let selectively_invalidated_task_ids = wave_task_ids
+        .iter()
+        .filter(|task_id| authority.impacted_tasks.contains_key(*task_id))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut invalidated_decision_ids = wave_authority
+        .invalidated_decision_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for task_id in &selectively_invalidated_task_ids {
+        if let Some(decision_ids) = authority.impacted_tasks.get(task_id) {
+            invalidated_decision_ids.extend(decision_ids.iter().cloned());
+        }
+    }
+    if let Some(decision_ids) = authority.impacted_waves.get(&wave.metadata.id) {
+        invalidated_decision_ids.extend(decision_ids.iter().cloned());
+    }
+
+    let ambiguous_dependency_wave_ids = wave
+        .metadata
+        .depends_on
+        .iter()
+        .copied()
+        .filter(|wave_id| authority.wave_has_ambiguity(*wave_id))
+        .collect::<Vec<_>>();
+
+    let completeness = if completed {
+        DesignCompletenessState::Verified
+    } else if !wave_authority.unresolved_question_ids.is_empty()
+        || !wave_authority.pending_human_input_request_ids.is_empty()
+        || !wave_authority.invalidated_fact_ids.is_empty()
+        || !invalidated_decision_ids.is_empty()
+        || !ambiguous_dependency_wave_ids.is_empty()
+        || !selectively_invalidated_task_ids.is_empty()
+    {
+        DesignCompletenessState::Underspecified
+    } else if !wave_authority.unresolved_assumption_ids.is_empty() {
+        DesignCompletenessState::Fragmented
+    } else if !wave_authority.active_decision_ids.is_empty() {
+        DesignCompletenessState::ImplementationReady
+    } else {
+        DesignCompletenessState::StructurallyComplete
+    };
+
+    let mut blocker_reasons = Vec::new();
+    blocker_reasons.extend(
+        wave_authority
+            .unresolved_question_ids
+            .iter()
+            .map(|question_id| format!("design:open-question:{question_id}")),
+    );
+    blocker_reasons.extend(
+        wave_authority
+            .unresolved_assumption_ids
+            .iter()
+            .map(|assumption_id| format!("design:open-assumption:{assumption_id}")),
+    );
+    blocker_reasons.extend(
+        wave_authority
+            .pending_human_input_request_ids
+            .iter()
+            .map(|request_id| format!("design:human-input:{request_id}")),
+    );
+    blocker_reasons.extend(
+        wave_authority
+            .invalidated_fact_ids
+            .iter()
+            .map(|fact_id| format!("design:invalidated-fact:{fact_id}")),
+    );
+    blocker_reasons.extend(
+        invalidated_decision_ids
+            .iter()
+            .map(|decision_id| format!("design:invalidated-decision:{decision_id}")),
+    );
+    blocker_reasons.extend(
+        selectively_invalidated_task_ids
+            .iter()
+            .map(|task_id| format!("design:downstream-task-invalidated:{task_id}")),
+    );
+    blocker_reasons.extend(
+        ambiguous_dependency_wave_ids
+            .iter()
+            .map(|wave_id| format!("design:dependency-ambiguity:wave-{wave_id}")),
+    );
+    blocker_reasons.sort();
+    blocker_reasons.dedup();
+
+    WaveDesignAuthorityState {
+        completeness,
+        unresolved_question_ids: wave_authority
+            .unresolved_question_ids
+            .iter()
+            .cloned()
+            .collect(),
+        unresolved_assumption_ids: wave_authority
+            .unresolved_assumption_ids
+            .iter()
+            .cloned()
+            .collect(),
+        pending_human_input_request_ids: wave_authority
+            .pending_human_input_request_ids
+            .iter()
+            .cloned()
+            .collect(),
+        active_decision_ids: wave_authority.active_decision_ids.iter().cloned().collect(),
+        superseded_decision_ids: wave_authority
+            .superseded_decision_ids
+            .iter()
+            .cloned()
+            .collect(),
+        invalidated_fact_ids: wave_authority
+            .invalidated_fact_ids
+            .iter()
+            .cloned()
+            .collect(),
+        invalidated_decision_ids: invalidated_decision_ids.into_iter().collect(),
+        selectively_invalidated_task_ids,
+        ambiguous_dependency_wave_ids,
+        blocker_reasons,
+    }
+}
+
+fn lineage_subject_key(lineage: &LineageRecord) -> String {
+    match &lineage.subject {
+        LineageRecordSubject::Question { question_id } => {
+            format!("question:{}", question_id.as_str())
+        }
+        LineageRecordSubject::Assumption { assumption_id } => {
+            format!("assumption:{}", assumption_id.as_str())
+        }
+        LineageRecordSubject::Decision { decision_id } => {
+            format!("decision:{}", decision_id.as_str())
+        }
+        LineageRecordSubject::SupersededDecision { decision_id, .. } => {
+            format!("decision:{}", decision_id.as_str())
+        }
+    }
+}
+
+impl DesignAuthorityIndex {
+    fn wave_has_ambiguity(&self, wave_id: u32) -> bool {
+        self.waves
+            .get(&wave_id)
+            .map(|wave| {
+                !wave.unresolved_question_ids.is_empty()
+                    || !wave.unresolved_assumption_ids.is_empty()
+                    || !wave.pending_human_input_request_ids.is_empty()
+                    || !wave.invalidated_fact_ids.is_empty()
+                    || !wave.invalidated_decision_ids.is_empty()
+                    || !wave.superseded_decision_ids.is_empty()
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -742,6 +1740,18 @@ fn classify_blockers(blocked_by: &[String]) -> Vec<WaveBlockerState> {
             if let Some(detail) = blocker.strip_prefix("wave:") {
                 WaveBlockerState {
                     kind: WaveBlockerKind::Dependency,
+                    raw: blocker.clone(),
+                    detail: Some(detail.to_string()),
+                }
+            } else if let Some(detail) = blocker.strip_prefix("design:") {
+                WaveBlockerState {
+                    kind: WaveBlockerKind::Design,
+                    raw: blocker.clone(),
+                    detail: Some(detail.to_string()),
+                }
+            } else if let Some(detail) = blocker.strip_prefix("recovery:") {
+                WaveBlockerState {
+                    kind: WaveBlockerKind::Recovery,
                     raw: blocker.clone(),
                     detail: Some(detail.to_string()),
                 }
@@ -803,6 +1813,8 @@ fn classify_blocker_flags(blocker_state: &[WaveBlockerState]) -> WaveBlockerFlag
     for blocker in blocker_state {
         match blocker.kind {
             WaveBlockerKind::Dependency => flags.dependency = true,
+            WaveBlockerKind::Design => flags.design = true,
+            WaveBlockerKind::Recovery => flags.recovery = true,
             WaveBlockerKind::Lint => flags.lint = true,
             WaveBlockerKind::Closure => flags.closure = true,
             WaveBlockerKind::Ownership => flags.ownership = true,
@@ -822,13 +1834,15 @@ fn classify_wave_readiness(
     planning_ready: bool,
     ownership: &WaveOwnershipState,
     blocker_state: &[WaveBlockerState],
+    rerun_requested: bool,
 ) -> WaveReadinessState {
     let claimed = ownership.claim.is_some();
     let active_by_lease = !ownership.active_leases.is_empty();
     let blocking_stale_leases = ownership
         .stale_leases
         .iter()
-        .any(|lease| lease.state == TaskLeaseState::Expired);
+        .any(|lease| lease.state == TaskLeaseState::Expired)
+        && !rerun_requested;
     let claimable = planning_ready
         && !completed
         && !actively_running
@@ -876,6 +1890,10 @@ fn accumulate_blockers(summary: &mut QueueBlockerSummary, blocked_by: &[String])
     for blocker in blocked_by {
         if blocker.starts_with("wave:") {
             summary.dependency += 1;
+        } else if blocker.starts_with("design:") {
+            summary.design += 1;
+        } else if blocker.starts_with("recovery:") {
+            summary.recovery += 1;
         } else if blocker == "lint:error" {
             summary.lint += 1;
         } else if blocker.starts_with("closure:") {
@@ -903,6 +1921,12 @@ fn accumulate_blocker_waves(
 ) {
     if flags.dependency {
         summary.dependency.push(wave.clone());
+    }
+    if flags.design {
+        summary.design.push(wave.clone());
+    }
+    if flags.recovery {
+        summary.recovery.push(wave.clone());
     }
     if flags.lint {
         summary.lint.push(wave.clone());
@@ -1159,12 +2183,23 @@ fn build_budget_state(
 
 fn combined_blockers(
     planning_blockers: &[String],
+    design_blockers: &[String],
+    recovery: &WaveRecoveryState,
     ownership: &WaveOwnershipState,
     execution: &WaveExecutionState,
     planning_ready: bool,
     rerun_requested: bool,
 ) -> Vec<String> {
     let mut blocked_by = planning_blockers.to_vec();
+    blocked_by.extend(design_blockers.iter().cloned());
+    if recovery.required && !rerun_requested {
+        let cause = recovery
+            .causes
+            .first()
+            .map(|cause| format!("{cause:?}").to_ascii_lowercase())
+            .unwrap_or_else(|| "required".to_string());
+        blocked_by.push(format!("recovery:{cause}"));
+    }
 
     if let Some(owner) = ownership.blocked_by_owner.as_ref() {
         blocked_by.push(format!("ownership:claimed-by:{}", owner.scheduler_path));
@@ -1173,7 +2208,7 @@ fn combined_blockers(
         blocked_by.push(format!("ownership:contention:{reason}"));
     }
     for lease in &ownership.stale_leases {
-        if lease.state == TaskLeaseState::Expired {
+        if lease.state == TaskLeaseState::Expired && !rerun_requested {
             blocked_by.push(format!(
                 "lease-expired:{}:{}",
                 lease.task_id,
@@ -1319,6 +2354,15 @@ mod tests {
     use wave_dark_factory::FindingSeverity;
     use wave_domain::ClosureDisposition;
     use wave_domain::GateDisposition;
+    use wave_domain::InitiativeId;
+    use wave_domain::MilestoneId;
+    use wave_domain::OutcomeContract;
+    use wave_domain::OutcomeContractId;
+    use wave_domain::PortfolioDeliveryModel;
+    use wave_domain::PortfolioInitiative;
+    use wave_domain::PortfolioMilestone;
+    use wave_domain::ReleaseTrain;
+    use wave_domain::ReleaseTrainId;
     use wave_domain::SchedulerBudget;
     use wave_domain::SchedulerBudgetId;
     use wave_domain::SchedulerBudgetRecord;
@@ -1921,6 +2965,56 @@ mod tests {
     }
 
     #[test]
+    fn rerun_request_suppresses_expired_stale_lease_blockers_after_claim_release() {
+        let waves = vec![test_wave(0, Vec::new())];
+        let latest_runs = HashMap::from([(
+            0,
+            run_record_with_agents(
+                0,
+                WaveRunStatus::Failed,
+                vec![
+                    closure_agent_run_record("A0", "[wave-gate]"),
+                    closure_agent_run_record("A8", "[wave-integration]"),
+                    closure_agent_run_record("A9", "[wave-doc-closure]"),
+                ],
+            ),
+        )]);
+        let scheduler_events = vec![
+            claim_acquired_event(0, "claim-wave-0", "wave-0-run", 10),
+            lease_event(
+                0,
+                "claim-wave-0",
+                "wave-0-run",
+                "A1",
+                TaskLeaseState::Expired,
+                11,
+                Some(12),
+            ),
+            claim_released_event(0, "claim-wave-0", "wave-0-run", 13),
+        ];
+
+        let state = reduce_with_scheduler(
+            &waves,
+            &[],
+            &[],
+            latest_runs,
+            HashSet::from([0]),
+            scheduler_events,
+        );
+
+        let wave = &state.waves[0];
+        assert!(wave.lifecycle.rerun_requested);
+        assert_eq!(wave.readiness.state, QueueReadinessState::Ready);
+        assert_eq!(wave.ownership.stale_leases.len(), 1);
+        assert!(!wave.blockers.lease_expired);
+        assert!(
+            wave.blocked_by
+                .iter()
+                .all(|reason| !reason.starts_with("lease-expired:"))
+        );
+    }
+
+    #[test]
     fn manual_close_override_keeps_failed_latest_run_but_unblocks_dependents() {
         let waves = vec![test_wave(15, Vec::new()), test_wave(16, vec![15])];
         let latest_runs = HashMap::from([(15, run_record(15, WaveRunStatus::Failed))]);
@@ -1947,9 +3041,17 @@ mod tests {
 
         assert!(overridden.lifecycle.closure_override_applied);
         assert!(overridden.lifecycle.completed);
-        assert_eq!(overridden.lifecycle.last_run_status, Some(WaveRunStatus::Failed));
+        assert_eq!(
+            overridden.lifecycle.last_run_status,
+            Some(WaveRunStatus::Failed)
+        );
         assert_eq!(overridden.readiness.state, QueueReadinessState::Completed);
-        assert!(!dependent.blocked_by.iter().any(|reason| reason.starts_with("wave:15:")));
+        assert!(
+            !dependent
+                .blocked_by
+                .iter()
+                .any(|reason| reason.starts_with("wave:15:"))
+        );
         assert_eq!(dependent.readiness.state, QueueReadinessState::Ready);
         assert!(state.queue.readiness.claimable_wave_ids.contains(&16));
     }
@@ -2172,6 +3274,12 @@ mod tests {
                 validation: vec!["cargo test".to_string()],
                 rollback: vec!["git revert".to_string()],
                 proof: vec!["proof.json".to_string()],
+                wave_class: wave_spec::WaveClass::Implementation,
+                intent: None,
+                delivery: None,
+                design_gate: None,
+                execution_model: wave_spec::WaveExecutionModel::Serial,
+                concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
             },
             heading_title: Some(format!("Wave {id}")),
             commit_message: Some("Feat: test".to_string()),
@@ -2219,6 +3327,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: [
                         "Primary goal:",
                         "- Land the reducer.",
@@ -2260,6 +3375,13 @@ mod tests {
             deliverables: Vec::new(),
             file_ownership: vec![format!(".wave/reviews/{id}.md")],
             final_markers: vec![marker.to_string()],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::ClosureBarrier,
+            parallel_safety: wave_spec::ParallelSafetyClass::Serialized,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: [
                 "Primary goal:",
                 "- Close the wave honestly.",
@@ -2277,6 +3399,91 @@ mod tests {
     #[test]
     fn required_closure_agent_ids_stay_stable() {
         assert_eq!(REQUIRED_CLOSURE_AGENT_IDS, ["A0", "A8", "A9"]);
+    }
+
+    #[test]
+    fn portfolio_reducer_aggregates_multiple_waves_into_one_initiative_view() {
+        let waves = vec![test_wave(17, Vec::new()), test_wave(18, vec![17])];
+        let latest_runs = HashMap::from([(17, run_record(17, WaveRunStatus::Succeeded))]);
+        let planning_state = with_portfolio_delivery_model(
+            reduce(&waves, &[], &[], latest_runs, HashSet::new()),
+            &portfolio_model_for_waves(&[17, 18]),
+        );
+        let portfolio_state = &planning_state.portfolio;
+
+        assert_eq!(portfolio_state.summary.initiative_count, 1);
+        assert_eq!(portfolio_state.summary.mapped_wave_count, 2);
+        assert!(portfolio_state.unmapped_wave_ids.is_empty());
+
+        let initiative = portfolio_state
+            .initiatives
+            .first()
+            .expect("portfolio initiative");
+        assert_eq!(initiative.delivery.wave_ids, vec![17, 18]);
+        assert_eq!(initiative.delivery.completed_wave_ids, vec![17]);
+        assert_eq!(initiative.delivery.ready_wave_ids, vec![18]);
+        assert_eq!(initiative.delivery.state, PortfolioDeliveryState::Mixed);
+
+        let release_train = portfolio_state
+            .release_trains
+            .first()
+            .expect("release train");
+        assert_eq!(release_train.delivery.wave_ids, vec![17, 18]);
+        assert_eq!(release_train.delivery.state, PortfolioDeliveryState::Mixed);
+
+        let outcome_contract = portfolio_state
+            .outcome_contracts
+            .first()
+            .expect("outcome contract");
+        assert_eq!(outcome_contract.delivery.wave_ids, vec![17, 18]);
+        assert_eq!(
+            outcome_contract.delivery.state,
+            PortfolioDeliveryState::Mixed
+        );
+    }
+
+    fn portfolio_model_for_waves(wave_ids: &[u32]) -> PortfolioDeliveryModel {
+        PortfolioDeliveryModel {
+            initiatives: vec![PortfolioInitiative {
+                initiative_id: InitiativeId::new("initiative-portfolio-release"),
+                slug: "portfolio-release".to_string(),
+                title: "Portfolio release".to_string(),
+                summary: Some("One initiative spans multiple coherent waves.".to_string()),
+                wave_ids: vec![wave_ids[0]],
+                milestone_ids: vec![MilestoneId::new("milestone-rollout-readiness")],
+                release_train_id: Some(ReleaseTrainId::new("train-wave-17")),
+                outcome_contract_ids: vec![OutcomeContractId::new("contract-wave-17")],
+            }],
+            milestones: vec![PortfolioMilestone {
+                milestone_id: MilestoneId::new("milestone-rollout-readiness"),
+                initiative_id: InitiativeId::new("initiative-portfolio-release"),
+                slug: "rollout-readiness".to_string(),
+                title: "Rollout readiness".to_string(),
+                summary: None,
+                wave_ids: vec![wave_ids[1]],
+            }],
+            release_trains: vec![ReleaseTrain {
+                release_train_id: ReleaseTrainId::new("train-wave-17"),
+                slug: "train-wave-17".to_string(),
+                title: "Train wave 17".to_string(),
+                summary: Some(
+                    "Release train that picks up both milestone and initiative waves.".to_string(),
+                ),
+                wave_ids: Vec::new(),
+                initiative_ids: vec![InitiativeId::new("initiative-portfolio-release")],
+                milestone_ids: vec![MilestoneId::new("milestone-rollout-readiness")],
+            }],
+            outcome_contracts: vec![OutcomeContract {
+                outcome_contract_id: OutcomeContractId::new("contract-wave-17"),
+                slug: "outcome-wave-17".to_string(),
+                title: "Outcome contract".to_string(),
+                summary: Some("Outcome contract stays aligned with the release train.".to_string()),
+                wave_ids: Vec::new(),
+                initiative_ids: vec![InitiativeId::new("initiative-portfolio-release")],
+                milestone_ids: vec![MilestoneId::new("milestone-rollout-readiness")],
+                release_train_id: Some(ReleaseTrainId::new("train-wave-17")),
+            }],
+        }
     }
 
     fn scheduler_owner(session_id: &str) -> SchedulerOwner {

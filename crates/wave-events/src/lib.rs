@@ -130,6 +130,7 @@ pub enum ControlEventKind {
     GateEvaluated,
     ClosureBlocked,
     FactObserved,
+    LineageUpdated,
     ContradictionUpdated,
     ProofRecorded,
     RerunRequested,
@@ -137,6 +138,7 @@ pub enum ControlEventKind {
     ClosureOverrideApplied,
     ClosureOverrideCleared,
     HumanInputUpdated,
+    OperatorActionRecorded,
     ResultEnvelopeRecorded,
     WaveCompleted,
 }
@@ -1300,6 +1302,7 @@ mod tests {
             summary: Some("authority core".to_string()),
             proof_bundle_ids: vec![ProofBundleId::new("proof-1")],
             result_envelope_id: None,
+            runtime: None,
         }
     }
 

@@ -23,6 +23,8 @@ Why the bundle is classified this way on March 26, 2026:
 
 This means both adapters are live in code, the parity bundle remains fixture-backed, and the closeout/unblock evidence is live.
 
+The repo-local operator shell now also has live manual-close parity with the CLI for this control path: the `Control` tab exposes confirm-first `m` and `M` actions, the runtime helper behind those actions only accepts repo-relative existing-file evidence paths or the derived default evidence bundle from the selected terminal source run, and override application is now transactional with rerun preservation instead of best-effort clearing before the override write.
+
 ## Files
 
 - [runtime-boundary-proof.json](./runtime-boundary-proof.json)
@@ -50,6 +52,8 @@ This means both adapters are live in code, the parity bundle remains fixture-bac
 - Operator transport carries the same selected runtime and fallback state that the runtime persisted.
 - A failed Wave 15 latest run can be waived explicitly through durable closure-override metadata without being rewritten as success.
 - Downstream dependency gating accepts that explicit override and makes Wave 16 claimable while Wave 15 still shows `last_run_status=failed`.
+- The same manual-close path is now operable from the TUI/operator shell, not just the CLI, and its evidence policy is fail-closed rather than free-form strings.
+- The same operator shell now also uses typed human-input workflow semantics for dependency handshakes and lets operators move between multiple actionable approvals or escalations with `[` and `]` before `u` or `x` acts on the selected item.
 
 ## Remaining Wave 15 Limits
 
