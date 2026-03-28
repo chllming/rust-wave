@@ -41,7 +41,7 @@ The shell is split into two intentional surfaces:
 - left side: `header + transcript + composer`
 - right side: stable dashboard with `Overview`, `Agents`, `Queue`, `Proof`, and `Control`
 
-In narrow terminals, the shell collapses into the single-pane summary fallback instead of drawing a broken split layout.
+In narrow terminals, the shell collapses into a one-column shell with the same transcript, composer, and dashboard surfaces instead of drawing a broken split layout.
 
 ### Shell scopes
 
@@ -60,7 +60,7 @@ The shell has three explicit scopes:
 - `/scope head|wave|agent`
 - `/mode operator|autonomous`
 - `/launch [wave-id]`
-- `/rerun [full|closure-only|promotion-only]`
+- `/rerun [full|from-first-incomplete|closure-only|promotion-only]`
 - `/clear-rerun`
 - `/pause`
 - `/resume`
@@ -79,6 +79,20 @@ The shell has three explicit scopes:
 - `/compare wave <id> | /compare agent <id>`
 - `/clear-compare`
 - `/help`
+
+### Targeting model
+
+- plain text guidance follows the current shell target
+- wave hotkeys and implicit wave commands use the visibly selected dashboard wave
+- `/wave` and `/agent` retarget the shell and also move the visible selection to the same wave or agent context
+- dashboard wave or agent navigation keeps wave-scoped actions aligned with the visible selection instead of silently acting on stale shell target state
+
+### Follow modes
+
+- `/follow run` follows the active run wave and current running agent when present
+- `/follow agent` pins the selected MAS agent and its wave across refreshes
+- `/follow off` preserves manual selection and transcript position
+- in `run` and `agent` modes, the transcript auto-scrolls to the latest item unless the transcript lane is focused
 
 ### Operator mode
 

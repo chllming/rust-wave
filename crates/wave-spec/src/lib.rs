@@ -241,6 +241,14 @@ impl WaveAgent {
         matches!(self.id.as_str(), "A0" | "A8" | "A9")
     }
 
+    pub fn is_closure_followup_agent(&self) -> bool {
+        matches!(self.id.as_str(), "A6" | "A7" | "A8" | "A9" | "A0")
+    }
+
+    pub fn blocks_integration_barrier(&self) -> bool {
+        !self.is_closure_followup_agent()
+    }
+
     pub fn expected_final_markers(&self) -> &'static [&'static str] {
         match self.id.as_str() {
             "A0" => &["[wave-gate]"],
@@ -305,6 +313,24 @@ impl WaveAgent {
                 .iter()
                 .any(|skill| skill.eq_ignore_ascii_case("role-design"))
     }
+}
+
+pub fn owned_path_conflict(left: &str, right: &str) -> bool {
+    let left = normalize_owned_path(left);
+    let right = normalize_owned_path(right);
+
+    left == right
+        || left.starts_with(&(right.clone() + "/"))
+        || right.starts_with(&(left.clone() + "/"))
+}
+
+pub fn agent_ownership_overlaps(left: &WaveAgent, right: &WaveAgent) -> bool {
+    left.file_ownership.iter().any(|left_path| {
+        right
+            .file_ownership
+            .iter()
+            .any(|right_path| owned_path_conflict(left_path, right_path))
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

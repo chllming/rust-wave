@@ -2477,7 +2477,7 @@ fn default_shell_commands() -> Vec<OperatorShellCommand> {
         },
         OperatorShellCommand {
             name: "/rerun".to_string(),
-            usage: "/rerun [full|closure-only|promotion-only]".to_string(),
+            usage: "/rerun [full|from-first-incomplete|closure-only|promotion-only]".to_string(),
             summary: "request rerun for the selected wave".to_string(),
         },
         OperatorShellCommand {
@@ -2543,7 +2543,7 @@ fn default_shell_commands() -> Vec<OperatorShellCommand> {
         OperatorShellCommand {
             name: "/follow".to_string(),
             usage: "/follow run|agent|off".to_string(),
-            summary: "control transcript follow behavior".to_string(),
+            summary: "follow the active run, a pinned MAS agent, or manual selection".to_string(),
         },
         OperatorShellCommand {
             name: "/search".to_string(),
@@ -2634,7 +2634,7 @@ fn build_agent_barrier_reasons(
             let open_implementation = wave
                 .agents
                 .iter()
-                .filter(|candidate| !candidate.is_closure_agent())
+                .filter(|candidate| candidate.blocks_integration_barrier())
                 .filter(|candidate| !completed.contains(&candidate.id))
                 .map(|candidate| candidate.id.clone())
                 .collect::<Vec<_>>();
@@ -4312,6 +4312,74 @@ mod tests {
             error: error.map(str::to_string),
             runtime: None,
         }
+    }
+
+    #[test]
+    fn integration_barrier_reasons_include_e0_frontier() {
+        let make_agent = |id: &str, barrier_class: BarrierClass| WaveAgent {
+            id: id.to_string(),
+            title: format!("Agent {id}"),
+            role_prompts: Vec::new(),
+            executor: std::collections::BTreeMap::new(),
+            context7: None,
+            skills: vec!["wave-core".to_string()],
+            components: Vec::new(),
+            capabilities: Vec::new(),
+            exit_contract: None,
+            deliverables: Vec::new(),
+            file_ownership: vec![format!("tmp/{id}.md")],
+            final_markers: vec![format!("[marker-{id}]")],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class,
+            parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
+            prompt: "test prompt".to_string(),
+        };
+
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/18.md"),
+            metadata: WaveMetadata {
+                id: 18,
+                slug: "wave-18".to_string(),
+                title: "Wave 18".to_string(),
+                ..default_wave_metadata()
+            },
+            heading_title: Some("Wave 18".to_string()),
+            commit_message: Some("Feat: Wave 18".to_string()),
+            component_promotions: Vec::new(),
+            deploy_environments: Vec::new(),
+            context7_defaults: None,
+            agents: vec![
+                make_agent("A1", BarrierClass::Independent),
+                make_agent("E0", BarrierClass::ClosureBarrier),
+                make_agent("A8", BarrierClass::IntegrationBarrier),
+                make_agent("A9", BarrierClass::ClosureBarrier),
+                make_agent("A0", BarrierClass::ClosureBarrier),
+            ],
+        };
+        let integration_agent = wave
+            .agents
+            .iter()
+            .find(|agent| agent.id == "A8")
+            .expect("integration agent");
+        let run = closure_test_run(vec![
+            closure_test_agent("A1", WaveRunStatus::Succeeded, true, None),
+            closure_test_agent("E0", WaveRunStatus::Planned, false, None),
+            closure_test_agent("A8", WaveRunStatus::Planned, false, None),
+            closure_test_agent("A9", WaveRunStatus::Planned, false, None),
+            closure_test_agent("A0", WaveRunStatus::Planned, false, None),
+        ]);
+
+        let reasons = build_agent_barrier_reasons(&wave, Some(&run), integration_agent, None);
+
+        assert!(
+            reasons
+                .iter()
+                .any(|reason| reason == "awaiting implementation frontier E0")
+        );
     }
 
     #[test]

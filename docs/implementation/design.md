@@ -750,9 +750,9 @@ This UX design should shape the coming waves as follows.
 
 ### Wave 14
 
-Must make parallel-wave, worktree, fairness, and merge state visible enough that the `Overview`, `Wave`, and `Blockers` views can explain concurrency honestly.
+Must make parallel-wave, worktree, fairness, and merge state visible enough that the `Overview`, `Queue`, and blocker-triage views can explain concurrency honestly.
 
-The current Wave 14 landing now surfaces the first repo-local slice of that truth in the live shell: selected-wave and run views show worktree identity, promotion state, scheduler phase, fairness, protected closure state, and merge blocking from reducer-backed projections. The fuller `Overview` and `Blockers` ergonomics in this document still belong to a dedicated later UX wave.
+The current Wave 14 landing now surfaces the first repo-local slice of that truth in the live shell: `Overview`, `Agents`, `Queue`, and `Proof` show worktree identity, promotion state, scheduler phase, fairness, protected closure state, and merge blocking from reducer-backed projections. The fuller blocker-triage ergonomics in this document still belong to a dedicated later UX wave.
 
 ### Wave 15
 
@@ -765,7 +765,7 @@ That live path is now transactional with rerun preservation rather than best-eff
 
 Must make contradictions, human-input requests, dependency handshakes, and invalidation visible enough that blocker triage and approval flows are first-class.
 
-The current repo-local shell now carries the first live Wave 16-grade operator selection slice as well: dependency-handshake classification is typed workflow state rather than route-name folklore, and the `Control` and `Blockers` views can step through multiple actionable approvals or escalations on the selected wave via `[` and `]` before `u` or `x` confirms the chosen action.
+The current repo-local shell now carries the first live Wave 16-grade operator selection slice as well: dependency-handshake classification is typed workflow state rather than route-name folklore, and the `Control` view can step through multiple actionable approvals or escalations on the selected wave via `[` and `]` before `u` or `x` confirms the chosen action.
 
 ### Wave 17
 

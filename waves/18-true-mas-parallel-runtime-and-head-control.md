@@ -362,16 +362,15 @@ File ownership (only touch these paths):
 - crates/wave-runtime/src/lib.rs
 
 ### Depends on agents
-- none
 
 ### Reads artifacts from
-- none
 
 ### Writes artifacts
 - sandbox-state
 - merge-queue-state
 - invalidation-state
 - ready-set-state
+- mas-proof-bundle
 
 ### Barrier class
 independent
@@ -469,7 +468,6 @@ File ownership (only touch these paths):
 - docs/implementation/design.md
 
 ### Depends on agents
-- none
 
 ### Reads artifacts from
 - sandbox-state
@@ -480,6 +478,8 @@ File ownership (only touch these paths):
 - orchestrator-session-state
 - directive-history
 - head-control-state
+- orchestrator-control-state
+- orchestrator-proof-bundle
 
 ### Barrier class
 independent

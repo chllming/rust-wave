@@ -5038,13 +5038,7 @@ fn read_agent_base_prompt(
 }
 
 fn ownership_overlaps(left: &WaveAgent, right: &WaveAgent) -> bool {
-    left.file_ownership.iter().any(|left_path| {
-        right.file_ownership.iter().any(|right_path| {
-            left_path == right_path
-                || left_path.starts_with(right_path)
-                || right_path.starts_with(left_path)
-        })
-    })
+    wave_spec::agent_ownership_overlaps(left, right)
 }
 
 fn exclusive_resources_overlap(left: &WaveAgent, right: &WaveAgent) -> bool {
@@ -5157,7 +5151,7 @@ fn barrier_satisfied_for_agent(
         | wave_spec::BarrierClass::ReportOnly => true,
         wave_spec::BarrierClass::IntegrationBarrier => ordered_agents
             .iter()
-            .filter(|agent| !is_closure_followup_agent(agent.id.as_str()))
+            .filter(|agent| agent.blocks_integration_barrier())
             .all(|agent| completed_agents.contains(&agent.id)),
         wave_spec::BarrierClass::ClosureBarrier => {
             running.is_empty()
@@ -11672,12 +11666,9 @@ mod tests {
                 .iter()
                 .all(|delivery| delivery.state == DirectiveDeliveryState::Deferred)
         );
-        assert!(
-            deliveries.iter().all(|delivery| {
-                delivery.method == Some(DirectiveDeliveryMethod::Deferred)
-                    && !delivery.ack_supported
-            })
-        );
+        assert!(deliveries.iter().all(|delivery| {
+            delivery.method == Some(DirectiveDeliveryMethod::Deferred) && !delivery.ack_supported
+        }));
         let wave_guidance =
             fs::read_to_string(wave_guidance_path(&root, &config, 18)).expect("read wave guidance");
         assert!(wave_guidance.contains("Keep the accepted state coherent."));
@@ -16808,6 +16799,51 @@ esac
             &[],
         );
         assert!(ready_after_frontier.contains(&2));
+    }
+
+    #[test]
+    fn integration_barrier_waits_on_e0_frontier() {
+        let mut wave = launchable_test_wave(18);
+        wave.metadata.execution_model = wave_spec::WaveExecutionModel::MultiAgent;
+        wave.agents = vec![
+            test_agent("A1"),
+            closure_test_agent("E0"),
+            closure_test_agent("A8"),
+            closure_test_agent("A9"),
+            closure_test_agent("A0"),
+        ];
+        wave.agents[2].barrier_class = wave_spec::BarrierClass::IntegrationBarrier;
+
+        let ordered = ordered_agents(&wave);
+        let completed_without_eval = HashSet::from(["A1".to_string()]);
+        assert!(!barrier_satisfied_for_agent(
+            &wave.agents[2],
+            &ordered,
+            &completed_without_eval,
+            &[],
+        ));
+
+        let completed_with_eval = HashSet::from(["A1".to_string(), "E0".to_string()]);
+        assert!(barrier_satisfied_for_agent(
+            &wave.agents[2],
+            &ordered,
+            &completed_with_eval,
+            &[],
+        ));
+    }
+
+    #[test]
+    fn ownership_overlap_respects_path_segments() {
+        let mut left = test_agent("A1");
+        left.file_ownership = vec!["src/foo".to_string()];
+
+        let mut sibling = test_agent("A2");
+        sibling.file_ownership = vec!["src/foobar".to_string()];
+        assert!(!ownership_overlaps(&left, &sibling));
+
+        let mut nested = test_agent("A3");
+        nested.file_ownership = vec!["src/foo/bar.rs".to_string()];
+        assert!(ownership_overlaps(&left, &nested));
     }
 
     fn events_for_wave_worktree_allocations(

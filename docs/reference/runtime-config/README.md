@@ -113,7 +113,7 @@ The live operator/runtime surface exposes runtime state through:
 - `wave project show --json`
 - `wave control show --wave <id> --json`
 - app-server `latest_run_details` and `active_run_details`
-- the TUI `Run`, `Agents`, and `Control` tabs
+- the TUI `Overview`, `Agents`, `Proof`, and `Control` tabs
 
 Those surfaces are runtime-neutral. They show selected runtime, fallback count, and runtime detail without leaking runtime-specific fields into reducer queue truth.
 

@@ -40,7 +40,7 @@
 ## Live Runtime Surfaces
 
 - `wave` opens the interactive Ratatui operator shell on an interactive terminal and falls back to a text summary otherwise.
-- The right-side panel exposes live `Run`, `Agents`, `Queue`, and `Control` tabs from the current repo-local Wave state, with `Queue` and `Control` serving as the operator's direct planning, rerun, and manual-close recovery surfaces through reducer-backed projections over compatibility run records.
+- The right-side panel exposes live `Overview`, `Agents`, `Queue`, `Proof`, and `Control` tabs from the current repo-local Wave state, with `Queue`, `Proof`, and `Control` serving as the operator's direct planning, proof, rerun, and manual-close recovery surfaces through reducer-backed projections over compatibility run records.
 - The shell is an operator panel with actionable queue/control affordances, not merely a terminal summary of state.
 - The launcher writes compiled prompts under `.wave/state/build/specs/`, wave-scoped worktrees under `.wave/state/worktrees/`, compatibility run state under `.wave/state/runs/`, rerun intents under `.wave/state/control/reruns/`, closure overrides under `.wave/state/control/closure-overrides/`, compatibility trace bundles under `.wave/traces/runs/`, and runtime artifacts such as `runtime-prompt.md`, `runtime-skill-overlay.md`, and `runtime-detail.json` under each agent bundle; project-scoped Codex state remains under `.wave/codex/`.
 - The repo-local delivery layer reads `docs/plans/delivery-catalog.json`, projects initiative or release or acceptance-package truth into CLI, TUI, and app-server surfaces, and merges that delivery soft-state overlay back onto per-wave planning status and machine-facing control signals.
@@ -50,7 +50,11 @@
 - `wave control show`, app-server transport, and the TUI now surface manual-close override truth, rerun scope, last activity timestamps, and stalled-run hints directly instead of leaving recovery state or live-run health implicit; the TUI can now apply or clear manual-close overrides through confirm-first `m` and `M` actions rather than forcing operators back to the CLI.
 - Manual-close application now preserves control-plane integrity instead of relying on best-effort ordering: override application validates or derives repo-relative evidence, clears rerun intent only inside the same locked mutation, and restores the previous rerun or override file state if the override write or audit event append fails.
 - Dependency-handshake classification in operator transport is now typed workflow state on `HumanInputRequest`, with a legacy route-name fallback kept only for older records that predate the explicit field.
-- The TUI no longer targets only the first actionable approval or escalation on a wave: `[` and `]` now move the selected operator action in the `Control` and `Blockers` views before `u` or `x` applies to that selected item.
+- The TUI no longer targets only the first actionable approval or escalation on a wave: `[` and `]` now move the selected operator action in the `Control` view before `u` or `x` applies to that selected item.
+- Operator-shell targeting is now explicit and honest: plain-text guidance follows the shell target, while wave hotkeys and implicit wave commands act on the visibly selected wave in the dashboard.
+- `/follow run|agent|off` now has real behavior: `run` follows the active run wave and current agent, `agent` pins the selected MAS agent, and `off` preserves manual selection and transcript position.
+- Narrow terminals no longer degrade to a blind summary surface; the shell now renders as a one-column layout with visible transcript, composer, and dashboard stack.
+- The live shell command surface now includes `/rerun [full|from-first-incomplete|closure-only|promotion-only]`, `/pause`, `/resume`, `/rerun-agent`, `/rebase`, `/reconcile`, `/approve-merge`, and `/reject-merge`.
 - The launcher contract is project-scoped: it keeps Codex auth, sqlite state, and session logs under `.wave/codex/` and records each agent's final assistant message in the per-run bundle.
 - Autonomous queueing, dependency-aware scheduling, and replay validation are live repo-local features on top of the same reducer-backed planning state plus compatibility-backed replay artifacts, so later waves can prove recorded outcomes without needing live-host mutation proof.
 

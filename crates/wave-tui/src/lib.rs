@@ -38,6 +38,7 @@ use ratatui::widgets::ListItem;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
+use ratatui::widgets::TableState;
 use ratatui::widgets::Tabs;
 use ratatui::widgets::Wrap;
 use std::fmt;
@@ -568,6 +569,7 @@ fn sync_shell_state_with_snapshot(app: &mut App, snapshot: &OperatorSnapshot) {
             follow_mode_from_session(session.follow_mode.as_str()).unwrap_or(app.state.follow_mode);
     }
     sync_shell_target_with_snapshot(&mut app.state, snapshot);
+    apply_follow_mode(&mut app.state, snapshot);
 }
 
 fn sync_shell_target_with_snapshot(state: &mut AppState, snapshot: &OperatorSnapshot) {
@@ -692,7 +694,52 @@ fn select_wave_by_id(state: &mut AppState, snapshot: &OperatorSnapshot, wave_id:
         return false;
     };
     state.selected_wave_index = index;
+    state.selected_orchestrator_agent_index = 0;
+    state.selected_operator_action_index = 0;
+    sync_shell_target_to_selected_wave(state, snapshot);
     true
+}
+
+fn sync_shell_target_to_selected_wave(state: &mut AppState, snapshot: &OperatorSnapshot) {
+    let wave_id = selected_wave_id(state, snapshot);
+    let agent_id = selected_orchestrator_agent(snapshot, state).map(|agent| agent.id.clone());
+    let Some(target) = state.shell_target.as_mut() else {
+        return;
+    };
+    match target.scope {
+        ShellScope::Head => {}
+        ShellScope::Wave => {
+            target.wave_id = wave_id;
+            target.agent_id = None;
+        }
+        ShellScope::Agent => {
+            target.wave_id = wave_id;
+            if let Some(agent_id) = agent_id {
+                target.agent_id = Some(agent_id);
+            } else {
+                target.scope = ShellScope::Wave;
+                target.agent_id = None;
+            }
+        }
+    }
+}
+
+fn sync_shell_target_to_selected_agent(state: &mut AppState, snapshot: &OperatorSnapshot) {
+    let wave_id = selected_wave_id(state, snapshot);
+    let agent_id = selected_orchestrator_agent(snapshot, state).map(|agent| agent.id.clone());
+    let Some(target) = state.shell_target.as_mut() else {
+        return;
+    };
+    if !matches!(target.scope, ShellScope::Agent) {
+        return;
+    }
+    target.wave_id = wave_id;
+    if let Some(agent_id) = agent_id {
+        target.agent_id = Some(agent_id);
+    } else {
+        target.scope = ShellScope::Wave;
+        target.agent_id = None;
+    }
 }
 
 fn orchestrator_agent_index(
@@ -736,9 +783,9 @@ fn handle_focus_previous(app: &mut App) {
         }
         FocusLane::Composer => {}
         FocusLane::Dashboard => match app.tab {
-            PanelTab::Agents => select_previous_orchestrator_agent(&mut app.state),
+            PanelTab::Agents => select_previous_orchestrator_agent(&mut app.state, snapshot),
             PanelTab::Control => select_previous_operator_action(&mut app.state, snapshot),
-            _ => select_previous_wave(&mut app.state),
+            _ => select_previous_wave(&mut app.state, snapshot),
         },
     }
 }
@@ -770,12 +817,8 @@ fn current_snapshot(app: &App) -> Result<&OperatorSnapshot> {
         .context("operator snapshot is still loading")
 }
 
-fn selected_target_wave_id(state: &AppState, snapshot: &OperatorSnapshot) -> Option<u32> {
-    state
-        .shell_target
-        .as_ref()
-        .and_then(|target| target.wave_id)
-        .or_else(|| selected_wave_id(state, snapshot))
+fn selected_action_wave_id(state: &AppState, snapshot: &OperatorSnapshot) -> Option<u32> {
+    selected_wave_id(state, snapshot)
 }
 
 fn current_shell_target(state: &AppState, snapshot: &OperatorSnapshot) -> ShellTargetState {
@@ -783,6 +826,78 @@ fn current_shell_target(state: &AppState, snapshot: &OperatorSnapshot) -> ShellT
         .shell_target
         .clone()
         .unwrap_or_else(|| shell_target_from_snapshot(snapshot))
+}
+
+fn apply_follow_mode(state: &mut AppState, snapshot: &OperatorSnapshot) {
+    match state.follow_mode {
+        FollowMode::Off => {}
+        FollowMode::Run => {
+            let followed_run = selected_action_wave_id(state, snapshot)
+                .and_then(|wave_id| {
+                    snapshot
+                        .active_run_details
+                        .iter()
+                        .find(|run| run.wave_id == wave_id)
+                })
+                .or_else(|| {
+                    state.shell_target.as_ref().and_then(|target| {
+                        target.wave_id.and_then(|wave_id| {
+                            snapshot
+                                .active_run_details
+                                .iter()
+                                .find(|run| run.wave_id == wave_id)
+                        })
+                    })
+                })
+                .or_else(|| snapshot.active_run_details.first());
+            let Some(run) = followed_run else {
+                return;
+            };
+            let _ = select_wave_by_id(state, snapshot, run.wave_id);
+            if let Some(agent_id) = run.current_agent_id.as_deref() {
+                if let Some(index) = orchestrator_agent_index(snapshot, run.wave_id, agent_id) {
+                    state.selected_orchestrator_agent_index = index;
+                    sync_shell_target_to_selected_agent(state, snapshot);
+                }
+            }
+            if !matches!(state.focus, FocusLane::Transcript) {
+                state.transcript_scroll = 0;
+            }
+        }
+        FollowMode::Agent => {
+            let followed_agent = state
+                .shell_target
+                .as_ref()
+                .filter(|target| matches!(target.scope, ShellScope::Agent))
+                .and_then(|target| {
+                    Some((target.wave_id?, target.agent_id.as_ref()?.clone())).filter(
+                        |(wave_id, agent_id)| {
+                            orchestrator_agent_index(snapshot, *wave_id, agent_id).is_some()
+                        },
+                    )
+                })
+                .or_else(|| {
+                    let wave_id = selected_action_wave_id(state, snapshot)?;
+                    let agent_id = selected_orchestrator_agent(snapshot, state)?.id.clone();
+                    Some((wave_id, agent_id))
+                });
+            let Some((wave_id, agent_id)) = followed_agent else {
+                return;
+            };
+            let _ = select_wave_by_id(state, snapshot, wave_id);
+            if let Some(index) = orchestrator_agent_index(snapshot, wave_id, &agent_id) {
+                state.selected_orchestrator_agent_index = index;
+                state.shell_target = Some(ShellTargetState {
+                    scope: ShellScope::Agent,
+                    wave_id: Some(wave_id),
+                    agent_id: Some(agent_id),
+                });
+            }
+            if !matches!(state.focus, FocusLane::Transcript) {
+                state.transcript_scroll = 0;
+            }
+        }
+    }
 }
 
 fn shell_scope_for_runtime(scope: ShellScope) -> wave_domain::OperatorShellScope {
@@ -1005,6 +1120,8 @@ fn handle_shell_command(app: &mut App, input: &str) -> Result<()> {
                 (index, snapshot.planning.waves[index].title.clone())
             };
             app.state.selected_wave_index = index;
+            app.state.selected_operator_action_index = 0;
+            app.state.selected_orchestrator_agent_index = 0;
             app.state.shell_target = Some(ShellTargetState {
                 scope: ShellScope::Wave,
                 wave_id: Some(wave_id),
@@ -1021,9 +1138,9 @@ fn handle_shell_command(app: &mut App, input: &str) -> Result<()> {
                 return Ok(());
             };
             let agent_id = agent_id.to_string();
-            let (wave_id, index, title) = {
+            let (wave_id, wave_index, index, title) = {
                 let snapshot = current_snapshot(app)?;
-                let Some(wave_id) = selected_target_wave_id(&app.state, snapshot) else {
+                let Some(wave_id) = selected_action_wave_id(&app.state, snapshot) else {
                     set_error_message(&mut app.state, "no wave selected");
                     return Ok(());
                 };
@@ -1043,9 +1160,17 @@ fn handle_shell_command(app: &mut App, input: &str) -> Result<()> {
                     .and_then(|wave| wave.agents.get(index))
                     .map(|agent| agent.title.clone())
                     .unwrap_or_else(|| agent_id.clone());
-                (wave_id, index, title)
+                let wave_index = snapshot
+                    .planning
+                    .waves
+                    .iter()
+                    .position(|wave| wave.id == wave_id)
+                    .unwrap_or(app.state.selected_wave_index);
+                (wave_id, wave_index, index, title)
             };
+            app.state.selected_wave_index = wave_index;
             app.state.selected_orchestrator_agent_index = index;
+            app.state.selected_operator_action_index = 0;
             app.state.shell_target = Some(ShellTargetState {
                 scope: ShellScope::Agent,
                 wave_id: Some(wave_id),
@@ -1063,7 +1188,7 @@ fn handle_shell_command(app: &mut App, input: &str) -> Result<()> {
             };
             let (shell_target, label) = {
                 let snapshot = current_snapshot(app)?;
-                let selected_wave_id = selected_target_wave_id(&app.state, snapshot);
+                let selected_wave_id = selected_action_wave_id(&app.state, snapshot);
                 let shell_target = match scope {
                     "head" => ShellTargetState {
                         scope: ShellScope::Head,
@@ -1130,7 +1255,7 @@ fn handle_shell_command(app: &mut App, input: &str) -> Result<()> {
                 } else {
                     let Some(wave_id) = target
                         .wave_id
-                        .or_else(|| selected_target_wave_id(&app.state, snapshot))
+                        .or_else(|| selected_action_wave_id(&app.state, snapshot))
                     else {
                         set_error_message(&mut app.state, "no wave selected");
                         return Ok(());
@@ -1198,7 +1323,7 @@ fn handle_shell_command(app: &mut App, input: &str) -> Result<()> {
                     wave_id: explicit_wave_id.or_else(|| {
                         app.snapshot
                             .as_ref()
-                            .and_then(|snapshot| selected_target_wave_id(&app.state, snapshot))
+                            .and_then(|snapshot| selected_action_wave_id(&app.state, snapshot))
                     }),
                     dry_run: false,
                 },
@@ -1225,7 +1350,7 @@ fn handle_shell_command(app: &mut App, input: &str) -> Result<()> {
                 Some(_) => {
                     set_error_message(
                         &mut app.state,
-                        "usage: /rerun [full|closure-only|promotion-only]",
+                        "usage: /rerun [full|from-first-incomplete|closure-only|promotion-only]",
                     );
                     return Ok(());
                 }
@@ -1362,6 +1487,25 @@ fn handle_shell_command(app: &mut App, input: &str) -> Result<()> {
                 }
             };
             app.state.follow_mode = follow_mode;
+            if matches!(follow_mode, FollowMode::Agent) {
+                let snapshot = current_snapshot(app)?;
+                let Some(wave_id) = selected_action_wave_id(&app.state, snapshot) else {
+                    set_error_message(&mut app.state, "no wave selected");
+                    return Ok(());
+                };
+                let Some(agent) = selected_orchestrator_agent(snapshot, &app.state) else {
+                    set_error_message(&mut app.state, "no orchestrator agent selected");
+                    return Ok(());
+                };
+                app.state.shell_target = Some(ShellTargetState {
+                    scope: ShellScope::Agent,
+                    wave_id: Some(wave_id),
+                    agent_id: Some(agent.id.clone()),
+                });
+            }
+            if let Ok(snapshot) = current_snapshot(app).cloned() {
+                apply_follow_mode(&mut app.state, &snapshot);
+            }
             set_info_message(
                 &mut app.state,
                 format!("follow mode set to {}", follow_mode.label()),
@@ -1477,7 +1621,7 @@ fn handle_shell_command(app: &mut App, input: &str) -> Result<()> {
 
 fn require_selected_shell_agent(app: &mut App) -> Result<(u32, String)> {
     let snapshot = current_snapshot(app)?;
-    let Some(wave_id) = selected_target_wave_id(&app.state, snapshot) else {
+    let Some(wave_id) = selected_action_wave_id(&app.state, snapshot) else {
         bail!("no wave selected");
     };
     let Some(agent) = selected_orchestrator_agent(snapshot, &app.state) else {
@@ -1493,7 +1637,7 @@ fn handle_request_rerun(app: &mut App) -> Result<()> {
 fn handle_request_rerun_with_scope(app: &mut App, scope: RerunScope) -> Result<()> {
     let wave_id = {
         let snapshot = current_snapshot(app)?;
-        let Some(wave_id) = selected_target_wave_id(&app.state, snapshot) else {
+        let Some(wave_id) = selected_action_wave_id(&app.state, snapshot) else {
             set_error_message(&mut app.state, "no wave selected");
             return Ok(());
         };
@@ -1520,7 +1664,7 @@ fn handle_request_rerun_with_scope(app: &mut App, scope: RerunScope) -> Result<(
 fn handle_clear_rerun(app: &mut App) -> Result<()> {
     let wave_id = {
         let snapshot = current_snapshot(app)?;
-        let Some(wave_id) = selected_target_wave_id(&app.state, snapshot) else {
+        let Some(wave_id) = selected_action_wave_id(&app.state, snapshot) else {
             set_error_message(&mut app.state, "no wave selected");
             return Ok(());
         };
@@ -1540,7 +1684,7 @@ fn handle_clear_rerun(app: &mut App) -> Result<()> {
 fn handle_prepare_manual_close(app: &mut App) -> Result<()> {
     let (wave_id, wave_title, already_active) = {
         let snapshot = current_snapshot(app)?;
-        let Some(wave_id) = selected_target_wave_id(&app.state, snapshot) else {
+        let Some(wave_id) = selected_action_wave_id(&app.state, snapshot) else {
             set_error_message(&mut app.state, "no wave selected");
             return Ok(());
         };
@@ -1599,7 +1743,7 @@ fn handle_prepare_manual_close(app: &mut App) -> Result<()> {
 fn handle_prepare_clear_manual_close(app: &mut App) -> Result<()> {
     let (wave_id, wave_title, source_run_id) = {
         let snapshot = current_snapshot(app)?;
-        let Some(wave_id) = selected_target_wave_id(&app.state, snapshot) else {
+        let Some(wave_id) = selected_action_wave_id(&app.state, snapshot) else {
             set_error_message(&mut app.state, "no wave selected");
             return Ok(());
         };
@@ -1649,7 +1793,7 @@ fn handle_prepare_clear_manual_close(app: &mut App) -> Result<()> {
 fn handle_prepare_operator_action(app: &mut App, approve: bool) -> Result<()> {
     let (wave_id, wave_title, item) = {
         let snapshot = current_snapshot(app)?;
-        let Some(wave_id) = selected_target_wave_id(&app.state, snapshot) else {
+        let Some(wave_id) = selected_action_wave_id(&app.state, snapshot) else {
             set_error_message(&mut app.state, "no wave selected");
             return Ok(());
         };
@@ -1892,10 +2036,16 @@ fn select_next_wave(state: &mut AppState, snapshot: &OperatorSnapshot) {
     }
     state.selected_wave_index =
         (state.selected_wave_index + 1).min(snapshot.planning.waves.len() - 1);
+    state.selected_orchestrator_agent_index = 0;
+    state.selected_operator_action_index = 0;
+    sync_shell_target_to_selected_wave(state, snapshot);
 }
 
-fn select_previous_wave(state: &mut AppState) {
+fn select_previous_wave(state: &mut AppState, snapshot: &OperatorSnapshot) {
     state.selected_wave_index = state.selected_wave_index.saturating_sub(1);
+    state.selected_orchestrator_agent_index = 0;
+    state.selected_operator_action_index = 0;
+    sync_shell_target_to_selected_wave(state, snapshot);
 }
 
 fn select_next_orchestrator_agent(state: &mut AppState, snapshot: &OperatorSnapshot) {
@@ -1909,11 +2059,13 @@ fn select_next_orchestrator_agent(state: &mut AppState, snapshot: &OperatorSnaps
     }
     state.selected_orchestrator_agent_index =
         (state.selected_orchestrator_agent_index + 1).min(wave.agents.len() - 1);
+    sync_shell_target_to_selected_agent(state, snapshot);
 }
 
-fn select_previous_orchestrator_agent(state: &mut AppState) {
+fn select_previous_orchestrator_agent(state: &mut AppState, snapshot: &OperatorSnapshot) {
     state.selected_orchestrator_agent_index =
         state.selected_orchestrator_agent_index.saturating_sub(1);
+    sync_shell_target_to_selected_agent(state, snapshot);
 }
 
 fn select_next_operator_action(state: &mut AppState, snapshot: &OperatorSnapshot) {
@@ -1969,6 +2121,16 @@ fn selected_wave<'a>(
     snapshot: &'a OperatorSnapshot,
 ) -> Option<&'a wave_control_plane::WaveStatusReadModel> {
     snapshot.planning.waves.get(state.selected_wave_index)
+}
+
+fn selected_queue_wave_index(snapshot: &OperatorSnapshot, state: &AppState) -> Option<usize> {
+    let wave_id = selected_wave_id(state, snapshot)?;
+    snapshot
+        .panels
+        .queue
+        .waves
+        .iter()
+        .position(|wave| wave.id == wave_id)
 }
 
 fn actionable_operator_items<'a>(
@@ -2033,9 +2195,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, app: &App) {
     if let Some(snapshot) = app.snapshot.as_ref() {
         match shell_layout_mode(area.width) {
             ShellLayoutMode::Wide => draw_wide_shell(frame, area, snapshot, app),
-            // Narrow terminals collapse into a single summary so the operator still
-            // gets a readable, honest view instead of a broken two-column layout.
-            ShellLayoutMode::Narrow => draw_narrow_shell_fallback(frame, area, snapshot, app),
+            ShellLayoutMode::Narrow => draw_narrow_shell(frame, area, snapshot, app),
         }
     } else {
         draw_loading_shell(frame, area, app);
@@ -2095,6 +2255,20 @@ fn draw_wide_shell(
     let (main_area, panel_area) = split_wide_shell_layout(area);
     draw_main_pane(frame, main_area, snapshot, &app.state);
     draw_right_panel(frame, panel_area, snapshot, app, ShellLayoutMode::Wide);
+}
+
+fn draw_narrow_shell(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    snapshot: &OperatorSnapshot,
+    app: &App,
+) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(area);
+    draw_main_pane(frame, chunks[0], snapshot, &app.state);
+    draw_right_panel(frame, chunks[1], snapshot, app, ShellLayoutMode::Narrow);
 }
 
 fn split_wide_shell_layout(area: Rect) -> (Rect, Rect) {
@@ -2576,207 +2750,6 @@ fn snapshot_age_label(generated_at_ms: u128) -> String {
     }
 }
 
-fn draw_narrow_shell_fallback(
-    frame: &mut ratatui::Frame<'_>,
-    area: Rect,
-    snapshot: &OperatorSnapshot,
-    app: &App,
-) {
-    let paragraph = Paragraph::new(narrow_summary_lines(snapshot, app)).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Operator summary"),
-    );
-    frame.render_widget(paragraph, area);
-}
-
-fn narrow_summary_lines<'a>(snapshot: &'a OperatorSnapshot, app: &'a App) -> Vec<Line<'a>> {
-    let state = &app.state;
-    let selected_wave = selected_wave(state, snapshot);
-    let mut lines = vec![
-        Line::styled(
-            "Narrow terminal fallback",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Line::raw(""),
-        Line::raw("Main pane: conversation and logs."),
-        Line::raw("Right pane: orchestration state."),
-        Line::raw(format!(
-            "Layout switches to a single-pane operator summary below {} columns.",
-            NARROW_LAYOUT_THRESHOLD
-        )),
-        Line::raw("The wide layout always keeps the right-side operator panel visible."),
-        Line::raw(
-            "The summary below preserves Portfolio, Run, Agents, Proof, Queue, and Control truth.",
-        ),
-        Line::raw(""),
-        Line::styled(
-            "Selected wave",
-            Style::default()
-                .fg(Color::Gray)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ];
-
-    if let Some(wave) = selected_wave {
-        lines.push(Line::raw(format!("{} {}", wave.id, wave.title)));
-        lines.push(Line::raw(format!(
-            "state: {}",
-            describe_wave_state(wave.completed, wave.ready, &wave.blocked_by)
-        )));
-        lines.push(Line::raw(format!("slug: {}", wave.slug)));
-        if !wave.blocked_by.is_empty() {
-            lines.push(Line::raw(format!(
-                "blockers: {}",
-                wave.blocked_by.join(", ")
-            )));
-        }
-        lines.extend(wave_execution_lines(wave));
-        lines.push(Line::raw(""));
-        push_summary_heading(&mut lines, "Portfolio");
-        lines.extend(portfolio_focus_lines(snapshot, Some(wave.id)));
-        if let Some(package) = acceptance_package_for_wave(snapshot, wave.id) {
-            lines.push(Line::raw(""));
-            push_summary_heading(&mut lines, "Proof");
-            lines.extend(acceptance_package_summary_lines(package));
-        }
-    } else {
-        lines.push(Line::raw("No wave selected."));
-    }
-
-    lines.push(Line::raw(""));
-    push_summary_heading(&mut lines, "Run");
-    lines.push(Line::raw(format!(
-        "active runs: {}  completed runs: {}",
-        snapshot.panels.run.active_run_count, snapshot.panels.run.completed_run_count
-    )));
-    if let Some(active_run) = selected_wave
-        .and_then(|wave| {
-            snapshot
-                .active_run_details
-                .iter()
-                .find(|run| run.wave_id == wave.id)
-        })
-        .or_else(|| snapshot.active_run_details.first())
-    {
-        lines.extend(run_summary_lines(active_run));
-    } else {
-        lines.push(Line::raw("No active runs."));
-    }
-
-    lines.push(Line::raw(""));
-    push_summary_heading(&mut lines, "Agents");
-    lines.push(Line::raw(format!(
-        "agents: total {}  implementation {}  closure {}",
-        snapshot.panels.agents.total_agents,
-        snapshot.panels.agents.implementation_agents,
-        snapshot.panels.agents.closure_agents
-    )));
-    lines.push(Line::raw(format!(
-        "closure coverage: present {}  missing {}",
-        snapshot.panels.agents.present_closure_agents.len(),
-        format_string_list(&snapshot.panels.agents.missing_closure_agents)
-    )));
-    if let Some(active_run) = selected_wave
-        .and_then(|wave| {
-            snapshot
-                .active_run_details
-                .iter()
-                .find(|run| run.wave_id == wave.id)
-        })
-        .or_else(|| snapshot.active_run_details.first())
-    {
-        for agent in &active_run.agents {
-            lines.push(Line::raw(format!(
-                "{} {} | {} | proof {}",
-                agent.id,
-                agent.title,
-                agent.status,
-                if agent.proof_complete {
-                    "complete".to_string()
-                } else if agent.missing_markers.is_empty() {
-                    "pending".to_string()
-                } else {
-                    format!("missing {}", agent.missing_markers.join(", "))
-                }
-            )));
-        }
-    } else {
-        lines.push(Line::raw("No live agent rows."));
-    }
-
-    lines.push(Line::raw(""));
-    push_summary_heading(&mut lines, "Queue");
-    lines.extend(queue_decision_lines(snapshot));
-    lines.push(Line::raw(format!(
-        "ready: {}  active: {}  blocked: {}",
-        format_u32_list(&snapshot.panels.queue.ready_wave_ids),
-        format_u32_list(&snapshot.panels.queue.active_wave_ids),
-        format_u32_list(&snapshot.panels.queue.blocked_wave_ids)
-    )));
-    lines.extend(closure_attention_lines(snapshot));
-    lines.extend(skill_issue_lines(snapshot));
-
-    lines.push(Line::raw(""));
-    push_summary_heading(&mut lines, "Control");
-    lines.push(Line::raw(format!(
-        "actions: rerun={} clear-rerun={} manual-close={} clear-manual-close={} approve={} reject={} launch={} autonomous={}",
-        yes_no(snapshot.panels.control.rerun_supported),
-        yes_no(snapshot.panels.control.clear_rerun_supported),
-        yes_no(snapshot.panels.control.apply_closure_override_supported),
-        yes_no(snapshot.panels.control.clear_closure_override_supported),
-        yes_no(snapshot.panels.control.approve_operator_action_supported),
-        yes_no(snapshot.panels.control.reject_operator_action_supported),
-        yes_no(snapshot.panels.control.launch_supported),
-        yes_no(snapshot.panels.control.autonomous_supported)
-    )));
-    lines.push(Line::raw(format!(
-        "rerun intents: {}",
-        if snapshot.rerun_intents.is_empty() {
-            "none".to_string()
-        } else {
-            snapshot
-                .rerun_intents
-                .iter()
-                .map(|intent| format!("wave {} {}", intent.wave_id, intent.reason))
-                .collect::<Vec<_>>()
-                .join("; ")
-        }
-    )));
-    if !snapshot.panels.control.unavailable_reasons.is_empty() {
-        lines.push(Line::raw(format!(
-            "unavailable: {}",
-            snapshot.panels.control.unavailable_reasons.join("; ")
-        )));
-    }
-    for item in manual_close_status_items(
-        &app.root,
-        &app.config,
-        snapshot,
-        selected_wave_id(state, snapshot),
-    ) {
-        lines.push(Line::raw(item));
-    }
-    if let Some(pending_action) = state.pending_control_action.as_ref() {
-        lines.push(Line::raw(""));
-        for item in pending_control_action_lines(pending_action) {
-            lines.push(Line::raw(item));
-        }
-    }
-    lines.push(Line::raw("keys: Tab Shift+Tab j k r c m M u x Enter Esc q"));
-
-    if let Some(message) = state.flash_message.as_ref() {
-        lines.push(Line::raw(""));
-        lines.push(Line::styled(
-            message.text.clone(),
-            flash_message_style(message.kind),
-        ));
-    }
-    lines
-}
-
 fn describe_wave_state(completed: bool, ready: bool, blocked_by: &[String]) -> &'static str {
     if completed {
         "completed"
@@ -2787,15 +2760,6 @@ fn describe_wave_state(completed: bool, ready: bool, blocked_by: &[String]) -> &
     } else {
         "blocked"
     }
-}
-
-fn push_summary_heading<'a>(lines: &mut Vec<Line<'a>>, title: &'static str) {
-    lines.push(Line::styled(
-        title,
-        Style::default()
-            .fg(Color::Gray)
-            .add_modifier(Modifier::BOLD),
-    ));
 }
 
 fn format_u32_list(values: &[u32]) -> String {
@@ -2903,10 +2867,6 @@ fn execution_lines(
     lines
 }
 
-fn wave_execution_lines(wave: &wave_control_plane::WaveStatusReadModel) -> Vec<Line<'static>> {
-    execution_lines(&wave.execution, Some(&wave.ownership.budget))
-}
-
 #[allow(dead_code)]
 fn selected_execution_for_run_tab(
     snapshot: &OperatorSnapshot,
@@ -2938,26 +2898,6 @@ fn queue_decision_lines(snapshot: &OperatorSnapshot) -> Vec<Line<'static>> {
         .control_status
         .queue_decision
         .lines
-        .iter()
-        .cloned()
-        .map(Line::raw)
-        .collect()
-}
-
-fn closure_attention_lines(snapshot: &OperatorSnapshot) -> Vec<Line<'static>> {
-    snapshot
-        .control_status
-        .closure_attention_lines
-        .iter()
-        .cloned()
-        .map(Line::raw)
-        .collect()
-}
-
-fn skill_issue_lines(snapshot: &OperatorSnapshot) -> Vec<Line<'static>> {
-    snapshot
-        .control_status
-        .skill_issue_lines
         .iter()
         .cloned()
         .map(Line::raw)
@@ -3959,7 +3899,7 @@ fn draw_right_panel(
     match app.tab {
         PanelTab::Overview => draw_overview_tab(frame, panel_chunks[1], snapshot, app),
         PanelTab::Agents => draw_agents_tab(frame, panel_chunks[1], snapshot, app),
-        PanelTab::Queue => draw_queue_tab(frame, panel_chunks[1], snapshot),
+        PanelTab::Queue => draw_queue_tab(frame, panel_chunks[1], snapshot, app),
         PanelTab::Proof => draw_proof_tab(
             frame,
             panel_chunks[1],
@@ -4509,8 +4449,23 @@ fn draw_agents_tab(
                 .add_modifier(Modifier::BOLD),
         ),
     )
+    .row_highlight_style(
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )
+    .highlight_symbol(">> ")
     .block(Block::default().borders(Borders::ALL).title("MAS agents"));
-    frame.render_widget(table, chunks[1]);
+    let mut table_state = TableState::default();
+    if !wave.agents.is_empty() {
+        table_state.select(Some(
+            app.state
+                .selected_orchestrator_agent_index
+                .min(wave.agents.len().saturating_sub(1)),
+        ));
+    }
+    frame.render_stateful_widget(table, chunks[1], &mut table_state);
 
     let detail_lines = if let Some(agent) = selected_orchestrator_agent(snapshot, &app.state) {
         let latest_item = latest_run_agent_item(snapshot, wave.wave_id, &agent.id);
@@ -4561,7 +4516,12 @@ fn draw_agents_tab(
     );
 }
 
-fn draw_queue_tab(frame: &mut ratatui::Frame<'_>, area: Rect, snapshot: &OperatorSnapshot) {
+fn draw_queue_tab(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    snapshot: &OperatorSnapshot,
+    app: &App,
+) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(6), Constraint::Min(0)])
@@ -4599,8 +4559,17 @@ fn draw_queue_tab(frame: &mut ratatui::Frame<'_>, area: Rect, snapshot: &Operato
                 .add_modifier(Modifier::BOLD),
         ),
     )
+    .row_highlight_style(
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )
+    .highlight_symbol(">> ")
     .block(Block::default().borders(Borders::ALL).title("Queue"));
-    frame.render_widget(table, chunks[1]);
+    let mut table_state = TableState::default();
+    table_state.select(selected_queue_wave_index(snapshot, &app.state));
+    frame.render_stateful_widget(table, chunks[1], &mut table_state);
 }
 
 #[allow(dead_code)]
@@ -6009,6 +5978,7 @@ impl fmt::Display for HumanDuration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
     use wave_control_plane::ControlStatusReadModel;
     use wave_control_plane::PlanningStatusReadModel;
     use wave_control_plane::PlanningStatusSummary;
@@ -6091,6 +6061,30 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn render_buffer(buffer: &ratatui::buffer::Buffer) -> String {
+        buffer
+            .content
+            .chunks(buffer.area.width as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn render_app(app: &App, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw_ui(frame, app))
+            .expect("render operator shell");
+        render_buffer(terminal.backend().buffer())
     }
 
     fn sample_acceptance_package(wave_id: u32) -> wave_app_server::AcceptancePackageSnapshot {
@@ -6208,40 +6202,28 @@ mod tests {
     }
 
     #[test]
-    fn narrow_layout_switches_to_single_pane_summary() {
+    fn narrow_layout_switches_to_single_column_shell() {
         assert_eq!(shell_layout_mode(80), ShellLayoutMode::Narrow);
         assert_eq!(right_panel_ratio(80), (0, 0));
     }
 
     #[test]
-    fn narrow_summary_preserves_operator_truth_sections() {
+    fn narrow_layout_keeps_transcript_composer_and_dashboard_visible() {
         let snapshot = test_snapshot();
-        let app = test_app(AppState::default());
-        let lines = narrow_summary_lines(&snapshot, &app);
-        let rendered = render_test_lines(&lines);
+        let mut app = test_app(AppState::default());
+        app.snapshot = Some(snapshot);
+        let rendered = render_app(&app, 80, 28);
 
-        assert!(rendered.contains("Run"));
+        assert!(rendered.contains("Operator shell"));
+        assert!(rendered.contains("Orchestration stack"));
+        assert!(rendered.contains("Transcript"));
+        assert!(rendered.contains("Composer"));
+        assert!(rendered.contains("> "));
+        assert!(rendered.contains("Overview"));
         assert!(rendered.contains("Agents"));
         assert!(rendered.contains("Queue"));
+        assert!(rendered.contains("Proof"));
         assert!(rendered.contains("Control"));
-        assert!(rendered.contains("ready: 6"));
-        assert!(rendered.contains("A1 TUI Shell And Layout Scaffold"));
-        assert!(rendered.contains(
-            "worktree: worktree-wave-05-test -> .wave/state/worktrees/wave-05-test (allocated)"
-        ));
-        assert!(rendered.contains("promotion: ready"));
-        assert!(rendered.contains("closure protection: closure capacity reserved before A8"));
-        assert!(rendered.contains("merge blocked: no"));
-        assert!(rendered.contains("closure blocked: no"));
-        assert!(
-            rendered.contains(
-                "closure capacity: reserved_slots=1 reservation_active=yes preemption=yes"
-            )
-        );
-        assert!(rendered.contains(
-            "actions: rerun=yes clear-rerun=yes manual-close=yes clear-manual-close=yes approve=yes reject=yes launch=yes autonomous=yes"
-        ));
-        assert!(rendered.contains("keys: Tab Shift+Tab j k r c m M u x Enter Esc q"));
     }
 
     #[test]
@@ -6480,6 +6462,125 @@ mod tests {
             selected_active_run(&snapshot, Some(99)).map(|run| run.wave_id),
             Some(5)
         );
+    }
+
+    #[test]
+    fn visible_selection_drives_wave_actions_even_when_shell_target_differs() {
+        let mut snapshot = test_snapshot();
+        let mut second_wave = snapshot.planning.waves[0].clone();
+        second_wave.id = 6;
+        second_wave.slug = "wave-06".to_string();
+        second_wave.title = "Wave 6".to_string();
+        snapshot.planning.waves.push(second_wave);
+        snapshot
+            .panels
+            .queue
+            .waves
+            .push(wave_app_server::QueuePanelWaveSnapshot {
+                id: 6,
+                slug: "wave-06".to_string(),
+                title: "Wave 6".to_string(),
+                queue_state: "ready".to_string(),
+                blocked: false,
+            });
+
+        let state = AppState {
+            selected_wave_index: 1,
+            shell_target: Some(ShellTargetState {
+                scope: ShellScope::Wave,
+                wave_id: Some(5),
+                agent_id: None,
+            }),
+            ..AppState::default()
+        };
+
+        assert_eq!(selected_action_wave_id(&state, &snapshot), Some(6));
+        assert_eq!(selected_queue_wave_index(&snapshot, &state), Some(1));
+    }
+
+    #[test]
+    fn follow_mode_tracks_run_and_agent_honestly() {
+        let mut snapshot = test_snapshot();
+        snapshot.panels.orchestrator.waves = vec![wave_app_server::WaveOrchestratorSnapshot {
+            wave_id: 5,
+            title: "Wave 5".to_string(),
+            execution_model: "multi-agent".to_string(),
+            mode: "operator".to_string(),
+            active_run_id: Some("wave-05-test".to_string()),
+            pending_proposal_count: 0,
+            autonomous_action_count: 0,
+            recovery_required: false,
+            last_head_turn_at_ms: None,
+            last_head_summary: None,
+            last_autonomous_failure: None,
+            agents: vec![
+                wave_app_server::MasAgentSnapshot {
+                    id: "A1".to_string(),
+                    title: "TUI Shell And Layout Scaffold".to_string(),
+                    barrier_class: "independent".to_string(),
+                    depends_on_agents: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    exclusive_resources: Vec::new(),
+                    status: "running".to_string(),
+                    merge_state: None,
+                    sandbox_id: Some("sandbox-a1".to_string()),
+                    heartbeat_age_ms: Some(1_000),
+                    pending_directive_count: 0,
+                    last_head_action: None,
+                    recovery_state: None,
+                    barrier_reasons: Vec::new(),
+                },
+                wave_app_server::MasAgentSnapshot {
+                    id: "A8".to_string(),
+                    title: "Integration Steward".to_string(),
+                    barrier_class: "integration-barrier".to_string(),
+                    depends_on_agents: vec!["A1".to_string()],
+                    writes_artifacts: Vec::new(),
+                    exclusive_resources: Vec::new(),
+                    status: "planned".to_string(),
+                    merge_state: None,
+                    sandbox_id: Some("sandbox-a8".to_string()),
+                    heartbeat_age_ms: None,
+                    pending_directive_count: 0,
+                    last_head_action: None,
+                    recovery_state: None,
+                    barrier_reasons: vec!["awaiting implementation frontier A1".to_string()],
+                },
+            ],
+        }];
+
+        let mut run_state = AppState {
+            follow_mode: FollowMode::Run,
+            focus: FocusLane::Dashboard,
+            selected_orchestrator_agent_index: 1,
+            transcript_scroll: 9,
+            ..AppState::default()
+        };
+        apply_follow_mode(&mut run_state, &snapshot);
+        assert_eq!(selected_wave_id(&run_state, &snapshot), Some(5));
+        assert_eq!(
+            selected_orchestrator_agent(&snapshot, &run_state).map(|agent| agent.id.as_str()),
+            Some("A1")
+        );
+        assert_eq!(run_state.transcript_scroll, 0);
+
+        let mut agent_state = AppState {
+            follow_mode: FollowMode::Agent,
+            focus: FocusLane::Dashboard,
+            selected_orchestrator_agent_index: 1,
+            transcript_scroll: 7,
+            ..AppState::default()
+        };
+        apply_follow_mode(&mut agent_state, &snapshot);
+        assert_eq!(
+            agent_state.shell_target,
+            Some(ShellTargetState {
+                scope: ShellScope::Agent,
+                wave_id: Some(5),
+                agent_id: Some("A8".to_string()),
+            })
+        );
+        assert_eq!(agent_state.transcript_scroll, 0);
     }
 
     #[test]

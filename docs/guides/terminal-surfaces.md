@@ -28,7 +28,7 @@ The TUI is now split into two intentional surfaces:
   - `Proof`
   - `Control`
 
-In narrow terminals, the shell still collapses into the single-pane summary fallback rather than drawing a broken split layout.
+In narrow terminals, the shell collapses into a one-column shell that still shows the transcript, composer, and dashboard stack rather than drawing a broken split layout.
 
 ## Operator Shell
 
@@ -48,6 +48,12 @@ The shell target is explicit and lives in one of three scopes:
 - `agent`
 
 `head` with no explicit wave target is a cross-wave active-run workspace. It is not just a label for the currently selected wave anymore.
+
+Wave targeting is intentionally split:
+
+- plain-text guidance follows the current shell target
+- wave hotkeys and implicit wave commands act on the visibly selected wave in the dashboard
+- `/wave` and `/agent` retarget the shell and align the visible selection to the same context
 
 The shell transcript is projection-backed transport assembled by `wave-app-server`. It is not a local UI log. Today it carries:
 
@@ -118,6 +124,15 @@ The live keyboard model is now focus-driven rather than tab-only.
 - `x`
   Prepare rejection or dismissal for the selected operator action.
 
+### Follow behavior
+
+- `/follow run`
+  Follow the active run wave and current agent on snapshot refresh.
+- `/follow agent`
+  Pin the selected MAS agent and keep wave/agent selection aligned to it.
+- `/follow off`
+  Preserve manual selection and transcript position.
+
 ### Slash commands
 
 These are the live shell commands:
@@ -127,8 +142,15 @@ These are the live shell commands:
 - `/scope head|wave|agent`
 - `/mode operator|autonomous`
 - `/launch [wave-id]`
-- `/rerun [full|closure-only|promotion-only]`
+- `/rerun [full|from-first-incomplete|closure-only|promotion-only]`
 - `/clear-rerun`
+- `/pause`
+- `/resume`
+- `/rerun-agent`
+- `/rebase`
+- `/reconcile`
+- `/approve-merge`
+- `/reject-merge`
 - `/approve`
 - `/reject`
 - `/close`

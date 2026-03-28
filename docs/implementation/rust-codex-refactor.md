@@ -133,7 +133,7 @@ That same model feeds the operator surfaces today:
 - `wave-app-server`
   assembles transport snapshots from reducer-backed operator snapshot inputs plus compatibility-backed active-run details, rerun intents, and replay state; it now carries the projection-owned control-status payload alongside the operator panels instead of re-deriving queue/control truth locally
 - `wave-tui`
-  renders the right-side operator panel for `Run`, `Agents`, `Queue`, and `Control`, with the queue story and control attention lines coming from the app-server snapshot's reducer-backed control-status payload rather than terminal-local recomputation
+  renders the right-side operator panel for `Overview`, `Agents`, `Queue`, `Proof`, and `Control`, with the queue story, proof state, and control attention lines coming from the app-server snapshot's reducer-backed transport rather than terminal-local recomputation
 
 The current repo-local cutover point is therefore explicit:
 
@@ -156,14 +156,16 @@ The live Rust implementation now routes this through `wave-reducer` into `wave-p
 
 The current status model should be read as:
 
-- `Run`
-  the active wave, run id, elapsed time, proof counts, and declared proof artifacts
+- `Overview`
+  shell target, active-wave summary, delivery posture, and cross-wave autonomous context
 - `Agents`
-  per-agent state, proof or marker completeness, and deliverables
+  per-agent state, proof or marker completeness, MAS merge/sandbox state, and directive context
 - `Queue`
   readiness, blockers, dependency-driven ordering, and the reducer-owned distinction between ready, claimed, active, stale-lease, and claimable waves
+- `Proof`
+  acceptance, signoff, proof artifacts, replay, risk, and debt state
 - `Control`
-  rerun intents, replay/proof state, and operator actions
+  rerun intents, manual-close state, proposals/approvals/escalations, and operator actions
 
 The important constraint is that `Queue` and `control status` are not separate truths. They are projections from the same control-plane model. If the queue says a wave is blocked, the status output and the TUI should agree on the blocker until the underlying state changes.
 
@@ -201,7 +203,7 @@ The proof-lifecycle parity fixtures for Wave 12 are intentionally narrow and sha
 This is especially relevant for the future TUI dependency: the UI should consume the same structured queue/status truth, not re-derive planning state from ad hoc terminal-specific logic.
 
 The right-side operator panel is the built-in dashboard surface in the shipped shell. It renders the repo's runtime truth today, rather than a separate dashboard app or a placeholder for later UI work. Trace and replay state appear there as recorded evidence, not as transient debug output.
-In narrow terminals, the shipped shell degrades to a text-summary fallback that shows the same operator snapshot in condensed form instead of attempting to preserve the split-panel layout.
+In narrow terminals, the shipped shell now switches to a one-column shell with the same transcript, composer, and dashboard stack instead of attempting to preserve the split-panel layout.
 
 ## Closure And Marker Baseline
 
@@ -397,6 +399,8 @@ The live interaction model now includes:
 - `m` / `M` for manual close apply and clear
 - `u` / `x` for operator-action approval or rejection
 - slash commands for scope/mode/launch/rerun/MAS control/search/compare/help
+- plain-text guidance bound to the shell target while wave hotkeys and implicit wave commands use the visible dashboard selection
+- real `/follow run|agent|off` behavior for active-run following, pinned-agent following, or manual selection
 
 If broader shell behavior is proposed later, it should build on this operator-shell contract rather than describe the TUI as a passive dashboard again.
 
@@ -416,7 +420,6 @@ This is dogfood evidence, not a claim that live-host deployment, remote fleet co
 
 ## Narrow-Terminal Fallback
 
-When the terminal is too narrow for the split layout, the shell does not try to force the right-side panel into a broken view. It falls back to the same text-summary surface used for non-interactive runs.
+When the terminal is too narrow for the split layout, the shell does not try to force the wide view into a broken layout. It switches to a one-column shell that still renders the transcript, composer, and dashboard stack in one vertical flow.
 
-That fallback is part of the shipped behavior. It preserves the same control-plane truth by rendering condensed `Run`, `Agents`, `Queue`, and `Control` sections from the same operator snapshot, but it does not expose the full right-side dashboard tabs until there is enough room for the TUI layout.
-In other words, narrow terminals get truthful status output, not a degraded split-pane rendering.
+That fallback is part of the shipped behavior. It preserves the same control-plane truth without hiding input behind an invisible composer, so narrow terminals stay interactive instead of degrading to a blind summary surface.

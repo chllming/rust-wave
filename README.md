@@ -59,16 +59,58 @@ Still pending:
 
 ## Getting Started
 
-1. Install Rust stable.
-2. Run `cargo run -p wave-cli -- project show --json` to confirm the parsed project config and state roots.
-3. Run `cargo test`.
-4. Run `cargo run -p wave-cli -- doctor --json`.
-5. Run `cargo run -p wave-cli -- control status --json`.
+Wave is currently installed from source. There is no published package surface yet.
+
+Prerequisites:
+
+1. Install Rust stable with `rustup`.
+2. Ensure `cargo` is on your `PATH`.
+3. Clone this repository locally.
+
+Build and run from the workspace:
+
+```bash
+cargo build --release -p wave-cli
+./target/release/wave project show --json
+./target/release/wave doctor --json
+./target/release/wave control status --json
+```
+
+If you prefer a local per-user install without managing the `target/release/` path directly:
+
+```bash
+cargo install --path crates/wave-cli --locked
+wave project show --json
+wave doctor --json
+wave control status --json
+```
+
+If you are working on the repo itself, the editable dev path is still:
+
+```bash
+cargo run -p wave-cli -- project show --json
+cargo test
+cargo run -p wave-cli -- doctor --json
+cargo run -p wave-cli -- control status --json
+```
+
+To update after pulling new changes:
+
+```bash
+git pull
+cargo build --release -p wave-cli
+```
+
+If you installed with `cargo install --path`, rerun:
+
+```bash
+cargo install --path crates/wave-cli --locked --force
+```
 
 If you want the interactive operator shell:
 
 ```bash
-cargo run -p wave-cli --
+./target/release/wave
 ```
 
 In a non-interactive shell, the same command falls back to a text summary.
@@ -331,6 +373,10 @@ The shell supports:
 - reducer-backed queue, proof, control, autonomy, and recovery visibility
 - transcript search and compare mode
 - explicit `--alt-screen` and `--fresh-session` startup controls via `wave tui`
+- plain text guidance bound to the current shell target
+- wave hotkeys and implicit wave commands bound to the visibly selected wave
+- `follow run|agent|off` tracking for active runs, pinned agents, or manual selection
+- a one-column shell layout in narrow terminals, with visible transcript, composer, and dashboard instead of hidden input
 
 Current keybindings:
 
@@ -360,7 +406,7 @@ Live shell commands include:
 - `/scope head|wave|agent`
 - `/mode operator|autonomous`
 - `/launch [wave-id]`
-- `/rerun [full|closure-only|promotion-only]`
+- `/rerun [full|from-first-incomplete|closure-only|promotion-only]`
 - `/clear-rerun`
 - `/pause`, `/resume`, `/rerun-agent`, `/rebase`, `/reconcile`
 - `/approve-merge`, `/reject-merge`
