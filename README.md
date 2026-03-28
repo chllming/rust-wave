@@ -11,7 +11,7 @@ The current state is an executable local operator slice:
 - repo-specific skill bundles for Rust workspace, control-plane, Codex runtime, TUI, and closure-marker work
 - pinned and vendored upstream baselines for Codex OSS and the Wave control-plane reference branch
 - project-scoped Codex state under `.wave/codex/`
-- canonical authority roots under `.wave/state/events/control/`, `.wave/state/events/coordination/`, `.wave/state/results/`, `.wave/state/derived/`, `.wave/state/projections/`, and `.wave/state/traces/`
+- canonical authority roots under `.wave/state/events/control/`, `.wave/state/events/coordination/`, `.wave/state/events/scheduler/`, `.wave/state/results/`, `.wave/state/derived/`, `.wave/state/projections/`, and `.wave/state/traces/`
 - compatibility outputs under `.wave/state/runs/` and `.wave/traces/runs/`, plus rerun intents under `.wave/state/control/reruns/`
 
 ## Status
@@ -24,7 +24,7 @@ Working now:
 - `wave doctor [--json]`
 - `wave lint [--json]`
 - `wave control status [--json]`
-- `wave control show|task|agent|rerun|close|proof|orchestrator`
+- `wave control show|task|agent|rerun|close|proof|orchestrator|repair`
 - `wave delivery status [--json]`
 - `wave delivery initiative|release|acceptance show --id <id> [--json]`
 - `wave launch`

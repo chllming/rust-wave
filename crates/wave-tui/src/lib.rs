@@ -2150,6 +2150,17 @@ fn control_review_wave_filter(state: &AppState, snapshot: &OperatorSnapshot) -> 
     }
 }
 
+fn control_context_wave_id(state: &AppState, snapshot: &OperatorSnapshot) -> Option<u32> {
+    let review_wave_filter = control_review_wave_filter(state, snapshot);
+    if review_wave_filter.is_none() {
+        selected_visible_actionable_operator_item(state, snapshot)
+            .map(|item| item.wave_id)
+            .or_else(|| selected_wave_id(state, snapshot))
+    } else {
+        selected_wave_id(state, snapshot)
+    }
+}
+
 fn visible_actionable_operator_items<'a>(
     snapshot: &'a OperatorSnapshot,
     review_wave_filter: Option<u32>,
@@ -4649,7 +4660,7 @@ fn draw_control_tab(
     snapshot: &OperatorSnapshot,
     app: &App,
 ) {
-    let selected_wave_id = selected_wave_id(&app.state, snapshot);
+    let control_context_wave_id = control_context_wave_id(&app.state, snapshot);
     let shell_target = current_shell_target(&app.state, snapshot);
     let review_wave_filter = control_review_wave_filter(&app.state, snapshot);
     let selected_review_item = selected_visible_actionable_operator_item(&app.state, snapshot);
@@ -4696,12 +4707,16 @@ fn draw_control_tab(
         format!("Follow mode: {}", app.state.follow_mode.label()),
         format!("Focused lane: {}", focus_lane_label(app.state.focus)),
     ];
-    review_items.extend(control_status_items(snapshot, &app.state, selected_wave_id));
+    review_items.extend(control_status_items(
+        snapshot,
+        &app.state,
+        control_context_wave_id,
+    ));
     review_items.extend(manual_close_status_items(
         &app.root,
         &app.config,
         snapshot,
-        selected_wave_id,
+        control_context_wave_id,
     ));
     if let Some((selected_index, actionable_count, item)) =
         selected_visible_actionable_operator_context(&app.state, snapshot)
@@ -5251,21 +5266,23 @@ fn control_status_items(
             }
         }
     }
-    if let Some(wave_id) = selected_wave_id {
-        if let Some((selected_index, actionable_count, item)) =
-            selected_actionable_operator_context(state, snapshot, wave_id)
-        {
-            items.push(format!(
-                "Selected operator action: {}/{}",
-                selected_index + 1,
-                actionable_count
-            ));
-            if let Some(waiting_on) = item.waiting_on.as_deref() {
-                items.push(format!("Waiting on: {}", waiting_on));
-            }
-            if let Some(next_action) = item.next_action.as_deref() {
-                items.push(format!("Next operator action: {}", next_action));
-            }
+    let selected_action_context = if control_review_wave_filter(state, snapshot).is_none() {
+        selected_visible_actionable_operator_context(state, snapshot)
+    } else {
+        selected_wave_id
+            .and_then(|wave_id| selected_actionable_operator_context(state, snapshot, wave_id))
+    };
+    if let Some((selected_index, actionable_count, item)) = selected_action_context {
+        items.push(format!(
+            "Selected operator action: {}/{}",
+            selected_index + 1,
+            actionable_count
+        ));
+        if let Some(waiting_on) = item.waiting_on.as_deref() {
+            items.push(format!("Waiting on: {}", waiting_on));
+        }
+        if let Some(next_action) = item.next_action.as_deref() {
+            items.push(format!("Next operator action: {}", next_action));
         }
     }
     items.push(format!(
@@ -7211,6 +7228,47 @@ mod tests {
                 }
             ))
         );
+    }
+
+    #[test]
+    fn repo_head_control_context_follows_visible_selected_review_row_wave() {
+        let mut snapshot = test_snapshot();
+        let mut wave_15 = snapshot.planning.waves[0].clone();
+        wave_15.id = 15;
+        wave_15.slug = "manual-close".to_string();
+        wave_15.title = "Close earlier waves honestly with manual close override".to_string();
+        wave_15.last_run_status = Some(WaveRunStatus::Failed);
+        wave_15.completed = true;
+        snapshot.planning.waves.push(wave_15);
+        snapshot
+            .operator_objects
+            .push(wave_app_server::OperatorActionableItem {
+                kind: wave_app_server::OperatorActionableKind::Proposal,
+                wave_id: 15,
+                record_id: "proposal-15".to_string(),
+                state: "pending".to_string(),
+                summary: "Propose recovery".to_string(),
+                detail: Some("repair the failed promotion".to_string()),
+                waiting_on: Some("operator proposal review".to_string()),
+                next_action: Some("press u to apply or x to dismiss".to_string()),
+                route: None,
+                task_id: None,
+                source_run_id: Some("wave-15-failed".to_string()),
+                evidence_count: 1,
+                created_at_ms: Some(4),
+            });
+
+        let state = AppState {
+            shell_target: Some(ShellTargetState {
+                scope: ShellScope::Head,
+                wave_id: None,
+                agent_id: None,
+            }),
+            selected_operator_action_index: 2,
+            ..AppState::default()
+        };
+
+        assert_eq!(control_context_wave_id(&state, &snapshot), Some(15));
     }
 
     #[test]

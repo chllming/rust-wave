@@ -29,7 +29,7 @@
 - `wave doctor [--json]`
 - `wave lint [--json]`
 - `wave control status [--json]`
-- `wave control show|task|agent|rerun|close|proof|orchestrator`
+- `wave control show|task|agent|rerun|close|proof|orchestrator|repair`
 - `wave delivery status [--json]`
 - `wave delivery initiative|release|acceptance show --id <id> [--json]`
 - `wave draft`
@@ -51,7 +51,7 @@
 - `wave control show`, app-server transport, and the TUI now surface manual-close override truth, rerun scope, last activity timestamps, and stalled-run hints directly instead of leaving recovery state or live-run health implicit; the TUI can now apply or clear manual-close overrides through confirm-first `m` and `M` actions rather than forcing operators back to the CLI.
 - Manual-close application now preserves control-plane integrity instead of relying on best-effort ordering: override application validates or derives repo-relative evidence, clears rerun intent only inside the same locked mutation, and restores the previous rerun or override file state if the override write or audit event append fails.
 - Dependency-handshake classification in operator transport is now typed workflow state on `HumanInputRequest`, with a legacy route-name fallback kept only for older records that predate the explicit field.
-- The TUI no longer targets only the first actionable approval or escalation on a wave: `[` and `]` now move the selected operator action in the `Control` view before `u` or `x` applies to that selected item.
+- The TUI no longer targets only the first actionable approval or escalation on a wave: with `Dashboard` focus on `Control`, `j` / `k` or the arrow keys now move the selected operator action before `u` or `x` applies to that selected item, while `[` / `]` still switch dashboard tabs.
 - Operator-shell targeting is now explicit and honest: plain-text guidance follows the shell target, while wave hotkeys and implicit wave commands act on the visibly selected wave in the dashboard.
 - The shell now starts in `Dashboard` focus so documented hotkeys work immediately; free-text guidance requires explicitly moving into `Composer` focus.
 - Repo-level `head` scope keeps `Control` as a visible cross-wave review queue, and `u` / `x` act on that selected visible row rather than a hidden per-wave action slot.
