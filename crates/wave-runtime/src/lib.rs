@@ -36,23 +36,63 @@ use wave_control_plane::PlanningStatus;
 use wave_coordination::CoordinationLog;
 use wave_coordination::CoordinationRecord;
 use wave_coordination::CoordinationRecordKind;
+use wave_domain::AgentSandboxId;
+use wave_domain::AgentSandboxRecord;
 use wave_domain::AttemptId;
 use wave_domain::AttemptRecord;
 use wave_domain::AttemptState;
 use wave_domain::ClosureDisposition;
 use wave_domain::ContradictionRecord;
 use wave_domain::ContradictionState;
+use wave_domain::ControlDirectiveId;
+use wave_domain::ControlDirectiveKind;
+use wave_domain::ControlDirectiveRecord;
 use wave_domain::ControlEventPayload;
 use wave_domain::DesignAuthority;
+use wave_domain::DirectiveDeliveryMethod;
+use wave_domain::DirectiveDeliveryRecord;
+use wave_domain::DirectiveDeliveryState;
+use wave_domain::DirectiveOrigin;
 use wave_domain::FactRecord;
 use wave_domain::FactState;
+use wave_domain::HeadProposalActionKind;
+use wave_domain::HeadProposalId;
+use wave_domain::HeadProposalRecord;
+use wave_domain::HeadProposalResolution;
+use wave_domain::HeadProposalResolutionKind;
+use wave_domain::HeadProposalState;
 use wave_domain::HumanInputRequest;
 use wave_domain::HumanInputState;
 use wave_domain::HumanInputWorkflowKind;
+use wave_domain::InvalidationId;
+use wave_domain::InvalidationRecord;
 use wave_domain::LineageRecord;
 use wave_domain::LineageRecordSubject;
 use wave_domain::LineageRef;
 use wave_domain::LineageState;
+use wave_domain::MergeDisposition;
+use wave_domain::MergeIntentId;
+use wave_domain::MergeIntentRecord;
+use wave_domain::MergeResultId;
+use wave_domain::MergeResultRecord;
+use wave_domain::OperatorShellScope;
+use wave_domain::OperatorShellSessionId;
+use wave_domain::OperatorShellSessionRecord;
+use wave_domain::OperatorShellTurnId;
+use wave_domain::OperatorShellTurnOrigin;
+use wave_domain::OperatorShellTurnRecord;
+use wave_domain::OperatorShellTurnStatus;
+use wave_domain::OrchestratorMode;
+use wave_domain::OrchestratorSessionId;
+use wave_domain::OrchestratorSessionRecord;
+use wave_domain::RecoveryActionId;
+use wave_domain::RecoveryActionKind;
+use wave_domain::RecoveryActionRecord;
+use wave_domain::RecoveryAgentPlan;
+use wave_domain::RecoveryCause;
+use wave_domain::RecoveryPlanId;
+use wave_domain::RecoveryPlanRecord;
+use wave_domain::RecoveryPlanStatus;
 use wave_domain::RerunRequest;
 use wave_domain::RerunRequestId;
 use wave_domain::RerunScope;
@@ -69,6 +109,7 @@ use wave_domain::SchedulerBudgetId;
 use wave_domain::SchedulerBudgetRecord;
 use wave_domain::SchedulerEventPayload;
 use wave_domain::SchedulerOwner;
+use wave_domain::TaskId;
 use wave_domain::TaskLeaseId;
 use wave_domain::TaskLeaseRecord;
 use wave_domain::TaskLeaseState;
@@ -220,6 +261,8 @@ const DEFAULT_LEASE_TTL_MS: u64 = 20_000;
 const DEFAULT_AGENT_POLL_INTERVAL_MS: u64 = 250;
 const DEFAULT_RUNTIME_CHECK_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_RUNTIME_CHECK_POLL_INTERVAL_MS: u64 = 25;
+const AUTONOMOUS_HEAD_SESSION_ID: &str = "shell-session-autonomous-head";
+const AUTONOMOUS_HEAD_THROTTLE_MS: u128 = 5_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LeaseTiming {
@@ -250,6 +293,7 @@ pub struct RuntimeAvailability {
     pub binary: String,
     pub available: bool,
     pub detail: String,
+    pub directive_capabilities: RuntimeDirectiveCapabilities,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -258,6 +302,13 @@ pub struct RuntimeBoundaryStatus {
     pub selection_policy: &'static str,
     pub fallback_policy: &'static str,
     pub runtimes: Vec<RuntimeAvailability>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct RuntimeDirectiveCapabilities {
+    pub live_injection: bool,
+    pub checkpoint_overlay: bool,
+    pub ack_support: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -352,6 +403,7 @@ struct RuntimeExecutionRequest {
 
 trait RuntimeAdapter {
     fn availability(&self) -> RuntimeAvailability;
+    fn directive_capabilities(&self) -> RuntimeDirectiveCapabilities;
     fn execute(&self, request: RuntimeExecutionRequest) -> Result<SpawnedRuntimeChild>;
 }
 
@@ -416,6 +468,15 @@ pub struct RerunIntentRecord {
     pub status: RerunIntentStatus,
     pub requested_at_ms: u128,
     pub cleared_at_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OperatorHeadTurnOutcome {
+    pub session: OperatorShellSessionRecord,
+    pub operator_turn: OperatorShellTurnRecord,
+    pub head_turns: Vec<OperatorShellTurnRecord>,
+    pub proposals: Vec<HeadProposalRecord>,
+    pub applied_proposals: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -615,6 +676,16 @@ impl RuntimeAdapterRegistry {
         runtimes.sort_by_key(|entry| entry.runtime);
         runtimes
     }
+
+    fn directive_capabilities(&self, runtime: RuntimeId) -> RuntimeDirectiveCapabilities {
+        self.adapter(runtime)
+            .map(|adapter| adapter.directive_capabilities())
+            .unwrap_or(RuntimeDirectiveCapabilities {
+                live_injection: false,
+                checkpoint_overlay: false,
+                ack_support: false,
+            })
+    }
 }
 
 impl RuntimeAdapter for CodexRuntimeAdapter {
@@ -622,6 +693,7 @@ impl RuntimeAdapter for CodexRuntimeAdapter {
         runtime_availability_from_checks(
             RuntimeId::Codex,
             self.binary.clone(),
+            self.directive_capabilities(),
             vec![
                 runtime_check(self.binary.as_str(), &["--version"], |status, _, _| status),
                 runtime_check(
@@ -633,6 +705,14 @@ impl RuntimeAdapter for CodexRuntimeAdapter {
                 ),
             ],
         )
+    }
+
+    fn directive_capabilities(&self) -> RuntimeDirectiveCapabilities {
+        RuntimeDirectiveCapabilities {
+            live_injection: false,
+            checkpoint_overlay: true,
+            ack_support: false,
+        }
     }
 
     fn execute(&self, request: RuntimeExecutionRequest) -> Result<SpawnedRuntimeChild> {
@@ -695,6 +775,7 @@ impl RuntimeAdapter for ClaudeRuntimeAdapter {
         runtime_availability_from_checks(
             RuntimeId::Claude,
             self.binary.clone(),
+            self.directive_capabilities(),
             vec![
                 runtime_check(self.binary.as_str(), &["--version"], |status, _, _| status),
                 runtime_check(
@@ -712,6 +793,14 @@ impl RuntimeAdapter for ClaudeRuntimeAdapter {
                 ),
             ],
         )
+    }
+
+    fn directive_capabilities(&self) -> RuntimeDirectiveCapabilities {
+        RuntimeDirectiveCapabilities {
+            live_injection: false,
+            checkpoint_overlay: true,
+            ack_support: false,
+        }
     }
 
     fn execute(&self, request: RuntimeExecutionRequest) -> Result<SpawnedRuntimeChild> {
@@ -798,6 +887,7 @@ impl RuntimeAdapter for ClaudeRuntimeAdapter {
 fn runtime_availability_from_checks(
     runtime: RuntimeId,
     binary: String,
+    directive_capabilities: RuntimeDirectiveCapabilities,
     checks: Vec<(bool, String)>,
 ) -> RuntimeAvailability {
     if let Some((_, detail)) = checks.iter().find(|(ok, _)| !*ok) {
@@ -806,6 +896,7 @@ fn runtime_availability_from_checks(
             binary,
             available: false,
             detail: detail.clone(),
+            directive_capabilities,
         };
     }
     RuntimeAvailability {
@@ -813,6 +904,7 @@ fn runtime_availability_from_checks(
         binary,
         available: true,
         detail: "available".to_string(),
+        directive_capabilities,
     }
 }
 
@@ -1803,6 +1895,1558 @@ pub fn dismiss_escalation(
         CoordinationRecordKind::Clarification,
         "dismissed",
         "Operator dismissed escalation from the Wave TUI",
+    )
+}
+
+pub fn list_control_directives(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<ControlDirectiveRecord>> {
+    let dir = control_mas_directives_dir(root, config);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut directives = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let directive = serde_json::from_str::<ControlDirectiveRecord>(&raw)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        if wave_id.is_none_or(|candidate| candidate == directive.wave_id) {
+            directives.push(directive);
+        }
+    }
+    directives.sort_by_key(|record| {
+        (
+            record.requested_at_ms,
+            record.directive_id.as_str().to_string(),
+        )
+    });
+    Ok(directives)
+}
+
+pub fn list_directive_deliveries(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<DirectiveDeliveryRecord>> {
+    let dir = control_mas_deliveries_dir(root, config);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut deliveries = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let delivery = serde_json::from_str::<DirectiveDeliveryRecord>(&raw)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        if wave_id.is_none_or(|candidate| candidate == delivery.wave_id) {
+            deliveries.push(delivery);
+        }
+    }
+    deliveries.sort_by_key(|record| {
+        (
+            record.updated_at_ms,
+            record.directive_id.as_str().to_string(),
+        )
+    });
+    Ok(deliveries)
+}
+
+pub fn list_agent_sandboxes(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<AgentSandboxRecord>> {
+    let dir = control_mas_sandboxes_dir(root, config);
+    load_control_json_records::<AgentSandboxRecord, _, _>(
+        &dir,
+        wave_id,
+        |record| record.wave_id,
+        |record| {
+            (
+                record.allocated_at_ms,
+                record.sandbox_id.as_str().to_string(),
+            )
+        },
+    )
+}
+
+pub fn list_merge_intents(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<MergeIntentRecord>> {
+    let dir = control_mas_merge_intents_dir(root, config);
+    load_control_json_records::<MergeIntentRecord, _, _>(
+        &dir,
+        wave_id,
+        |record| record.wave_id,
+        |record| {
+            (
+                record.created_at_ms,
+                record.merge_intent_id.as_str().to_string(),
+            )
+        },
+    )
+}
+
+pub fn list_merge_results(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<MergeResultRecord>> {
+    let dir = control_mas_merge_results_dir(root, config);
+    load_control_json_records::<MergeResultRecord, _, _>(
+        &dir,
+        wave_id,
+        |record| record.wave_id,
+        |record| {
+            (
+                record.applied_at_ms,
+                record.merge_result_id.as_str().to_string(),
+            )
+        },
+    )
+}
+
+pub fn list_invalidations(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<InvalidationRecord>> {
+    let dir = control_mas_invalidations_dir(root, config);
+    load_control_json_records::<InvalidationRecord, _, _>(
+        &dir,
+        wave_id,
+        |record| record.wave_id,
+        |record| {
+            (
+                record.created_at_ms,
+                record.invalidation_id.as_str().to_string(),
+            )
+        },
+    )
+}
+
+pub fn list_recovery_plans(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<RecoveryPlanRecord>> {
+    let dir = control_mas_recovery_plans_dir(root, config);
+    load_control_json_records::<RecoveryPlanRecord, _, _>(
+        &dir,
+        wave_id,
+        |record| record.wave_id,
+        |record| {
+            (
+                record.updated_at_ms.max(record.created_at_ms),
+                record.recovery_plan_id.as_str().to_string(),
+            )
+        },
+    )
+}
+
+pub fn list_recovery_actions(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<RecoveryActionRecord>> {
+    let dir = control_mas_recovery_actions_dir(root, config);
+    load_control_json_records::<RecoveryActionRecord, _, _>(
+        &dir,
+        wave_id,
+        |record| record.wave_id,
+        |record| {
+            (
+                record.created_at_ms,
+                record.recovery_action_id.as_str().to_string(),
+            )
+        },
+    )
+}
+
+fn latest_recovery_plan(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+) -> Result<Option<RecoveryPlanRecord>> {
+    Ok(list_recovery_plans(root, config, Some(wave_id))?
+        .into_iter()
+        .last())
+}
+
+fn active_recovery_plan_for_wave(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+) -> Result<Option<RecoveryPlanRecord>> {
+    Ok(latest_recovery_plan(root, config, wave_id)?
+        .filter(|plan| !matches!(plan.status, RecoveryPlanStatus::Resolved)))
+}
+
+fn resolve_active_recovery_plan_for_wave(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    detail: impl Into<String>,
+) -> Result<Option<RecoveryPlanRecord>> {
+    let Some(mut recovery_plan) = active_recovery_plan_for_wave(root, config, wave_id)? else {
+        return Ok(None);
+    };
+    recovery_plan.status = RecoveryPlanStatus::Resolved;
+    recovery_plan.updated_at_ms = now_epoch_ms()?;
+    recovery_plan.detail = Some(detail.into());
+    persist_recovery_plan_record(root, config, &recovery_plan)?;
+    Ok(Some(recovery_plan))
+}
+
+fn build_recovery_plan_for_wave(
+    wave_id: u32,
+    run_id: &str,
+    record: &WaveRunRecord,
+    merge_results: &[MergeResultRecord],
+    invalidations: &[InvalidationRecord],
+    preserved_accepted_agent_ids: &HashSet<String>,
+    unresolved_agent_ids: &[String],
+    created_at_ms: u128,
+) -> RecoveryPlanRecord {
+    let invalidated_agent_ids = invalidations
+        .iter()
+        .flat_map(|record| record.invalidated_task_ids.iter())
+        .filter_map(task_id_agent_id)
+        .collect::<HashSet<_>>();
+    let latest_merge_by_agent = merge_results.iter().fold(
+        HashMap::<String, &MergeResultRecord>::new(),
+        |mut acc, record| {
+            if let Some(agent_id) = task_id_agent_id(&record.task_id) {
+                let replace = acc
+                    .get(&agent_id)
+                    .map(|current| {
+                        (record.applied_at_ms, record.merge_result_id.as_str())
+                            >= (
+                                (*current).applied_at_ms,
+                                (*current).merge_result_id.as_str(),
+                            )
+                    })
+                    .unwrap_or(true);
+                if replace {
+                    acc.insert(agent_id, record);
+                }
+            }
+            acc
+        },
+    );
+
+    let mut causes = BTreeSet::new();
+    let mut agent_plans = Vec::new();
+    for agent_id in unresolved_agent_ids {
+        let (cause, detail, required_actions) = if invalidated_agent_ids.contains(agent_id) {
+            (
+                RecoveryCause::Invalidated,
+                Some("accepted sibling work invalidated this agent's base state".to_string()),
+                vec![
+                    RecoveryActionKind::RebaseSandbox,
+                    RecoveryActionKind::RerunAgent,
+                ],
+            )
+        } else if let Some(merge_result) = latest_merge_by_agent.get(agent_id) {
+            match merge_result.disposition {
+                MergeDisposition::Conflicted => (
+                    RecoveryCause::MergeConflict,
+                    merge_result
+                        .detail
+                        .clone()
+                        .or_else(|| Some("integration merge reported conflicts".to_string())),
+                    vec![
+                        RecoveryActionKind::RebaseSandbox,
+                        RecoveryActionKind::RequestReconciliation,
+                        RecoveryActionKind::RerunAgent,
+                    ],
+                ),
+                MergeDisposition::Rejected => (
+                    RecoveryCause::MergeRejected,
+                    merge_result
+                        .detail
+                        .clone()
+                        .or_else(|| Some("integration merge was rejected".to_string())),
+                    vec![
+                        RecoveryActionKind::ApproveMerge,
+                        RecoveryActionKind::RejectMerge,
+                        RecoveryActionKind::RequestReconciliation,
+                        RecoveryActionKind::RerunAgent,
+                    ],
+                ),
+                _ => (
+                    RecoveryCause::Mixed,
+                    merge_result.detail.clone(),
+                    vec![
+                        RecoveryActionKind::RequestReconciliation,
+                        RecoveryActionKind::RerunAgent,
+                    ],
+                ),
+            }
+        } else {
+            let agent_error = record
+                .agents
+                .iter()
+                .find(|agent| agent.id == *agent_id)
+                .and_then(|agent| agent.error.clone());
+            (
+                RecoveryCause::AgentFailed,
+                agent_error.or_else(|| Some("agent ended without accepted recovery".to_string())),
+                vec![RecoveryActionKind::RerunAgent],
+            )
+        };
+        causes.insert(cause);
+        agent_plans.push(RecoveryAgentPlan {
+            agent_id: agent_id.clone(),
+            cause,
+            required_actions,
+            detail,
+        });
+    }
+
+    RecoveryPlanRecord {
+        recovery_plan_id: RecoveryPlanId::new(format!(
+            "recovery-plan-wave-{:02}-{}-{}",
+            wave_id, run_id, created_at_ms
+        )),
+        wave_id,
+        run_id: run_id.to_string(),
+        causes: causes.into_iter().collect(),
+        affected_agent_ids: unresolved_agent_ids.to_vec(),
+        preserved_accepted_agent_ids: {
+            let mut ids = preserved_accepted_agent_ids
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            ids.sort();
+            ids
+        },
+        agent_plans,
+        status: RecoveryPlanStatus::Open,
+        detail: record.error.clone(),
+        created_at_ms,
+        updated_at_ms: created_at_ms,
+    }
+}
+
+fn load_control_json_records<T, FWave, FKey>(
+    dir: &Path,
+    wave_id: Option<u32>,
+    wave_selector: FWave,
+    sort_key: FKey,
+) -> Result<Vec<T>>
+where
+    T: serde::de::DeserializeOwned,
+    FWave: Fn(&T) -> u32,
+    FKey: Fn(&T) -> (u128, String),
+{
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut records = Vec::new();
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let record = serde_json::from_str::<T>(&raw)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        if wave_id.is_none_or(|candidate| candidate == wave_selector(&record)) {
+            records.push(record);
+        }
+    }
+    records.sort_by_key(sort_key);
+    Ok(records)
+}
+
+pub fn latest_orchestrator_session(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+) -> Result<Option<OrchestratorSessionRecord>> {
+    let path = orchestrator_session_path(root, config, wave_id);
+    match fs::read_to_string(&path) {
+        Ok(raw) => {
+            let session = serde_json::from_str::<OrchestratorSessionRecord>(&raw)
+                .with_context(|| format!("failed to parse {}", path.display()))?;
+            Ok(Some(session))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+pub fn list_operator_shell_sessions(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<Vec<OperatorShellSessionRecord>> {
+    let dir = control_operator_shell_sessions_dir(root, config);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut sessions = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let session = serde_json::from_str::<OperatorShellSessionRecord>(&raw)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        sessions.push(session);
+    }
+    sessions.sort_by_key(|record| (record.updated_at_ms, record.session_id.as_str().to_string()));
+    Ok(sessions)
+}
+
+pub fn latest_operator_shell_session(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<Option<OperatorShellSessionRecord>> {
+    let sessions = list_operator_shell_sessions(root, config)?;
+    Ok(sessions
+        .iter()
+        .rev()
+        .find(|session| session.active)
+        .cloned()
+        .or_else(|| sessions.last().cloned()))
+}
+
+pub fn list_operator_shell_turns(
+    root: &Path,
+    config: &ProjectConfig,
+    session_id: Option<&str>,
+) -> Result<Vec<OperatorShellTurnRecord>> {
+    let dir = control_operator_shell_turns_dir(root, config);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut turns = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let turn = serde_json::from_str::<OperatorShellTurnRecord>(&raw)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        if session_id.is_none_or(|candidate| turn.session_id.as_str() == candidate) {
+            turns.push(turn);
+        }
+    }
+    turns.sort_by_key(|record| (record.created_at_ms, record.turn_id.as_str().to_string()));
+    Ok(turns)
+}
+
+pub fn list_head_proposals(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: Option<u32>,
+) -> Result<Vec<HeadProposalRecord>> {
+    let dir = control_head_proposals_dir(root, config);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut proposals = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let proposal = serde_json::from_str::<HeadProposalRecord>(&raw)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        if wave_id.is_none_or(|candidate| candidate == proposal.wave_id) {
+            proposals.push(proposal);
+        }
+    }
+    proposals.sort_by_key(|record| {
+        (
+            record.updated_at_ms,
+            record.proposal_id.as_str().to_string(),
+        )
+    });
+    Ok(proposals)
+}
+
+pub fn upsert_operator_shell_session(
+    root: &Path,
+    config: &ProjectConfig,
+    scope: OperatorShellScope,
+    wave_id: Option<u32>,
+    agent_id: Option<&str>,
+    tab: &str,
+    follow_mode: &str,
+    mode: OrchestratorMode,
+    _requested_by: &str,
+) -> Result<OperatorShellSessionRecord> {
+    let created_at_ms = now_epoch_ms()?;
+    let mut session =
+        latest_operator_shell_session(root, config)?.unwrap_or(OperatorShellSessionRecord {
+            session_id: OperatorShellSessionId::new(format!("shell-session-{created_at_ms}")),
+            scope,
+            wave_id,
+            agent_id: agent_id.map(|value| value.to_string()),
+            tab: tab.to_string(),
+            follow_mode: follow_mode.to_string(),
+            mode,
+            active: true,
+            started_at_ms: created_at_ms,
+            updated_at_ms: created_at_ms,
+        });
+    session.scope = scope;
+    session.wave_id = wave_id;
+    session.agent_id = agent_id.map(|value| value.to_string());
+    session.tab = tab.to_string();
+    session.follow_mode = follow_mode.to_string();
+    session.mode = mode;
+    session.active = true;
+    session.updated_at_ms = created_at_ms;
+    write_operator_shell_session(root, config, &session)?;
+    append_shell_session_event(root, config, &session, wave_id.unwrap_or_default())?;
+    Ok(session)
+}
+
+pub fn start_operator_shell_session(
+    root: &Path,
+    config: &ProjectConfig,
+    scope: OperatorShellScope,
+    wave_id: Option<u32>,
+    agent_id: Option<&str>,
+    tab: &str,
+    follow_mode: &str,
+    mode: OrchestratorMode,
+    _requested_by: &str,
+) -> Result<OperatorShellSessionRecord> {
+    let created_at_ms = now_epoch_ms()?;
+    let mut sessions = list_operator_shell_sessions(root, config)?;
+    for existing in sessions.iter_mut().filter(|session| session.active) {
+        existing.active = false;
+        existing.updated_at_ms = created_at_ms;
+        write_operator_shell_session(root, config, existing)?;
+        append_shell_session_event(root, config, existing, existing.wave_id.unwrap_or_default())?;
+    }
+
+    let session = OperatorShellSessionRecord {
+        session_id: OperatorShellSessionId::new(format!("shell-session-{created_at_ms}")),
+        scope,
+        wave_id,
+        agent_id: agent_id.map(|value| value.to_string()),
+        tab: tab.to_string(),
+        follow_mode: follow_mode.to_string(),
+        mode,
+        active: true,
+        started_at_ms: created_at_ms,
+        updated_at_ms: created_at_ms,
+    };
+    write_operator_shell_session(root, config, &session)?;
+    append_shell_session_event(root, config, &session, wave_id.unwrap_or_default())?;
+    Ok(session)
+}
+
+fn append_shell_session_event(
+    root: &Path,
+    config: &ProjectConfig,
+    session: &OperatorShellSessionRecord,
+    wave_id: u32,
+) -> Result<()> {
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-shell-session-{}", session.updated_at_ms),
+            ControlEventKind::OperatorActionRecorded,
+            wave_id,
+        )
+        .with_created_at_ms(session.updated_at_ms)
+        .with_correlation_id(session.session_id.as_str().to_string())
+        .with_payload(ControlEventPayload::OperatorShellSessionUpdated {
+            session: session.clone(),
+        }),
+    )
+}
+
+fn persist_operator_shell_turn_record(
+    root: &Path,
+    config: &ProjectConfig,
+    turn: &OperatorShellTurnRecord,
+) -> Result<()> {
+    write_operator_shell_turn(root, config, turn)?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-shell-turn-{}", turn.turn_id.as_str()),
+            ControlEventKind::OperatorActionRecorded,
+            turn.wave_id.unwrap_or_default(),
+        )
+        .with_created_at_ms(turn.created_at_ms)
+        .with_correlation_id(turn.turn_id.as_str().to_string())
+        .with_payload(ControlEventPayload::OperatorShellTurnRecorded { turn: turn.clone() }),
+    )
+}
+
+fn persist_head_proposal_record(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal: &HeadProposalRecord,
+) -> Result<()> {
+    write_head_proposal(root, config, proposal)?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-head-proposal-{}", proposal.updated_at_ms),
+            ControlEventKind::OperatorActionRecorded,
+            proposal.wave_id,
+        )
+        .with_created_at_ms(proposal.updated_at_ms)
+        .with_correlation_id(proposal.proposal_id.as_str().to_string())
+        .with_payload(ControlEventPayload::HeadProposalUpdated {
+            proposal: proposal.clone(),
+        }),
+    )
+}
+
+fn persist_recovery_plan_record(
+    root: &Path,
+    config: &ProjectConfig,
+    recovery_plan: &RecoveryPlanRecord,
+) -> Result<()> {
+    write_recovery_plan(root, config, recovery_plan)?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-recovery-plan-{}", recovery_plan.updated_at_ms),
+            ControlEventKind::OperatorActionRecorded,
+            recovery_plan.wave_id,
+        )
+        .with_created_at_ms(recovery_plan.updated_at_ms)
+        .with_correlation_id(recovery_plan.recovery_plan_id.as_str().to_string())
+        .with_payload(ControlEventPayload::RecoveryPlanUpdated {
+            recovery_plan: recovery_plan.clone(),
+        }),
+    )
+}
+
+fn persist_recovery_action_record(
+    root: &Path,
+    config: &ProjectConfig,
+    recovery_action: &RecoveryActionRecord,
+) -> Result<()> {
+    write_recovery_action(root, config, recovery_action)?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!(
+                "evt-recovery-action-{}",
+                recovery_action.recovery_action_id.as_str()
+            ),
+            ControlEventKind::OperatorActionRecorded,
+            recovery_action.wave_id,
+        )
+        .with_created_at_ms(recovery_action.created_at_ms)
+        .with_correlation_id(recovery_action.recovery_action_id.as_str().to_string())
+        .with_payload(ControlEventPayload::RecoveryActionRecorded {
+            recovery_action: recovery_action.clone(),
+        }),
+    )
+}
+
+fn update_head_proposal_resolution(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal: &mut HeadProposalRecord,
+    state: HeadProposalState,
+    resolution_kind: HeadProposalResolutionKind,
+    requested_by: &str,
+) -> Result<()> {
+    let resolved_at_ms = now_epoch_ms()?;
+    proposal.state = state;
+    proposal.updated_at_ms = resolved_at_ms;
+    proposal.resolution = Some(HeadProposalResolution {
+        kind: resolution_kind,
+        resolved_by: requested_by.to_string(),
+        resolved_at_ms,
+    });
+    persist_head_proposal_record(root, config, proposal)
+}
+
+fn persist_proposal_resolution_turn(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal: &HeadProposalRecord,
+    status: OperatorShellTurnStatus,
+    input: String,
+    output: String,
+    failed_reason: Option<String>,
+) -> Result<()> {
+    let created_at_ms = proposal.updated_at_ms;
+    let turn = OperatorShellTurnRecord {
+        turn_id: OperatorShellTurnId::new(format!(
+            "shell-turn-system-{}",
+            proposal.proposal_id.as_str()
+        )),
+        session_id: proposal.session_id.clone(),
+        origin: OperatorShellTurnOrigin::System,
+        scope: if proposal.agent_id.is_some() {
+            OperatorShellScope::Agent
+        } else {
+            OperatorShellScope::Wave
+        },
+        cycle_id: proposal.cycle_id.clone(),
+        wave_id: Some(proposal.wave_id),
+        agent_id: proposal.agent_id.clone(),
+        input,
+        output: Some(output),
+        status,
+        created_at_ms,
+        failed_reason,
+    };
+    persist_operator_shell_turn_record(root, config, &turn)
+}
+
+fn active_wave_ids_from_latest_runs(root: &Path, config: &ProjectConfig) -> Result<Vec<u32>> {
+    let mut wave_ids = load_latest_runs(root, config)?
+        .into_values()
+        .filter(|run| matches!(run.status, WaveRunStatus::Planned | WaveRunStatus::Running))
+        .map(|run| run.wave_id)
+        .collect::<Vec<_>>();
+    wave_ids.sort_unstable();
+    wave_ids.dedup();
+    Ok(wave_ids)
+}
+
+fn target_wave_ids_for_shell_turn(
+    root: &Path,
+    config: &ProjectConfig,
+    scope: OperatorShellScope,
+    wave_id: Option<u32>,
+) -> Result<Vec<u32>> {
+    if let Some(wave_id) = wave_id {
+        return Ok(vec![wave_id]);
+    }
+    if matches!(scope, OperatorShellScope::Head) {
+        return active_wave_ids_from_latest_runs(root, config);
+    }
+    Ok(Vec::new())
+}
+
+fn ensure_background_operator_shell_session(
+    root: &Path,
+    config: &ProjectConfig,
+    mode: OrchestratorMode,
+) -> Result<OperatorShellSessionRecord> {
+    let created_at_ms = now_epoch_ms()?;
+    let mut session = list_operator_shell_sessions(root, config)?
+        .into_iter()
+        .find(|record| record.session_id.as_str() == AUTONOMOUS_HEAD_SESSION_ID)
+        .unwrap_or(OperatorShellSessionRecord {
+            session_id: OperatorShellSessionId::new(AUTONOMOUS_HEAD_SESSION_ID.to_string()),
+            scope: OperatorShellScope::Head,
+            wave_id: None,
+            agent_id: None,
+            tab: "overview".to_string(),
+            follow_mode: "run".to_string(),
+            mode,
+            active: false,
+            started_at_ms: created_at_ms,
+            updated_at_ms: created_at_ms,
+        });
+    session.scope = OperatorShellScope::Head;
+    session.wave_id = None;
+    session.agent_id = None;
+    session.tab = "overview".to_string();
+    session.follow_mode = "run".to_string();
+    session.mode = mode;
+    session.active = false;
+    session.updated_at_ms = created_at_ms;
+    write_operator_shell_session(root, config, &session)?;
+    append_shell_session_event(root, config, &session, 0)?;
+    Ok(session)
+}
+
+pub fn record_operator_shell_guidance_turn(
+    root: &Path,
+    config: &ProjectConfig,
+    scope: OperatorShellScope,
+    wave_id: Option<u32>,
+    agent_id: Option<&str>,
+    input: &str,
+    output: &str,
+    tab: &str,
+    follow_mode: &str,
+    mode: OrchestratorMode,
+    requested_by: &str,
+) -> Result<(OperatorShellSessionRecord, OperatorShellTurnRecord)> {
+    let session = upsert_operator_shell_session(
+        root,
+        config,
+        scope,
+        wave_id,
+        agent_id,
+        tab,
+        follow_mode,
+        mode,
+        requested_by,
+    )?;
+    let created_at_ms = now_epoch_ms()?;
+    let turn = OperatorShellTurnRecord {
+        turn_id: OperatorShellTurnId::new(format!("shell-turn-{created_at_ms}")),
+        session_id: session.session_id.clone(),
+        origin: OperatorShellTurnOrigin::Operator,
+        scope,
+        cycle_id: None,
+        wave_id,
+        agent_id: agent_id.map(|value| value.to_string()),
+        input: input.to_string(),
+        output: Some(output.to_string()),
+        status: OperatorShellTurnStatus::Succeeded,
+        created_at_ms,
+        failed_reason: None,
+    };
+    persist_operator_shell_turn_record(root, config, &turn)?;
+    Ok((session, turn))
+}
+
+pub fn submit_operator_shell_head_turn(
+    root: &Path,
+    config: &ProjectConfig,
+    scope: OperatorShellScope,
+    wave_id: Option<u32>,
+    agent_id: Option<&str>,
+    input: &str,
+    tab: &str,
+    follow_mode: &str,
+    mode: OrchestratorMode,
+    requested_by: &str,
+) -> Result<OperatorHeadTurnOutcome> {
+    let session = upsert_operator_shell_session(
+        root,
+        config,
+        scope,
+        wave_id,
+        agent_id,
+        tab,
+        follow_mode,
+        mode,
+        requested_by,
+    )?;
+    let created_at_ms = now_epoch_ms()?;
+    let cycle_id = Some(format!("shell-head-cycle-{created_at_ms}"));
+    let operator_turn = OperatorShellTurnRecord {
+        turn_id: OperatorShellTurnId::new(format!("shell-turn-operator-{created_at_ms}")),
+        session_id: session.session_id.clone(),
+        origin: OperatorShellTurnOrigin::Operator,
+        scope,
+        cycle_id: cycle_id.clone(),
+        wave_id,
+        agent_id: agent_id.map(|value| value.to_string()),
+        input: input.to_string(),
+        output: Some("requested head review".to_string()),
+        status: OperatorShellTurnStatus::Succeeded,
+        created_at_ms,
+        failed_reason: None,
+    };
+    persist_operator_shell_turn_record(root, config, &operator_turn)?;
+
+    let target_wave_ids = target_wave_ids_for_shell_turn(root, config, scope, wave_id)?;
+    let mut head_turns = Vec::new();
+    let mut proposals = Vec::new();
+    let mut applied_proposals = 0;
+
+    if target_wave_ids.is_empty() {
+        let head_turn_created_at_ms = now_epoch_ms()?;
+        let head_turn = OperatorShellTurnRecord {
+            turn_id: OperatorShellTurnId::new(format!("shell-turn-head-{head_turn_created_at_ms}")),
+            session_id: session.session_id.clone(),
+            origin: OperatorShellTurnOrigin::Head,
+            scope,
+            cycle_id: cycle_id.clone(),
+            wave_id: None,
+            agent_id: agent_id.map(|value| value.to_string()),
+            input: input.to_string(),
+            output: Some(
+                "Head could not prepare proposals because there are no active wave targets."
+                    .to_string(),
+            ),
+            status: OperatorShellTurnStatus::Succeeded,
+            created_at_ms: head_turn_created_at_ms,
+            failed_reason: None,
+        };
+        persist_operator_shell_turn_record(root, config, &head_turn)?;
+        head_turns.push(head_turn);
+    } else {
+        for target_wave_id in target_wave_ids {
+            let target_agent_id = if matches!(scope, OperatorShellScope::Agent) {
+                agent_id.map(|value| value.to_string())
+            } else {
+                None
+            };
+            let (summary, detail, mut target_proposals) = synthesize_head_proposals(
+                root,
+                config,
+                &session,
+                &operator_turn,
+                target_wave_id,
+                target_agent_id.as_deref(),
+                input,
+                cycle_id.as_deref(),
+                matches!(mode, OrchestratorMode::Autonomous),
+            )?;
+            let head_turn_created_at_ms = now_epoch_ms()?;
+            let head_turn = OperatorShellTurnRecord {
+                turn_id: OperatorShellTurnId::new(format!(
+                    "shell-turn-head-{target_wave_id}-{head_turn_created_at_ms}"
+                )),
+                session_id: session.session_id.clone(),
+                origin: OperatorShellTurnOrigin::Head,
+                scope,
+                cycle_id: cycle_id.clone(),
+                wave_id: Some(target_wave_id),
+                agent_id: target_agent_id.clone(),
+                input: input.to_string(),
+                output: Some(match detail {
+                    Some(detail) => format!("{summary}\n\n{detail}"),
+                    None => summary,
+                }),
+                status: OperatorShellTurnStatus::Succeeded,
+                created_at_ms: head_turn_created_at_ms,
+                failed_reason: None,
+            };
+            persist_operator_shell_turn_record(root, config, &head_turn)?;
+            head_turns.push(head_turn);
+
+            if matches!(mode, OrchestratorMode::Autonomous) {
+                for proposal in target_proposals.drain(..) {
+                    let proposal_id = proposal.proposal_id.as_str().to_string();
+                    match apply_head_proposal_internal(
+                        root,
+                        config,
+                        proposal.clone(),
+                        requested_by,
+                        HeadProposalResolutionKind::AutonomousApplied,
+                        DirectiveOrigin::AutonomousHead,
+                    ) {
+                        Ok(proposal) => {
+                            applied_proposals += 1;
+                            proposals.push(proposal);
+                        }
+                        Err(error) => {
+                            let failed_at_ms = now_epoch_ms()?;
+                            let mut failed =
+                                read_head_proposal(root, config, &proposal_id)?.unwrap_or(proposal);
+                            failed.updated_at_ms = failed_at_ms;
+                            failed.state = HeadProposalState::Rejected;
+                            failed.resolution = Some(HeadProposalResolution {
+                                kind: HeadProposalResolutionKind::Rejected,
+                                resolved_by: requested_by.to_string(),
+                                resolved_at_ms: failed_at_ms,
+                            });
+                            persist_head_proposal_record(root, config, &failed)?;
+                            persist_proposal_resolution_turn(
+                                root,
+                                config,
+                                &failed,
+                                OperatorShellTurnStatus::Failed,
+                                format!("autonomously apply proposal {}", failed.proposal_id),
+                                format!("autonomous apply failed: {error}"),
+                                Some(error.to_string()),
+                            )?;
+                            proposals.push(failed);
+                        }
+                    }
+                }
+            } else {
+                proposals.extend(target_proposals);
+            }
+        }
+    }
+
+    Ok(OperatorHeadTurnOutcome {
+        session,
+        operator_turn,
+        head_turns,
+        proposals,
+        applied_proposals,
+    })
+}
+
+pub fn apply_head_proposal(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal_id: &str,
+    requested_by: &str,
+) -> Result<HeadProposalRecord> {
+    let proposal = read_head_proposal(root, config, proposal_id)?
+        .with_context(|| format!("head proposal {proposal_id} not found"))?;
+    apply_head_proposal_internal(
+        root,
+        config,
+        proposal,
+        requested_by,
+        HeadProposalResolutionKind::OperatorApplied,
+        DirectiveOrigin::Operator,
+    )
+}
+
+pub fn dismiss_head_proposal(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal_id: &str,
+    requested_by: &str,
+) -> Result<HeadProposalRecord> {
+    let mut proposal = read_head_proposal(root, config, proposal_id)?
+        .with_context(|| format!("head proposal {proposal_id} not found"))?;
+    if proposal.state != HeadProposalState::Pending {
+        return Ok(proposal);
+    }
+    update_head_proposal_resolution(
+        root,
+        config,
+        &mut proposal,
+        HeadProposalState::Dismissed,
+        HeadProposalResolutionKind::Dismissed,
+        requested_by,
+    )?;
+    persist_proposal_resolution_turn(
+        root,
+        config,
+        &proposal,
+        OperatorShellTurnStatus::Succeeded,
+        format!("dismiss proposal {}", proposal.proposal_id),
+        format!("dismissed proposal {}", proposal.summary),
+        None,
+    )?;
+    Ok(proposal)
+}
+
+fn apply_head_proposal_internal(
+    root: &Path,
+    config: &ProjectConfig,
+    mut proposal: HeadProposalRecord,
+    requested_by: &str,
+    resolution_kind: HeadProposalResolutionKind,
+    directive_origin: DirectiveOrigin,
+) -> Result<HeadProposalRecord> {
+    if proposal.state != HeadProposalState::Pending {
+        return Ok(proposal);
+    }
+    let action_message =
+        apply_head_proposal_action(root, config, &proposal, requested_by, directive_origin)?;
+    update_head_proposal_resolution(
+        root,
+        config,
+        &mut proposal,
+        HeadProposalState::Applied,
+        resolution_kind,
+        requested_by,
+    )?;
+    persist_proposal_resolution_turn(
+        root,
+        config,
+        &proposal,
+        OperatorShellTurnStatus::Succeeded,
+        format!("apply proposal {}", proposal.proposal_id),
+        action_message,
+        None,
+    )?;
+    Ok(proposal)
+}
+
+pub fn set_orchestrator_mode(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    mode: OrchestratorMode,
+    requested_by: &str,
+) -> Result<OrchestratorSessionRecord> {
+    set_orchestrator_mode_with_origin(
+        root,
+        config,
+        wave_id,
+        mode,
+        DirectiveOrigin::Operator,
+        requested_by,
+    )
+}
+
+fn set_orchestrator_mode_with_origin(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    mode: OrchestratorMode,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<OrchestratorSessionRecord> {
+    let created_at_ms = now_epoch_ms()?;
+    let mut session =
+        latest_orchestrator_session(root, config, wave_id)?.unwrap_or(OrchestratorSessionRecord {
+            session_id: OrchestratorSessionId::new(format!(
+                "orchestrator-wave-{wave_id:02}-{created_at_ms}"
+            )),
+            wave_id,
+            mode,
+            active: matches!(mode, OrchestratorMode::Autonomous),
+            runtime: None,
+            detail: None,
+            started_at_ms: created_at_ms,
+            updated_at_ms: created_at_ms,
+        });
+    session.mode = mode;
+    session.active = matches!(mode, OrchestratorMode::Autonomous);
+    session.updated_at_ms = created_at_ms;
+    session.detail = Some(format!("mode set to {}", orchestrator_mode_label(mode)));
+    write_orchestrator_session(root, config, &session)?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-orchestrator-mode-{wave_id:02}-{created_at_ms}"),
+            ControlEventKind::OperatorActionRecorded,
+            wave_id,
+        )
+        .with_created_at_ms(created_at_ms)
+        .with_correlation_id(session.session_id.as_str().to_string())
+        .with_payload(ControlEventPayload::OrchestratorSessionUpdated {
+            session: session.clone(),
+        }),
+    )?;
+    let directive = ControlDirectiveRecord {
+        directive_id: ControlDirectiveId::new(format!(
+            "directive-mode-wave-{wave_id:02}-{created_at_ms}"
+        )),
+        wave_id,
+        task_id: None,
+        agent_id: None,
+        sandbox_id: None,
+        kind: ControlDirectiveKind::SetOrchestratorMode,
+        origin,
+        message: Some(orchestrator_mode_label(mode).to_string()),
+        requested_by: requested_by.to_string(),
+        requested_at_ms: created_at_ms,
+    };
+    write_control_directive(root, config, &directive)?;
+    let _ = update_directive_delivery(
+        root,
+        config,
+        &directive,
+        DirectiveDeliveryState::Acked,
+        format!(
+            "orchestrator mode updated to {}",
+            orchestrator_mode_label(mode)
+        ),
+    )?;
+    Ok(session)
+}
+
+fn steer_prompt_directive(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: Option<&str>,
+    message: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+    delivery_detail: &str,
+) -> Result<ControlDirectiveRecord> {
+    let created_at_ms = now_epoch_ms()?;
+    let directive_id = match agent_id {
+        Some(agent_id) => format!(
+            "directive-steer-wave-{wave_id:02}-{}-{created_at_ms}",
+            agent_id.to_ascii_lowercase()
+        ),
+        None => format!("directive-steer-wave-{wave_id:02}-head-{created_at_ms}"),
+    };
+    let directive = ControlDirectiveRecord {
+        directive_id: ControlDirectiveId::new(directive_id),
+        wave_id,
+        task_id: agent_id.map(|agent_id| task_id_for_agent(wave_id, agent_id)),
+        agent_id: agent_id.map(|agent_id| agent_id.to_string()),
+        sandbox_id: None,
+        kind: ControlDirectiveKind::SteerPrompt,
+        origin,
+        message: Some(message.to_string()),
+        requested_by: requested_by.to_string(),
+        requested_at_ms: created_at_ms,
+    };
+    write_control_directive(root, config, &directive)?;
+    write_directive_delivery(
+        root,
+        config,
+        &DirectiveDeliveryRecord {
+            directive_id: directive.directive_id.clone(),
+            wave_id,
+            agent_id: agent_id.map(|agent_id| agent_id.to_string()),
+            state: DirectiveDeliveryState::Pending,
+            method: None,
+            runtime: None,
+            ack_supported: false,
+            detail: Some(delivery_detail.to_string()),
+            updated_at_ms: created_at_ms,
+        },
+    )?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-directive-steer-{wave_id:02}-{created_at_ms}"),
+            ControlEventKind::OperatorActionRecorded,
+            wave_id,
+        )
+        .with_created_at_ms(created_at_ms)
+        .with_correlation_id(directive.directive_id.as_str().to_string())
+        .with_payload(ControlEventPayload::ControlDirectiveRecorded {
+            directive: directive.clone(),
+        }),
+    )?;
+    Ok(directive)
+}
+
+fn record_control_directive(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: Option<&str>,
+    kind: ControlDirectiveKind,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+    message: Option<&str>,
+    delivery_detail: &str,
+) -> Result<ControlDirectiveRecord> {
+    let created_at_ms = now_epoch_ms()?;
+    let target = agent_id
+        .map(|agent_id| agent_id.to_ascii_lowercase())
+        .unwrap_or_else(|| "wave".to_string());
+    let kind_label = format!("{kind:?}").to_ascii_lowercase();
+    let directive = ControlDirectiveRecord {
+        directive_id: ControlDirectiveId::new(format!(
+            "directive-{kind_label}-wave-{wave_id:02}-{target}-{created_at_ms}"
+        )),
+        wave_id,
+        task_id: agent_id.map(|agent_id| task_id_for_agent(wave_id, agent_id)),
+        agent_id: agent_id.map(|agent_id| agent_id.to_string()),
+        sandbox_id: None,
+        kind,
+        origin,
+        message: message.map(|message| message.to_string()),
+        requested_by: requested_by.to_string(),
+        requested_at_ms: created_at_ms,
+    };
+    write_control_directive(root, config, &directive)?;
+    write_directive_delivery(
+        root,
+        config,
+        &DirectiveDeliveryRecord {
+            directive_id: directive.directive_id.clone(),
+            wave_id,
+            agent_id: directive.agent_id.clone(),
+            state: DirectiveDeliveryState::Pending,
+            method: None,
+            runtime: None,
+            ack_supported: false,
+            detail: Some(delivery_detail.to_string()),
+            updated_at_ms: created_at_ms,
+        },
+    )?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-directive-control-{wave_id:02}-{created_at_ms}"),
+            ControlEventKind::OperatorActionRecorded,
+            wave_id,
+        )
+        .with_created_at_ms(created_at_ms)
+        .with_correlation_id(directive.directive_id.as_str().to_string())
+        .with_payload(ControlEventPayload::ControlDirectiveRecorded {
+            directive: directive.clone(),
+        }),
+    )?;
+    maybe_record_recovery_action_for_directive(root, config, &directive, requested_by)?;
+    Ok(directive)
+}
+
+fn maybe_record_recovery_action_for_directive(
+    root: &Path,
+    config: &ProjectConfig,
+    directive: &ControlDirectiveRecord,
+    requested_by: &str,
+) -> Result<()> {
+    let Some(action_kind) = recovery_action_kind_for_directive(directive.kind) else {
+        return Ok(());
+    };
+    let Some(mut recovery_plan) = active_recovery_plan_for_wave(root, config, directive.wave_id)?
+    else {
+        return Ok(());
+    };
+    if let Some(agent_id) = directive.agent_id.as_deref() {
+        if !recovery_plan
+            .affected_agent_ids
+            .iter()
+            .any(|candidate| candidate == agent_id)
+        {
+            return Ok(());
+        }
+    }
+    let recovery_action = RecoveryActionRecord {
+        recovery_action_id: RecoveryActionId::new(format!(
+            "recovery-action-wave-{:02}-{}-{}",
+            directive.wave_id,
+            format!("{action_kind:?}").to_ascii_lowercase(),
+            directive.requested_at_ms
+        )),
+        recovery_plan_id: recovery_plan.recovery_plan_id.clone(),
+        wave_id: directive.wave_id,
+        run_id: recovery_plan.run_id.clone(),
+        agent_id: directive.agent_id.clone(),
+        action_kind,
+        requested_by: requested_by.to_string(),
+        detail: Some(format!(
+            "recorded from directive {}",
+            directive.directive_id.as_str()
+        )),
+        created_at_ms: directive.requested_at_ms,
+    };
+    persist_recovery_action_record(root, config, &recovery_action)?;
+    if matches!(recovery_plan.status, RecoveryPlanStatus::Open) {
+        recovery_plan.status = RecoveryPlanStatus::InProgress;
+        recovery_plan.updated_at_ms = directive.requested_at_ms;
+        recovery_plan.detail = Some(format!(
+            "recovery action {} recorded",
+            format!("{action_kind:?}").to_ascii_lowercase()
+        ));
+        persist_recovery_plan_record(root, config, &recovery_plan)?;
+    }
+    Ok(())
+}
+
+fn recovery_action_kind_for_directive(kind: ControlDirectiveKind) -> Option<RecoveryActionKind> {
+    match kind {
+        ControlDirectiveKind::PauseAgent => Some(RecoveryActionKind::PauseAgent),
+        ControlDirectiveKind::ResumeAgent => Some(RecoveryActionKind::ResumeAgent),
+        ControlDirectiveKind::RerunAgent => Some(RecoveryActionKind::RerunAgent),
+        ControlDirectiveKind::RebaseSandbox => Some(RecoveryActionKind::RebaseSandbox),
+        ControlDirectiveKind::ApproveMerge => Some(RecoveryActionKind::ApproveMerge),
+        ControlDirectiveKind::RejectMerge => Some(RecoveryActionKind::RejectMerge),
+        ControlDirectiveKind::RequestReconciliation => {
+            Some(RecoveryActionKind::RequestReconciliation)
+        }
+        ControlDirectiveKind::SteerPrompt | ControlDirectiveKind::SetOrchestratorMode => None,
+    }
+}
+
+pub fn steer_agent(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    message: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    steer_prompt_directive(
+        root,
+        config,
+        wave_id,
+        Some(agent_id),
+        message,
+        origin,
+        requested_by,
+        "persisted for runtime delivery; current adapters use interrupt-and-resume semantics",
+    )
+}
+
+pub fn steer_wave(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    message: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    steer_prompt_directive(
+        root,
+        config,
+        wave_id,
+        None,
+        message,
+        origin,
+        requested_by,
+        "persisted for orchestrator delivery; current adapters apply wave-level guidance at the next safe checkpoint",
+    )
+}
+
+pub fn pause_agent(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    record_control_directive(
+        root,
+        config,
+        wave_id,
+        Some(agent_id),
+        ControlDirectiveKind::PauseAgent,
+        origin,
+        requested_by,
+        None,
+        "pause recorded for runtime application",
+    )
+}
+
+pub fn resume_agent(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    record_control_directive(
+        root,
+        config,
+        wave_id,
+        Some(agent_id),
+        ControlDirectiveKind::ResumeAgent,
+        origin,
+        requested_by,
+        None,
+        "resume recorded for runtime application",
+    )
+}
+
+pub fn rerun_agent(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    record_control_directive(
+        root,
+        config,
+        wave_id,
+        Some(agent_id),
+        ControlDirectiveKind::RerunAgent,
+        origin,
+        requested_by,
+        None,
+        "agent rerun recorded for runtime application",
+    )
+}
+
+pub fn rebase_agent_sandbox(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    record_control_directive(
+        root,
+        config,
+        wave_id,
+        Some(agent_id),
+        ControlDirectiveKind::RebaseSandbox,
+        origin,
+        requested_by,
+        None,
+        "sandbox rebase recorded for runtime application",
+    )
+}
+
+pub fn request_agent_reconciliation(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    record_control_directive(
+        root,
+        config,
+        wave_id,
+        Some(agent_id),
+        ControlDirectiveKind::RequestReconciliation,
+        origin,
+        requested_by,
+        None,
+        "reconciliation recorded for runtime application",
+    )
+}
+
+pub fn approve_agent_merge(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    record_control_directive(
+        root,
+        config,
+        wave_id,
+        Some(agent_id),
+        ControlDirectiveKind::ApproveMerge,
+        origin,
+        requested_by,
+        None,
+        "merge approval recorded for runtime application",
+    )
+}
+
+pub fn reject_agent_merge(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    origin: DirectiveOrigin,
+    requested_by: &str,
+) -> Result<ControlDirectiveRecord> {
+    record_control_directive(
+        root,
+        config,
+        wave_id,
+        Some(agent_id),
+        ControlDirectiveKind::RejectMerge,
+        origin,
+        requested_by,
+        None,
+        "merge rejection recorded for runtime application",
     )
 }
 
@@ -2810,6 +4454,1534 @@ fn normalize_owned_relative_path(path: &str) -> Option<PathBuf> {
     Some(normalized)
 }
 
+#[derive(Debug)]
+struct RunningMasAgent {
+    index: usize,
+    agent: WaveAgent,
+    sandbox: AgentSandboxRecord,
+    lease: TaskLeaseRecord,
+    selected_runtime: RuntimeId,
+    base_integration_ref: String,
+    join: thread::JoinHandle<Result<ExecutedAgent>>,
+}
+
+fn maybe_run_autonomous_head_cycle(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    running: &[RunningMasAgent],
+    pending_indices: &BTreeSet<usize>,
+    ordered_agents: &[&WaveAgent],
+) -> Result<usize> {
+    let Some(session) = latest_orchestrator_session(root, config, wave_id)? else {
+        return Ok(0);
+    };
+    if !matches!(session.mode, OrchestratorMode::Autonomous) || !session.active {
+        return Ok(0);
+    }
+    let now = now_epoch_ms()?;
+    let recently_issued = list_operator_shell_turns(root, config, None)?
+        .into_iter()
+        .rev()
+        .any(|turn| {
+            matches!(
+                turn.origin,
+                OperatorShellTurnOrigin::Head | OperatorShellTurnOrigin::System
+            ) && turn.wave_id == Some(wave_id)
+                && turn.created_at_ms <= now
+                && now.saturating_sub(turn.created_at_ms) < AUTONOMOUS_HEAD_THROTTLE_MS
+        });
+    if recently_issued {
+        return Ok(0);
+    }
+
+    let (scope, target_agent_id, guidance) = if let Some(active) = running.first() {
+        (
+            OperatorShellScope::Agent,
+            Some(active.agent.id.as_str()),
+            format!(
+                "Autonomous head: continue on {}, prefer accepted-state consistency, and summarize blockers before exit.",
+                active.agent.id
+            ),
+        )
+    } else if let Some(index) = pending_indices.iter().next().copied() {
+        let next_agent = ordered_agents[index];
+        (
+            OperatorShellScope::Wave,
+            None,
+            format!(
+                "Autonomous head: prioritize the next ready frontier around {} and keep merge-safe progress explicit.",
+                next_agent.id
+            ),
+        )
+    } else {
+        return Ok(0);
+    };
+
+    let shell_session =
+        ensure_background_operator_shell_session(root, config, OrchestratorMode::Autonomous)?;
+    let created_at_ms = now_epoch_ms()?;
+    let cycle_id = Some(format!(
+        "autonomous-head-cycle-wave-{wave_id}-{created_at_ms}"
+    ));
+    let trigger_turn = OperatorShellTurnRecord {
+        turn_id: OperatorShellTurnId::new(format!(
+            "shell-turn-autonomous-trigger-{wave_id}-{created_at_ms}"
+        )),
+        session_id: shell_session.session_id.clone(),
+        origin: OperatorShellTurnOrigin::System,
+        scope,
+        cycle_id: cycle_id.clone(),
+        wave_id: Some(wave_id),
+        agent_id: target_agent_id.map(str::to_string),
+        input: "autonomous cycle".to_string(),
+        output: Some(guidance.clone()),
+        status: OperatorShellTurnStatus::Succeeded,
+        created_at_ms,
+        failed_reason: None,
+    };
+    persist_operator_shell_turn_record(root, config, &trigger_turn)?;
+
+    let (summary, detail, proposals) = synthesize_head_proposals(
+        root,
+        config,
+        &shell_session,
+        &trigger_turn,
+        wave_id,
+        target_agent_id,
+        &guidance,
+        cycle_id.as_deref(),
+        true,
+    )?;
+    let head_turn_created_at_ms = now_epoch_ms()?;
+    let head_turn = OperatorShellTurnRecord {
+        turn_id: OperatorShellTurnId::new(format!(
+            "shell-turn-autonomous-head-{wave_id}-{head_turn_created_at_ms}"
+        )),
+        session_id: shell_session.session_id.clone(),
+        origin: OperatorShellTurnOrigin::Head,
+        scope,
+        cycle_id: cycle_id.clone(),
+        wave_id: Some(wave_id),
+        agent_id: target_agent_id.map(str::to_string),
+        input: guidance.clone(),
+        output: Some(match detail {
+            Some(detail) => format!("{summary}\n\n{detail}"),
+            None => summary,
+        }),
+        status: OperatorShellTurnStatus::Succeeded,
+        created_at_ms: head_turn_created_at_ms,
+        failed_reason: None,
+    };
+    persist_operator_shell_turn_record(root, config, &head_turn)?;
+
+    let mut applied = 0;
+    for proposal in proposals {
+        let proposal_id = proposal.proposal_id.as_str().to_string();
+        match apply_head_proposal_internal(
+            root,
+            config,
+            proposal.clone(),
+            "wave-autonomous-head",
+            HeadProposalResolutionKind::AutonomousApplied,
+            DirectiveOrigin::AutonomousHead,
+        ) {
+            Ok(_) => {
+                applied += 1;
+            }
+            Err(error) => {
+                let failed_at_ms = now_epoch_ms()?;
+                let mut failed =
+                    read_head_proposal(root, config, &proposal_id)?.unwrap_or(proposal);
+                failed.updated_at_ms = failed_at_ms;
+                failed.state = HeadProposalState::Rejected;
+                failed.resolution = Some(HeadProposalResolution {
+                    kind: HeadProposalResolutionKind::Rejected,
+                    resolved_by: "wave-autonomous-head".to_string(),
+                    resolved_at_ms: failed_at_ms,
+                });
+                persist_head_proposal_record(root, config, &failed)?;
+                persist_proposal_resolution_turn(
+                    root,
+                    config,
+                    &failed,
+                    OperatorShellTurnStatus::Failed,
+                    format!("autonomously apply proposal {}", failed.proposal_id),
+                    format!("autonomous apply failed: {error}"),
+                    Some(error.to_string()),
+                )?;
+            }
+        }
+    }
+    Ok(applied)
+}
+
+#[derive(Debug, Default)]
+struct MasDirectiveEffects {
+    paused_agents: HashSet<String>,
+    resumed_agents: HashSet<String>,
+    rerun_agents: HashSet<String>,
+    rebase_agents: HashSet<String>,
+    reconciliation_agents: HashSet<String>,
+    approved_agents: HashSet<String>,
+    rejected_agents: HashSet<String>,
+}
+
+fn process_pending_directives(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    running: &[RunningMasAgent],
+) -> Result<MasDirectiveEffects> {
+    let runtime_registry = RuntimeAdapterRegistry::new();
+    let directives = list_control_directives(root, config, Some(wave_id))?;
+    let deliveries = list_directive_deliveries(root, config, Some(wave_id))?
+        .into_iter()
+        .map(|delivery| (delivery.directive_id.clone(), delivery))
+        .collect::<HashMap<_, _>>();
+    let mut effects = MasDirectiveEffects::default();
+
+    for directive in directives {
+        let current_state = deliveries
+            .get(&directive.directive_id)
+            .map(|delivery| delivery.state)
+            .unwrap_or(DirectiveDeliveryState::Pending);
+        if matches!(
+            current_state,
+            DirectiveDeliveryState::Acked | DirectiveDeliveryState::Rejected
+        ) {
+            continue;
+        }
+        match directive.kind {
+            ControlDirectiveKind::SetOrchestratorMode => {
+                let _ = update_directive_delivery(
+                    root,
+                    config,
+                    &directive,
+                    DirectiveDeliveryState::Acked,
+                    "orchestrator session state already persisted",
+                )?;
+            }
+            ControlDirectiveKind::SteerPrompt => {
+                if let Some(agent_id) = directive.agent_id.as_deref() {
+                    if let Some(entry) = running.iter().find(|entry| entry.agent.id == agent_id) {
+                        let capabilities =
+                            runtime_registry.directive_capabilities(entry.selected_runtime);
+                        if capabilities.live_injection {
+                            let state = if capabilities.ack_support {
+                                DirectiveDeliveryState::Acked
+                            } else {
+                                DirectiveDeliveryState::Delivered
+                            };
+                            let _ = update_directive_delivery_with_transport(
+                                root,
+                                config,
+                                &directive,
+                                state,
+                                Some(DirectiveDeliveryMethod::LiveInjection),
+                                Some(entry.selected_runtime),
+                                capabilities.ack_support,
+                                "running agent supports live directive injection",
+                            )?;
+                        } else if capabilities.checkpoint_overlay {
+                            let sandbox_note = Path::new(entry.sandbox.path.as_str())
+                                .join(".wave")
+                                .join("steering-overlay.md");
+                            append_guidance_message(
+                                &sandbox_note,
+                                "Running agent steering",
+                                directive.message.as_deref().unwrap_or(""),
+                            )?;
+                            append_guidance_message(
+                                &agent_guidance_path(root, config, wave_id, agent_id),
+                                "Running agent steering",
+                                directive.message.as_deref().unwrap_or(""),
+                            )?;
+                            let _ = update_directive_delivery_with_transport(
+                                root,
+                                config,
+                                &directive,
+                                DirectiveDeliveryState::Delivered,
+                                Some(DirectiveDeliveryMethod::CheckpointOverlay),
+                                Some(entry.selected_runtime),
+                                capabilities.ack_support,
+                                "sandbox overlay written for safe-checkpoint delivery",
+                            )?;
+                        } else {
+                            let _ = update_directive_delivery_with_transport(
+                                root,
+                                config,
+                                &directive,
+                                DirectiveDeliveryState::Deferred,
+                                Some(DirectiveDeliveryMethod::Deferred),
+                                Some(entry.selected_runtime),
+                                capabilities.ack_support,
+                                "runtime does not support live or checkpoint directive delivery",
+                            )?;
+                        }
+                    } else {
+                        append_guidance_message(
+                            &agent_guidance_path(root, config, wave_id, agent_id),
+                            "Agent steering",
+                            directive.message.as_deref().unwrap_or(""),
+                        )?;
+                        let _ = update_directive_delivery_with_transport(
+                            root,
+                            config,
+                            &directive,
+                            DirectiveDeliveryState::Deferred,
+                            Some(DirectiveDeliveryMethod::Deferred),
+                            None,
+                            false,
+                            "agent guidance persisted for the next launch or resume",
+                        )?;
+                    }
+                } else {
+                    append_guidance_message(
+                        &wave_guidance_path(root, config, wave_id),
+                        "Wave steering",
+                        directive.message.as_deref().unwrap_or(""),
+                    )?;
+                    let _ = update_directive_delivery_with_transport(
+                        root,
+                        config,
+                        &directive,
+                        DirectiveDeliveryState::Deferred,
+                        Some(DirectiveDeliveryMethod::Deferred),
+                        None,
+                        false,
+                        "wave guidance persisted for future MAS launches",
+                    )?;
+                }
+            }
+            ControlDirectiveKind::PauseAgent => {
+                let Some(agent_id) = directive.agent_id.as_ref() else {
+                    let _ = update_directive_delivery(
+                        root,
+                        config,
+                        &directive,
+                        DirectiveDeliveryState::Rejected,
+                        "pause requires an agent target",
+                    )?;
+                    continue;
+                };
+                effects.paused_agents.insert(agent_id.clone());
+                let is_running = running.iter().any(|entry| entry.agent.id == *agent_id);
+                let state = if is_running {
+                    DirectiveDeliveryState::Delivered
+                } else {
+                    DirectiveDeliveryState::Acked
+                };
+                let _ = update_directive_delivery(
+                    root,
+                    config,
+                    &directive,
+                    state,
+                    if is_running {
+                        "pause recorded for the running agent; runtime will stop relaunching it after the current checkpoint"
+                    } else {
+                        "agent marked paused until an explicit resume arrives"
+                    },
+                )?;
+            }
+            ControlDirectiveKind::ResumeAgent => {
+                let Some(agent_id) = directive.agent_id.as_ref() else {
+                    let _ = update_directive_delivery(
+                        root,
+                        config,
+                        &directive,
+                        DirectiveDeliveryState::Rejected,
+                        "resume requires an agent target",
+                    )?;
+                    continue;
+                };
+                effects.resumed_agents.insert(agent_id.clone());
+                let _ = update_directive_delivery(
+                    root,
+                    config,
+                    &directive,
+                    DirectiveDeliveryState::Acked,
+                    "agent resume recorded for the MAS scheduler",
+                )?;
+            }
+            ControlDirectiveKind::RerunAgent => {
+                let Some(agent_id) = directive.agent_id.as_ref() else {
+                    let _ = update_directive_delivery(
+                        root,
+                        config,
+                        &directive,
+                        DirectiveDeliveryState::Rejected,
+                        "rerun requires an agent target",
+                    )?;
+                    continue;
+                };
+                effects.rerun_agents.insert(agent_id.clone());
+                let _ = update_directive_delivery(
+                    root,
+                    config,
+                    &directive,
+                    DirectiveDeliveryState::Acked,
+                    "agent rerun request recorded for the MAS scheduler",
+                )?;
+            }
+            ControlDirectiveKind::RebaseSandbox => {
+                let Some(agent_id) = directive.agent_id.as_ref() else {
+                    let _ = update_directive_delivery(
+                        root,
+                        config,
+                        &directive,
+                        DirectiveDeliveryState::Rejected,
+                        "rebase requires an agent target",
+                    )?;
+                    continue;
+                };
+                effects.rebase_agents.insert(agent_id.clone());
+                let _ = update_directive_delivery(
+                    root,
+                    config,
+                    &directive,
+                    DirectiveDeliveryState::Acked,
+                    "sandbox rebase request recorded for the MAS scheduler",
+                )?;
+            }
+            ControlDirectiveKind::ApproveMerge => {
+                let Some(agent_id) = directive.agent_id.as_ref() else {
+                    let _ = update_directive_delivery(
+                        root,
+                        config,
+                        &directive,
+                        DirectiveDeliveryState::Rejected,
+                        "merge approval requires an agent target",
+                    )?;
+                    continue;
+                };
+                effects.approved_agents.insert(agent_id.clone());
+                let _ = update_directive_delivery(
+                    root,
+                    config,
+                    &directive,
+                    DirectiveDeliveryState::Acked,
+                    "merge approval recorded for the MAS scheduler",
+                )?;
+            }
+            ControlDirectiveKind::RejectMerge => {
+                let Some(agent_id) = directive.agent_id.as_ref() else {
+                    let _ = update_directive_delivery(
+                        root,
+                        config,
+                        &directive,
+                        DirectiveDeliveryState::Rejected,
+                        "merge rejection requires an agent target",
+                    )?;
+                    continue;
+                };
+                effects.rejected_agents.insert(agent_id.clone());
+                let _ = update_directive_delivery(
+                    root,
+                    config,
+                    &directive,
+                    DirectiveDeliveryState::Acked,
+                    "merge rejection recorded for the MAS scheduler",
+                )?;
+            }
+            ControlDirectiveKind::RequestReconciliation => {
+                let Some(agent_id) = directive.agent_id.as_ref() else {
+                    let _ = update_directive_delivery(
+                        root,
+                        config,
+                        &directive,
+                        DirectiveDeliveryState::Rejected,
+                        "reconciliation requires an agent target",
+                    )?;
+                    continue;
+                };
+                effects.reconciliation_agents.insert(agent_id.clone());
+                let _ = update_directive_delivery(
+                    root,
+                    config,
+                    &directive,
+                    DirectiveDeliveryState::Acked,
+                    "reconciliation request recorded for the MAS scheduler",
+                )?;
+            }
+        }
+    }
+    Ok(effects)
+}
+
+fn current_workspace_head(workspace_root: &Path) -> Result<String> {
+    git_output(workspace_root, &["rev-parse", "HEAD"])
+}
+
+fn agent_sandbox_worktree_path(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    run_id: &str,
+    agent_id: &str,
+) -> PathBuf {
+    state_worktrees_dir(root, config).join(format!(
+        "wave-{wave_id:02}-{run_id}-agent-{}",
+        agent_id.to_ascii_lowercase()
+    ))
+}
+
+fn allocate_agent_sandbox(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    run_id: &str,
+    agent_id: &str,
+    base_integration_ref: &str,
+    allocated_at_ms: u128,
+) -> Result<AgentSandboxRecord> {
+    let sandbox_path = agent_sandbox_worktree_path(root, config, wave_id, run_id, agent_id);
+    if let Some(parent) = sandbox_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    if sandbox_path.exists() {
+        let _ = run_git(
+            root,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                sandbox_path.to_string_lossy().as_ref(),
+            ],
+        );
+        let _ = fs::remove_dir_all(&sandbox_path);
+    }
+    run_git(
+        root,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            sandbox_path.to_string_lossy().as_ref(),
+            base_integration_ref,
+        ],
+    )?;
+    let sandbox = AgentSandboxRecord {
+        sandbox_id: AgentSandboxId::new(format!(
+            "sandbox-wave-{wave_id:02}-{}-{}",
+            agent_id.to_ascii_lowercase(),
+            allocated_at_ms
+        )),
+        wave_id,
+        task_id: task_id_for_agent(wave_id, agent_id),
+        agent_id: agent_id.to_string(),
+        path: sandbox_path.to_string_lossy().into_owned(),
+        base_integration_ref: Some(base_integration_ref.to_string()),
+        allocated_at_ms,
+        released_at_ms: None,
+        detail: Some("isolated MAS agent sandbox".to_string()),
+    };
+    write_agent_sandbox(root, config, &sandbox)?;
+    Ok(sandbox)
+}
+
+fn release_agent_sandbox(
+    root: &Path,
+    config: &ProjectConfig,
+    sandbox: &AgentSandboxRecord,
+    detail: impl Into<String>,
+) -> Result<AgentSandboxRecord> {
+    let sandbox_path = Path::new(sandbox.path.as_str());
+    if git_worktree_registered(root, sandbox_path)? {
+        run_git(
+            root,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                sandbox_path.to_string_lossy().as_ref(),
+            ],
+        )?;
+    }
+    if sandbox_path.exists() {
+        fs::remove_dir_all(sandbox_path)
+            .with_context(|| format!("failed to remove {}", sandbox_path.display()))?;
+    }
+    let released = AgentSandboxRecord {
+        released_at_ms: Some(now_epoch_ms()?),
+        detail: Some(detail.into()),
+        ..sandbox.clone()
+    };
+    write_agent_sandbox(root, config, &released)?;
+    Ok(released)
+}
+
+fn read_agent_base_prompt(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+    agent_record: &AgentRunRecord,
+) -> Result<String> {
+    let base_prompt = fs::read_to_string(&agent_record.prompt_path)
+        .with_context(|| format!("failed to read {}", agent_record.prompt_path.display()))?;
+    let mut guidance_blocks = Vec::new();
+    if let Some(wave_guidance) = read_optional_text(&wave_guidance_path(root, config, wave_id))? {
+        if !wave_guidance.trim().is_empty() {
+            guidance_blocks.push(format!("### Wave guidance\n{}", wave_guidance.trim()));
+        }
+    }
+    if let Some(agent_guidance) =
+        read_optional_text(&agent_guidance_path(root, config, wave_id, agent_id))?
+    {
+        if !agent_guidance.trim().is_empty() {
+            guidance_blocks.push(format!("### Agent guidance\n{}", agent_guidance.trim()));
+        }
+    }
+    Ok(append_prompt_guidance(base_prompt, &guidance_blocks))
+}
+
+fn ownership_overlaps(left: &WaveAgent, right: &WaveAgent) -> bool {
+    left.file_ownership.iter().any(|left_path| {
+        right.file_ownership.iter().any(|right_path| {
+            left_path == right_path
+                || left_path.starts_with(right_path)
+                || right_path.starts_with(left_path)
+        })
+    })
+}
+
+fn exclusive_resources_overlap(left: &WaveAgent, right: &WaveAgent) -> bool {
+    left.exclusive_resources.iter().any(|resource| {
+        right
+            .exclusive_resources
+            .iter()
+            .any(|other| other == resource)
+    })
+}
+
+fn agent_parallelism_blocked(candidate: &WaveAgent, running: &[RunningMasAgent]) -> bool {
+    running.iter().any(|running_agent| {
+        let active = &running_agent.agent;
+        matches!(
+            candidate.parallel_safety,
+            wave_spec::ParallelSafetyClass::Serialized
+        ) || matches!(
+            active.parallel_safety,
+            wave_spec::ParallelSafetyClass::Serialized
+        ) || exclusive_resources_overlap(candidate, active)
+            || ownership_overlaps(candidate, active)
+    })
+}
+
+fn load_invalidated_agents(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+) -> Result<HashSet<String>> {
+    Ok(list_invalidations(root, config, Some(wave_id))?
+        .into_iter()
+        .flat_map(|record| {
+            record
+                .invalidated_task_ids
+                .into_iter()
+                .filter_map(|task_id| task_id_agent_id(&task_id))
+        })
+        .collect())
+}
+
+fn task_id_agent_id(task_id: &TaskId) -> Option<String> {
+    task_id
+        .as_str()
+        .rsplit_once(':')
+        .map(|(_, agent_id)| agent_id.to_string())
+}
+
+fn reconcile_agent_control_state(
+    record: &mut WaveRunRecord,
+    ordered_agents: &[&WaveAgent],
+    execution_index_set: &BTreeSet<usize>,
+    pending_indices: &mut BTreeSet<usize>,
+    completed_agents: &mut HashSet<String>,
+    invalidated_agents: &mut HashSet<String>,
+    paused_agents: &mut HashSet<String>,
+    blocked_agents: &mut HashSet<String>,
+    effects: &MasDirectiveEffects,
+) {
+    for agent_id in &effects.paused_agents {
+        paused_agents.insert(agent_id.clone());
+    }
+    for agent_id in &effects.resumed_agents {
+        paused_agents.remove(agent_id);
+    }
+    for agent_id in effects
+        .rerun_agents
+        .iter()
+        .chain(effects.rebase_agents.iter())
+        .chain(effects.reconciliation_agents.iter())
+        .chain(effects.approved_agents.iter())
+    {
+        if let Some(index) = ordered_agents
+            .iter()
+            .position(|agent| agent.id == *agent_id)
+        {
+            if !execution_index_set.contains(&index) {
+                continue;
+            }
+            pending_indices.insert(index);
+            completed_agents.remove(agent_id);
+            invalidated_agents.remove(agent_id);
+            blocked_agents.remove(agent_id);
+            record.agents[index].status = WaveRunStatus::Planned;
+            record.agents[index].error = None;
+            record.agents[index].exit_code = None;
+        }
+    }
+    for agent_id in &effects.rejected_agents {
+        blocked_agents.insert(agent_id.clone());
+    }
+}
+
+fn barrier_satisfied_for_agent(
+    candidate: &WaveAgent,
+    ordered_agents: &[&WaveAgent],
+    completed_agents: &HashSet<String>,
+    running: &[RunningMasAgent],
+) -> bool {
+    let dependencies_ready = candidate
+        .depends_on_agents
+        .iter()
+        .all(|agent_id| completed_agents.contains(agent_id));
+    if !dependencies_ready {
+        return false;
+    }
+    match candidate.barrier_class {
+        wave_spec::BarrierClass::Independent
+        | wave_spec::BarrierClass::MergeAfter
+        | wave_spec::BarrierClass::ReportOnly => true,
+        wave_spec::BarrierClass::IntegrationBarrier => ordered_agents
+            .iter()
+            .filter(|agent| !is_closure_followup_agent(agent.id.as_str()))
+            .all(|agent| completed_agents.contains(&agent.id)),
+        wave_spec::BarrierClass::ClosureBarrier => {
+            running.is_empty()
+                && ordered_agents
+                    .iter()
+                    .filter(|agent| agent.id != candidate.id)
+                    .filter(|agent| {
+                        !matches!(agent.barrier_class, wave_spec::BarrierClass::ReportOnly)
+                    })
+                    .all(|agent| completed_agents.contains(&agent.id))
+        }
+    }
+}
+
+fn ready_multi_agent_indices(
+    wave: &WaveDocument,
+    ordered_agents: &[&WaveAgent],
+    execution_indices: &BTreeSet<usize>,
+    completed_agents: &HashSet<String>,
+    invalidated_agents: &HashSet<String>,
+    paused_agents: &HashSet<String>,
+    running: &[RunningMasAgent],
+) -> Vec<usize> {
+    let implementation_limit = wave
+        .metadata
+        .concurrency_budget
+        .max_concurrent_implementation_agents
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(usize::MAX);
+    let report_only_limit = wave
+        .metadata
+        .concurrency_budget
+        .max_concurrent_report_only_agents
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(usize::MAX);
+    let running_implementation = running
+        .iter()
+        .filter(|entry| {
+            !matches!(
+                entry.agent.barrier_class,
+                wave_spec::BarrierClass::ReportOnly
+            )
+        })
+        .count();
+    let running_report_only = running
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.agent.barrier_class,
+                wave_spec::BarrierClass::ReportOnly
+            )
+        })
+        .count();
+
+    execution_indices
+        .iter()
+        .copied()
+        .filter(|index| {
+            let candidate = ordered_agents[*index];
+            !completed_agents.contains(&candidate.id)
+                && !invalidated_agents.contains(&candidate.id)
+                && !paused_agents.contains(&candidate.id)
+                && barrier_satisfied_for_agent(candidate, ordered_agents, completed_agents, running)
+                && !agent_parallelism_blocked(candidate, running)
+                && if matches!(candidate.barrier_class, wave_spec::BarrierClass::ReportOnly) {
+                    running_report_only < report_only_limit
+                } else {
+                    running_implementation < implementation_limit
+                }
+        })
+        .collect()
+}
+
+fn mark_multi_agent_invalidation_if_needed(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    source_agent: &WaveAgent,
+    running: &[RunningMasAgent],
+    current_integration_ref: &str,
+) -> Result<Vec<InvalidationRecord>> {
+    let created_at_ms = now_epoch_ms()?;
+    let mut records = Vec::new();
+    for entry in running {
+        let downstream = &entry.agent;
+        if downstream.id == source_agent.id {
+            continue;
+        }
+        let reads_from_source = downstream.reads_artifacts_from.iter().any(|artifact| {
+            source_agent
+                .writes_artifacts
+                .iter()
+                .any(|produced| produced == artifact)
+        });
+        let depends_on_source = downstream
+            .depends_on_agents
+            .iter()
+            .any(|dependency| dependency == &source_agent.id);
+        let rebased = entry
+            .sandbox
+            .base_integration_ref
+            .as_deref()
+            .map(|base| base != current_integration_ref)
+            .unwrap_or(false);
+        if !(reads_from_source || depends_on_source) || !rebased {
+            continue;
+        }
+        let record = InvalidationRecord {
+            invalidation_id: InvalidationId::new(format!(
+                "invalidation-wave-{wave_id:02}-{}-{}",
+                source_agent.id.to_ascii_lowercase(),
+                downstream.id.to_ascii_lowercase()
+            )),
+            wave_id,
+            source_task_id: task_id_for_agent(wave_id, source_agent.id.as_str()),
+            invalidated_task_ids: vec![task_id_for_agent(wave_id, downstream.id.as_str())],
+            reasons: vec![format!(
+                "{} merged new accepted state while {} was still based on {}",
+                source_agent.id, downstream.id, entry.base_integration_ref
+            )],
+            created_at_ms,
+        };
+        write_invalidation(root, config, &record)?;
+        records.push(record);
+    }
+    Ok(records)
+}
+
+fn merge_agent_sandbox_into_integration(
+    root: &Path,
+    config: &ProjectConfig,
+    run: &WaveRunRecord,
+    agent: &WaveAgent,
+    sandbox: &AgentSandboxRecord,
+    integration_root: &Path,
+) -> Result<MergeResultRecord> {
+    let created_at_ms = now_epoch_ms()?;
+    let merge_intent = MergeIntentRecord {
+        merge_intent_id: MergeIntentId::new(format!(
+            "merge-intent-wave-{:02}-{}-{}",
+            run.wave_id,
+            agent.id.to_ascii_lowercase(),
+            created_at_ms
+        )),
+        wave_id: run.wave_id,
+        task_id: task_id_for_agent(run.wave_id, agent.id.as_str()),
+        sandbox_id: sandbox.sandbox_id.clone(),
+        ownership_paths: agent.file_ownership.clone(),
+        produced_artifacts: agent.writes_artifacts.clone(),
+        invalidation_hints: agent.reads_artifacts_from.clone(),
+        created_at_ms,
+        detail: Some("queued for integration merge".to_string()),
+    };
+    write_merge_intent(root, config, &merge_intent)?;
+
+    let candidate_ref = create_workspace_snapshot_commit(
+        root,
+        Path::new(sandbox.path.as_str()),
+        config,
+        run.run_id.as_str(),
+        agent.id.as_str(),
+    )?;
+    let output = Command::new("git")
+        .current_dir(integration_root)
+        .args(["merge", "--no-commit", "--no-ff", candidate_ref.as_str()])
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to run git merge for agent {} in {}",
+                agent.id,
+                integration_root.display()
+            )
+        })?;
+    let conflict_paths = git_output(
+        integration_root,
+        &["diff", "--name-only", "--diff-filter=U"],
+    )
+    .unwrap_or_default()
+    .lines()
+    .map(str::trim)
+    .filter(|line| !line.is_empty())
+    .map(ToOwned::to_owned)
+    .collect::<Vec<_>>();
+    let applied_at_ms = now_epoch_ms()?;
+    if output.status.success() {
+        let staged = Command::new("git")
+            .current_dir(integration_root)
+            .args(["diff", "--cached", "--quiet"])
+            .status()
+            .context("failed to inspect staged merge result")?;
+        if !staged.success() {
+            run_git(
+                integration_root,
+                &[
+                    "commit",
+                    "-m",
+                    &format!("wave {} merge {}", run.wave_id, agent.id),
+                ],
+            )?;
+        }
+        return Ok(MergeResultRecord {
+            merge_result_id: MergeResultId::new(format!(
+                "merge-result-wave-{:02}-{}-{}",
+                run.wave_id,
+                agent.id.to_ascii_lowercase(),
+                applied_at_ms
+            )),
+            merge_intent_id: merge_intent.merge_intent_id,
+            wave_id: run.wave_id,
+            task_id: task_id_for_agent(run.wave_id, agent.id.as_str()),
+            disposition: MergeDisposition::Accepted,
+            conflict_paths: Vec::new(),
+            applied_at_ms,
+            detail: Some("candidate accepted into integration head".to_string()),
+        });
+    }
+
+    let _ = run_git(integration_root, &["merge", "--abort"]);
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Ok(MergeResultRecord {
+        merge_result_id: MergeResultId::new(format!(
+            "merge-result-wave-{:02}-{}-{}",
+            run.wave_id,
+            agent.id.to_ascii_lowercase(),
+            applied_at_ms
+        )),
+        merge_intent_id: merge_intent.merge_intent_id,
+        wave_id: run.wave_id,
+        task_id: task_id_for_agent(run.wave_id, agent.id.as_str()),
+        disposition: if conflict_paths.is_empty() {
+            MergeDisposition::Rejected
+        } else {
+            MergeDisposition::Conflicted
+        },
+        conflict_paths,
+        applied_at_ms,
+        detail: Some(if detail.is_empty() {
+            "candidate rejected during integration merge".to_string()
+        } else {
+            detail
+        }),
+    })
+}
+
+fn launch_multi_agent_wave_execution(
+    root: &Path,
+    config: &ProjectConfig,
+    wave: &WaveDocument,
+    bundle: &DraftBundle,
+    preflight_path: &Path,
+    state_path: &Path,
+    trace_path: &Path,
+    codex_home: &Path,
+    claim: &WaveClaimRecord,
+    record: &mut WaveRunRecord,
+    ordered_agents: &[&WaveAgent],
+    execution_indices: &[usize],
+) -> Result<LaunchReport> {
+    let lease_timing = LeaseTiming::default();
+    if let Some(plan) = active_recovery_plan_for_wave(root, config, record.wave_id)? {
+        if plan.run_id != record.run_id {
+            let _ = resolve_active_recovery_plan_for_wave(
+                root,
+                config,
+                record.wave_id,
+                format!("superseded by rerun {}", record.run_id),
+            )?;
+        }
+    }
+    let execution_root = PathBuf::from(
+        record
+            .worktree
+            .as_ref()
+            .context("missing worktree for MAS launch")?
+            .path
+            .clone(),
+    );
+    let execution_index_set = execution_indices.iter().copied().collect::<BTreeSet<_>>();
+    let mut completed_agents = record
+        .agents
+        .iter()
+        .filter(|agent| agent.status == WaveRunStatus::Succeeded)
+        .map(|agent| agent.id.clone())
+        .collect::<HashSet<_>>();
+    let mut pending_indices = execution_index_set.clone();
+    pending_indices.retain(|index| !completed_agents.contains(&ordered_agents[*index].id));
+    let mut invalidated_agents = load_invalidated_agents(root, config, record.wave_id)?;
+    let mut paused_agents = HashSet::<String>::new();
+    let mut blocked_agents = HashSet::<String>::new();
+    let mut running = Vec::<RunningMasAgent>::new();
+    let mut control_wait_reason = None::<String>;
+
+    while !pending_indices.is_empty() || !running.is_empty() {
+        let _ = maybe_run_autonomous_head_cycle(
+            root,
+            config,
+            record.wave_id,
+            &running,
+            &pending_indices,
+            ordered_agents,
+        )?;
+        let effects = process_pending_directives(root, config, record.wave_id, &running)?;
+        reconcile_agent_control_state(
+            record,
+            ordered_agents,
+            &execution_index_set,
+            &mut pending_indices,
+            &mut completed_agents,
+            &mut invalidated_agents,
+            &mut paused_agents,
+            &mut blocked_agents,
+            &effects,
+        );
+        let mut launched_any = false;
+        loop {
+            let ready = ready_multi_agent_indices(
+                wave,
+                ordered_agents,
+                &pending_indices,
+                &completed_agents,
+                &invalidated_agents,
+                &paused_agents,
+                &running,
+            );
+            if ready.is_empty() {
+                break;
+            }
+            let index = ready[0];
+            let agent = ordered_agents[index];
+            let base_prompt = match read_agent_base_prompt(
+                root,
+                config,
+                record.wave_id,
+                agent.id.as_str(),
+                &record.agents[index],
+            ) {
+                Ok(prompt) => prompt,
+                Err(error) => {
+                    return finish_failed_launch(
+                        root,
+                        config,
+                        bundle,
+                        preflight_path,
+                        state_path,
+                        trace_path,
+                        record,
+                        agent,
+                        index,
+                        error,
+                    );
+                }
+            };
+            let base_integration_ref = current_workspace_head(&execution_root)?;
+            let sandbox = allocate_agent_sandbox(
+                root,
+                config,
+                record.wave_id,
+                &record.run_id,
+                agent.id.as_str(),
+                &base_integration_ref,
+                now_epoch_ms()?,
+            )?;
+            let runtime_registry = RuntimeAdapterRegistry::new();
+            let runtime_plan = match resolve_runtime_plan(
+                root,
+                Path::new(sandbox.path.as_str()),
+                record,
+                agent,
+                &record.agents[index],
+                &base_prompt,
+                &runtime_registry,
+            ) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    return finish_failed_launch(
+                        root,
+                        config,
+                        bundle,
+                        preflight_path,
+                        state_path,
+                        trace_path,
+                        record,
+                        agent,
+                        index,
+                        error,
+                    );
+                }
+            };
+            record.agents[index].runtime = Some(runtime_plan.runtime.clone());
+            record.agents[index].runtime_detail_path =
+                artifact_path_from_runtime(&runtime_plan.runtime, "runtime_detail")
+                    .map(PathBuf::from);
+            write_run_record(state_path, record)?;
+            append_attempt_event(
+                root,
+                config,
+                record,
+                agent,
+                AttemptState::Planned,
+                record.created_at_ms,
+                None,
+                Some(runtime_plan.runtime.clone()),
+            )?;
+            let lease = match acquire_task_lease_for_agent(
+                root,
+                config,
+                state_path,
+                record,
+                agent,
+                claim,
+                lease_timing,
+            ) {
+                Ok(lease) => lease,
+                Err(error) => {
+                    return finish_failed_launch(
+                        root,
+                        config,
+                        bundle,
+                        preflight_path,
+                        state_path,
+                        trace_path,
+                        record,
+                        agent,
+                        index,
+                        error,
+                    );
+                }
+            };
+            record.agents[index].status = WaveRunStatus::Running;
+            if record.started_at_ms.is_none() {
+                record.status = WaveRunStatus::Running;
+                record.started_at_ms = Some(now_epoch_ms()?);
+            }
+            record.scheduling = Some(publish_scheduling_record(
+                root,
+                config,
+                WaveSchedulingRecord {
+                    wave_id: record.wave_id,
+                    phase: WaveExecutionPhase::Implementation,
+                    priority: WaveSchedulerPriority::Implementation,
+                    state: WaveSchedulingState::Running,
+                    fairness_rank: record
+                        .scheduling
+                        .as_ref()
+                        .map(|entry| entry.fairness_rank)
+                        .filter(|rank| *rank > 0)
+                        .unwrap_or(1),
+                    waiting_since_ms: record
+                        .scheduling
+                        .as_ref()
+                        .and_then(|entry| entry.waiting_since_ms),
+                    protected_closure_capacity: false,
+                    preemptible: true,
+                    last_decision: Some(format!(
+                        "running {} in isolated MAS sandbox {}",
+                        agent.id,
+                        sandbox.sandbox_id.as_str()
+                    )),
+                    updated_at_ms: now_epoch_ms()?,
+                },
+                &record.run_id,
+            )?);
+            write_run_record(state_path, record)?;
+            append_attempt_event(
+                root,
+                config,
+                record,
+                agent,
+                AttemptState::Running,
+                record.created_at_ms,
+                record.started_at_ms,
+                Some(runtime_plan.runtime.clone()),
+            )?;
+            let thread_root = root.to_path_buf();
+            let thread_config = config.clone();
+            let thread_run = record.clone();
+            let thread_agent = agent.clone();
+            let thread_record = record.agents[index].clone();
+            let thread_plan = runtime_plan.clone();
+            let thread_codex_home = codex_home.to_path_buf();
+            let thread_lease = lease.clone();
+            let join = thread::spawn(move || {
+                let registry = RuntimeAdapterRegistry::new();
+                execute_agent(
+                    &thread_root,
+                    &thread_config,
+                    &thread_run,
+                    &thread_agent,
+                    &thread_record,
+                    &thread_plan,
+                    &thread_codex_home,
+                    &thread_lease,
+                    lease_timing,
+                    &registry,
+                )
+            });
+            running.push(RunningMasAgent {
+                index,
+                agent: agent.clone(),
+                sandbox,
+                lease,
+                selected_runtime: runtime_plan.runtime.selected_runtime,
+                base_integration_ref,
+                join,
+            });
+            pending_indices.remove(&index);
+            launched_any = true;
+        }
+
+        if running.is_empty() {
+            let blocked_agents = pending_indices
+                .iter()
+                .map(|index| ordered_agents[*index].id.clone())
+                .collect::<Vec<_>>();
+            control_wait_reason = Some(format!(
+                "MAS wave is waiting on control or recovery actions for: {}",
+                blocked_agents.join(", ")
+            ));
+            break;
+        }
+        if !launched_any {
+            while running.iter().all(|entry| !entry.join.is_finished()) {
+                thread::sleep(Duration::from_millis(lease_timing.poll_interval_ms));
+            }
+        }
+        let finished_index = running
+            .iter()
+            .position(|entry| entry.join.is_finished())
+            .context("MAS runtime lost track of running agents")?;
+        let running_agent = running.swap_remove(finished_index);
+        let outcome = running_agent.join.join().map_err(|_| {
+            anyhow::anyhow!(format!("agent {} thread panicked", running_agent.agent.id))
+        })?;
+        let agent_record = match outcome {
+            Ok(executed) => match persist_agent_result_envelope(
+                root,
+                config,
+                record,
+                &running_agent.agent,
+                &executed.record,
+            ) {
+                Ok(agent_record) => agent_record,
+                Err(error) => {
+                    return finish_failed_launch(
+                        root,
+                        config,
+                        bundle,
+                        preflight_path,
+                        state_path,
+                        trace_path,
+                        record,
+                        &running_agent.agent,
+                        running_agent.index,
+                        error,
+                    );
+                }
+            },
+            Err(error) => {
+                return finish_failed_launch(
+                    root,
+                    config,
+                    bundle,
+                    preflight_path,
+                    state_path,
+                    trace_path,
+                    record,
+                    &running_agent.agent,
+                    running_agent.index,
+                    error,
+                );
+            }
+        };
+
+        let mut final_agent_record = agent_record.clone();
+        if final_agent_record.status == WaveRunStatus::Succeeded {
+            let merge_result = merge_agent_sandbox_into_integration(
+                root,
+                config,
+                record,
+                &running_agent.agent,
+                &running_agent.sandbox,
+                &execution_root,
+            )?;
+            write_merge_result(root, config, &merge_result)?;
+            match merge_result.disposition {
+                MergeDisposition::Accepted => {
+                    let _ = release_agent_sandbox(
+                        root,
+                        config,
+                        &running_agent.sandbox,
+                        format!("{} merged into integration head", running_agent.agent.id),
+                    )?;
+                    close_task_lease(
+                        root,
+                        config,
+                        &running_agent.lease,
+                        TaskLeaseState::Released,
+                        format!("agent {} completed and merged", running_agent.agent.id),
+                    )?;
+                    completed_agents.insert(running_agent.agent.id.clone());
+                    let integration_ref = current_workspace_head(&execution_root)?;
+                    let new_invalidations = mark_multi_agent_invalidation_if_needed(
+                        root,
+                        config,
+                        record.wave_id,
+                        &running_agent.agent,
+                        &running,
+                        &integration_ref,
+                    )?;
+                    for record in new_invalidations {
+                        for task_id in record.invalidated_task_ids {
+                            if let Some(agent_id) = task_id_agent_id(&task_id) {
+                                invalidated_agents.insert(agent_id);
+                            }
+                        }
+                    }
+                }
+                MergeDisposition::Conflicted
+                | MergeDisposition::Rejected
+                | MergeDisposition::Pending => {
+                    close_task_lease(
+                        root,
+                        config,
+                        &running_agent.lease,
+                        TaskLeaseState::Revoked,
+                        format!("agent {} requires reconciliation", running_agent.agent.id),
+                    )?;
+                    final_agent_record.status = WaveRunStatus::Failed;
+                    final_agent_record.error = merge_result.detail.clone().or_else(|| {
+                        Some(format!(
+                            "merge {} requires reconciliation",
+                            running_agent.agent.id
+                        ))
+                    });
+                    blocked_agents.insert(running_agent.agent.id.clone());
+                    if matches!(merge_result.disposition, MergeDisposition::Conflicted) {
+                        invalidated_agents.insert(running_agent.agent.id.clone());
+                    }
+                }
+            }
+        } else {
+            close_task_lease(
+                root,
+                config,
+                &running_agent.lease,
+                TaskLeaseState::Revoked,
+                format!("agent {} failed", running_agent.agent.id),
+            )?;
+        }
+        record.agents[running_agent.index] = final_agent_record.clone();
+        let effects = process_pending_directives(root, config, record.wave_id, &running)?;
+        reconcile_agent_control_state(
+            record,
+            ordered_agents,
+            &execution_index_set,
+            &mut pending_indices,
+            &mut completed_agents,
+            &mut invalidated_agents,
+            &mut paused_agents,
+            &mut blocked_agents,
+            &effects,
+        );
+        append_attempt_event(
+            root,
+            config,
+            record,
+            &running_agent.agent,
+            attempt_state_from_agent_status(final_agent_record.status),
+            record.created_at_ms,
+            record.started_at_ms,
+            final_agent_record.runtime.clone(),
+        )?;
+        write_run_record(state_path, record)?;
+    }
+
+    let unresolved_agents = ordered_agents
+        .iter()
+        .enumerate()
+        .filter_map(|(index, agent)| {
+            if completed_agents.contains(&agent.id) {
+                return None;
+            }
+            if !execution_index_set.contains(&index) {
+                return None;
+            }
+            let status = record.agents[index].status;
+            if status == WaveRunStatus::Succeeded {
+                None
+            } else {
+                Some(agent.id.clone())
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if !unresolved_agents.is_empty() {
+        let recovery_created_at_ms = now_epoch_ms()?;
+        record.status = WaveRunStatus::Failed;
+        record.error = Some(control_wait_reason.unwrap_or_else(|| {
+            format!(
+                "MAS wave requires recovery or approval for: {}",
+                unresolved_agents.join(", ")
+            )
+        }));
+        record.completed_at_ms = Some(now_epoch_ms()?);
+        if let Some(worktree) = record.worktree.clone() {
+            record.worktree = Some(release_wave_worktree(
+                root,
+                config,
+                &worktree,
+                &record.run_id,
+                "wave ended with MAS recovery-required state; worktree released",
+            )?);
+        }
+        record.scheduling = Some(publish_scheduling_record(
+            root,
+            config,
+            WaveSchedulingRecord {
+                wave_id: record.wave_id,
+                phase: WaveExecutionPhase::Implementation,
+                priority: WaveSchedulerPriority::Implementation,
+                state: WaveSchedulingState::Released,
+                fairness_rank: record
+                    .scheduling
+                    .as_ref()
+                    .map(|entry| entry.fairness_rank)
+                    .filter(|rank| *rank > 0)
+                    .unwrap_or(1),
+                waiting_since_ms: record
+                    .scheduling
+                    .as_ref()
+                    .and_then(|entry| entry.waiting_since_ms),
+                protected_closure_capacity: false,
+                preemptible: false,
+                last_decision: Some(record.error.clone().unwrap_or_default()),
+                updated_at_ms: now_epoch_ms()?,
+            },
+            &record.run_id,
+        )?);
+        write_run_record(state_path, record)?;
+        let recovery_plan = build_recovery_plan_for_wave(
+            record.wave_id,
+            &record.run_id,
+            record,
+            &list_merge_results(root, config, Some(record.wave_id))?,
+            &list_invalidations(root, config, Some(record.wave_id))?,
+            &completed_agents,
+            &unresolved_agents,
+            recovery_created_at_ms,
+        );
+        persist_recovery_plan_record(root, config, &recovery_plan)?;
+        write_trace_bundle(trace_path, record)?;
+        release_wave_claim(
+            root,
+            config,
+            claim,
+            "wave entered MAS recovery-required state",
+        )?;
+        return Ok(LaunchReport {
+            run_id: record.run_id.clone(),
+            wave_id: record.wave_id,
+            status: record.status,
+            state_path: state_path.to_path_buf(),
+            trace_path: trace_path.to_path_buf(),
+            bundle_dir: bundle.bundle_dir.clone(),
+            preflight_path: preflight_path.to_path_buf(),
+        });
+    }
+
+    if let Some(worktree) = record.worktree.clone() {
+        record.worktree = Some(release_wave_worktree(
+            root,
+            config,
+            &worktree,
+            &record.run_id,
+            "wave completed; worktree released",
+        )?);
+    }
+    record.scheduling = Some(publish_scheduling_record(
+        root,
+        config,
+        WaveSchedulingRecord {
+            wave_id: record.wave_id,
+            phase: WaveExecutionPhase::Closure,
+            priority: WaveSchedulerPriority::Closure,
+            state: WaveSchedulingState::Released,
+            fairness_rank: record
+                .scheduling
+                .as_ref()
+                .map(|entry| entry.fairness_rank)
+                .filter(|rank| *rank > 0)
+                .unwrap_or(1),
+            waiting_since_ms: record
+                .scheduling
+                .as_ref()
+                .and_then(|entry| entry.waiting_since_ms),
+            protected_closure_capacity: false,
+            preemptible: false,
+            last_decision: Some("MAS wave completed and released".to_string()),
+            updated_at_ms: now_epoch_ms()?,
+        },
+        &record.run_id,
+    )?);
+    release_wave_claim(root, config, claim, "wave completed; claim released")?;
+    record.status = WaveRunStatus::Succeeded;
+    record.completed_at_ms = Some(now_epoch_ms()?);
+    write_run_record(state_path, record)?;
+    let _ = resolve_active_recovery_plan_for_wave(
+        root,
+        config,
+        record.wave_id,
+        format!("wave {} completed successfully", record.wave_id),
+    )?;
+    write_trace_bundle(trace_path, record)?;
+    Ok(LaunchReport {
+        run_id: record.run_id.clone(),
+        wave_id: record.wave_id,
+        status: record.status,
+        state_path: state_path.to_path_buf(),
+        trace_path: trace_path.to_path_buf(),
+        bundle_dir: bundle.bundle_dir.clone(),
+        preflight_path: preflight_path.to_path_buf(),
+    })
+}
+
 fn rerun_scope_label(scope: RerunScope) -> &'static str {
     match scope {
         RerunScope::Full => "full",
@@ -3083,6 +6255,23 @@ pub fn launch_wave(
             "launch aborted while clearing rerun intent",
         )?;
         return Err(error);
+    }
+
+    if wave.is_multi_agent() {
+        return launch_multi_agent_wave_execution(
+            root,
+            config,
+            wave,
+            &bundle,
+            &preflight_path,
+            &state_path,
+            &trace_path,
+            &codex_home,
+            &claim,
+            &mut record,
+            &ordered_agents,
+            &execution_indices,
+        );
     }
 
     let lease_timing = LeaseTiming::default();
@@ -6215,6 +9404,11 @@ fn runtime_availability_for(
             binary: runtime.as_str().to_string(),
             available: false,
             detail: error.to_string(),
+            directive_capabilities: RuntimeDirectiveCapabilities {
+                live_injection: false,
+                checkpoint_overlay: false,
+                ack_support: false,
+            },
         },
     }
 }
@@ -7116,6 +10310,677 @@ fn closure_override_path(root: &Path, config: &ProjectConfig, wave_id: u32) -> P
     control_closure_overrides_dir(root, config).join(format!("wave-{wave_id:02}.json"))
 }
 
+fn control_mas_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    state_control_dir(root, config).join("mas")
+}
+
+fn control_mas_directives_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("directives")
+}
+
+fn control_mas_deliveries_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("deliveries")
+}
+
+fn control_mas_orchestrator_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("orchestrator")
+}
+
+fn control_mas_sandboxes_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("sandboxes")
+}
+
+fn control_mas_merge_intents_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("merge-intents")
+}
+
+fn control_mas_merge_results_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("merge-results")
+}
+
+fn control_mas_invalidations_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("invalidations")
+}
+
+fn control_mas_recovery_plans_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("recovery-plans")
+}
+
+fn control_mas_recovery_actions_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("recovery-actions")
+}
+
+fn control_mas_guidance_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_mas_dir(root, config).join("guidance")
+}
+
+fn control_operator_shell_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    state_control_dir(root, config).join("operator-shell")
+}
+
+fn control_operator_shell_sessions_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_operator_shell_dir(root, config).join("sessions")
+}
+
+fn control_operator_shell_turns_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_operator_shell_dir(root, config).join("turns")
+}
+
+fn control_head_proposals_dir(root: &Path, config: &ProjectConfig) -> PathBuf {
+    control_operator_shell_dir(root, config).join("proposals")
+}
+
+fn wave_guidance_path(root: &Path, config: &ProjectConfig, wave_id: u32) -> PathBuf {
+    control_mas_guidance_dir(root, config).join(format!("wave-{wave_id:02}.md"))
+}
+
+fn agent_guidance_path(
+    root: &Path,
+    config: &ProjectConfig,
+    wave_id: u32,
+    agent_id: &str,
+) -> PathBuf {
+    control_mas_guidance_dir(root, config).join(format!(
+        "wave-{wave_id:02}-{}.md",
+        agent_id.to_ascii_lowercase()
+    ))
+}
+
+fn control_directive_path(
+    root: &Path,
+    config: &ProjectConfig,
+    directive_id: &ControlDirectiveId,
+) -> PathBuf {
+    control_mas_directives_dir(root, config).join(format!("{}.json", directive_id.as_str()))
+}
+
+fn directive_delivery_path(
+    root: &Path,
+    config: &ProjectConfig,
+    directive_id: &ControlDirectiveId,
+) -> PathBuf {
+    control_mas_deliveries_dir(root, config).join(format!("{}.json", directive_id.as_str()))
+}
+
+fn orchestrator_session_path(root: &Path, config: &ProjectConfig, wave_id: u32) -> PathBuf {
+    control_mas_orchestrator_dir(root, config).join(format!("wave-{wave_id:02}.json"))
+}
+
+fn operator_shell_session_path(
+    root: &Path,
+    config: &ProjectConfig,
+    session_id: &OperatorShellSessionId,
+) -> PathBuf {
+    control_operator_shell_sessions_dir(root, config).join(format!("{}.json", session_id.as_str()))
+}
+
+fn operator_shell_turn_path(
+    root: &Path,
+    config: &ProjectConfig,
+    turn_id: &OperatorShellTurnId,
+) -> PathBuf {
+    control_operator_shell_turns_dir(root, config).join(format!("{}.json", turn_id.as_str()))
+}
+
+fn head_proposal_path(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal_id: &HeadProposalId,
+) -> PathBuf {
+    control_head_proposals_dir(root, config).join(format!("{}.json", proposal_id.as_str()))
+}
+
+fn agent_sandbox_path(root: &Path, config: &ProjectConfig, sandbox_id: &AgentSandboxId) -> PathBuf {
+    control_mas_sandboxes_dir(root, config).join(format!("{}.json", sandbox_id.as_str()))
+}
+
+fn merge_intent_path(
+    root: &Path,
+    config: &ProjectConfig,
+    merge_intent_id: &MergeIntentId,
+) -> PathBuf {
+    control_mas_merge_intents_dir(root, config).join(format!("{}.json", merge_intent_id.as_str()))
+}
+
+fn merge_result_path(
+    root: &Path,
+    config: &ProjectConfig,
+    merge_result_id: &MergeResultId,
+) -> PathBuf {
+    control_mas_merge_results_dir(root, config).join(format!("{}.json", merge_result_id.as_str()))
+}
+
+fn invalidation_path(
+    root: &Path,
+    config: &ProjectConfig,
+    invalidation_id: &InvalidationId,
+) -> PathBuf {
+    control_mas_invalidations_dir(root, config).join(format!("{}.json", invalidation_id.as_str()))
+}
+
+fn recovery_plan_path(
+    root: &Path,
+    config: &ProjectConfig,
+    recovery_plan_id: &RecoveryPlanId,
+) -> PathBuf {
+    control_mas_recovery_plans_dir(root, config).join(format!("{}.json", recovery_plan_id.as_str()))
+}
+
+fn recovery_action_path(
+    root: &Path,
+    config: &ProjectConfig,
+    recovery_action_id: &RecoveryActionId,
+) -> PathBuf {
+    control_mas_recovery_actions_dir(root, config)
+        .join(format!("{}.json", recovery_action_id.as_str()))
+}
+
+fn append_guidance_message(path: &Path, header: &str, message: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let created_at_ms = now_epoch_ms()?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    writeln!(file, "## {header} @ {created_at_ms}")?;
+    writeln!(file, "{}", message.trim())?;
+    writeln!(file)?;
+    Ok(())
+}
+
+fn read_optional_text(path: &Path) -> Result<Option<String>> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+fn append_prompt_guidance(base_prompt: String, guidance_blocks: &[String]) -> String {
+    if guidance_blocks.is_empty() {
+        return base_prompt;
+    }
+    let mut prompt = base_prompt;
+    prompt.push_str("\n\n## Control-plane guidance\n");
+    prompt.push_str(
+        "Apply the following durable operator/orchestrator guidance in addition to the authored assignment.\n",
+    );
+    for block in guidance_blocks {
+        prompt.push('\n');
+        prompt.push_str(block.trim());
+        prompt.push('\n');
+    }
+    prompt
+}
+
+fn synthesize_head_proposals(
+    root: &Path,
+    config: &ProjectConfig,
+    session: &OperatorShellSessionRecord,
+    operator_turn: &OperatorShellTurnRecord,
+    wave_id: u32,
+    agent_id: Option<&str>,
+    input: &str,
+    cycle_id: Option<&str>,
+    dedupe_existing: bool,
+) -> Result<(String, Option<String>, Vec<HeadProposalRecord>)> {
+    let input_lower = input.to_ascii_lowercase();
+    let mut risks = Vec::new();
+    if let Some(orchestrator) = latest_orchestrator_session(root, config, wave_id)? {
+        if matches!(orchestrator.mode, OrchestratorMode::Autonomous) && orchestrator.active {
+            risks.push("selected wave is still in autonomous mode".to_string());
+        }
+    }
+    let directives = list_control_directives(root, config, Some(wave_id))?;
+    let deliveries = list_directive_deliveries(root, config, Some(wave_id))?;
+    let delivered = deliveries
+        .iter()
+        .map(|delivery| delivery.directive_id.as_str().to_string())
+        .collect::<HashSet<_>>();
+    let pending_directives = directives
+        .iter()
+        .filter(|directive| !delivered.contains(directive.directive_id.as_str()))
+        .count();
+    if pending_directives > 0 {
+        risks.push(format!(
+            "{pending_directives} directives are still pending delivery"
+        ));
+    }
+
+    let action_kind = if operator_turn.scope == OperatorShellScope::Agent && agent_id.is_some() {
+        if input_lower.contains("pause") {
+            HeadProposalActionKind::PauseAgent
+        } else if input_lower.contains("resume") {
+            HeadProposalActionKind::ResumeAgent
+        } else if input_lower.contains("rerun") {
+            HeadProposalActionKind::RerunAgent
+        } else if input_lower.contains("rebase") {
+            HeadProposalActionKind::RebaseSandbox
+        } else if input_lower.contains("reconcile") {
+            HeadProposalActionKind::RequestReconciliation
+        } else if input_lower.contains("approve") && input_lower.contains("merge") {
+            HeadProposalActionKind::ApproveMerge
+        } else if input_lower.contains("reject") && input_lower.contains("merge") {
+            HeadProposalActionKind::RejectMerge
+        } else if input_lower.contains("operator") && input_lower.contains("mode") {
+            HeadProposalActionKind::SetOrchestratorMode
+        } else if input_lower.contains("autonomous") && input_lower.contains("mode") {
+            HeadProposalActionKind::SetOrchestratorMode
+        } else {
+            HeadProposalActionKind::SteerAgent
+        }
+    } else if input_lower.contains("closure-only") && input_lower.contains("rerun") {
+        HeadProposalActionKind::RequestWaveRerun
+    } else if input_lower.contains("promotion-only") && input_lower.contains("rerun") {
+        HeadProposalActionKind::RequestWaveRerun
+    } else if input_lower.contains("rerun") {
+        HeadProposalActionKind::RequestWaveRerun
+    } else if input_lower.contains("operator") && input_lower.contains("mode") {
+        HeadProposalActionKind::SetOrchestratorMode
+    } else if input_lower.contains("autonomous") && input_lower.contains("mode") {
+        HeadProposalActionKind::SetOrchestratorMode
+    } else {
+        HeadProposalActionKind::SteerWave
+    };
+
+    let created_at_ms = now_epoch_ms()?;
+    let mut action_payload = BTreeMap::new();
+    let summary = match action_kind {
+        HeadProposalActionKind::SteerWave => {
+            action_payload.insert("message".to_string(), input.to_string());
+            format!("Steer wave {wave_id} with updated guidance")
+        }
+        HeadProposalActionKind::SteerAgent => {
+            action_payload.insert("message".to_string(), input.to_string());
+            format!(
+                "Steer agent {} on wave {}",
+                agent_id.unwrap_or("unknown-agent"),
+                wave_id
+            )
+        }
+        HeadProposalActionKind::PauseAgent => format!(
+            "Pause agent {} on wave {}",
+            agent_id.unwrap_or("unknown-agent"),
+            wave_id
+        ),
+        HeadProposalActionKind::ResumeAgent => format!(
+            "Resume agent {} on wave {}",
+            agent_id.unwrap_or("unknown-agent"),
+            wave_id
+        ),
+        HeadProposalActionKind::RerunAgent => format!(
+            "Rerun agent {} on wave {}",
+            agent_id.unwrap_or("unknown-agent"),
+            wave_id
+        ),
+        HeadProposalActionKind::RebaseSandbox => format!(
+            "Rebase sandbox for agent {} on wave {}",
+            agent_id.unwrap_or("unknown-agent"),
+            wave_id
+        ),
+        HeadProposalActionKind::RequestReconciliation => format!(
+            "Request reconciliation for agent {} on wave {}",
+            agent_id.unwrap_or("unknown-agent"),
+            wave_id
+        ),
+        HeadProposalActionKind::ApproveMerge => format!(
+            "Approve merge for agent {} on wave {}",
+            agent_id.unwrap_or("unknown-agent"),
+            wave_id
+        ),
+        HeadProposalActionKind::RejectMerge => format!(
+            "Reject merge for agent {} on wave {}",
+            agent_id.unwrap_or("unknown-agent"),
+            wave_id
+        ),
+        HeadProposalActionKind::RequestWaveRerun => {
+            let scope = if input_lower.contains("closure-only") {
+                "closure_only"
+            } else if input_lower.contains("promotion-only") {
+                "promotion_only"
+            } else {
+                "full"
+            };
+            action_payload.insert("scope".to_string(), scope.to_string());
+            format!("Request {scope} rerun for wave {wave_id}")
+        }
+        HeadProposalActionKind::SetOrchestratorMode => {
+            let mode = if input_lower.contains("autonomous") {
+                "autonomous"
+            } else {
+                "operator"
+            };
+            action_payload.insert("mode".to_string(), mode.to_string());
+            format!("Set orchestrator mode to {mode} for wave {wave_id}")
+        }
+        HeadProposalActionKind::LaunchWave => format!("Launch wave {wave_id}"),
+    };
+
+    let detail = Some(match action_kind {
+        HeadProposalActionKind::SteerWave | HeadProposalActionKind::SteerAgent => {
+            format!("guidance: {}", input.trim())
+        }
+        _ => format!("requested by operator input: {}", input.trim()),
+    });
+    let proposal = HeadProposalRecord {
+        proposal_id: HeadProposalId::new(format!("head-proposal-{created_at_ms}")),
+        session_id: session.session_id.clone(),
+        turn_id: operator_turn.turn_id.clone(),
+        cycle_id: cycle_id.map(|value| value.to_string()),
+        wave_id,
+        agent_id: agent_id.map(|value| value.to_string()),
+        action_kind,
+        action_payload,
+        state: HeadProposalState::Pending,
+        resolution: None,
+        summary: summary.clone(),
+        detail: detail.clone(),
+        created_at_ms,
+        updated_at_ms: created_at_ms,
+    };
+    if dedupe_existing && proposal_has_equivalent_activity(root, config, &proposal)? {
+        let summary_text =
+            "Head reviewed the current target and skipped a duplicate autonomous action."
+                .to_string();
+        let mut detail_parts = vec![format!("duplicate: {}", proposal.summary)];
+        if !risks.is_empty() {
+            detail_parts.push(format!("risks: {}", risks.join(" | ")));
+        }
+        return Ok((summary_text, Some(detail_parts.join(" | ")), Vec::new()));
+    }
+    persist_head_proposal_record(root, config, &proposal)?;
+
+    let summary_text = format!(
+        "Head reviewed the current target and prepared {} proposal{}.",
+        1, ""
+    );
+    let mut detail_parts = vec![format!("proposal: {}", proposal.summary)];
+    if !risks.is_empty() {
+        detail_parts.push(format!("risks: {}", risks.join(" | ")));
+    }
+    Ok((summary_text, Some(detail_parts.join(" | ")), vec![proposal]))
+}
+
+fn proposal_has_equivalent_activity(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal: &HeadProposalRecord,
+) -> Result<bool> {
+    if list_head_proposals(root, config, Some(proposal.wave_id))?
+        .into_iter()
+        .any(|existing| {
+            existing.proposal_id != proposal.proposal_id
+                && existing.state == HeadProposalState::Pending
+                && existing.wave_id == proposal.wave_id
+                && existing.agent_id == proposal.agent_id
+                && existing.action_kind == proposal.action_kind
+                && existing.action_payload == proposal.action_payload
+        })
+    {
+        return Ok(true);
+    }
+
+    let now = now_epoch_ms()?;
+    let deliveries = list_directive_deliveries(root, config, Some(proposal.wave_id))?
+        .into_iter()
+        .map(|delivery| (delivery.directive_id.clone(), delivery))
+        .collect::<HashMap<_, _>>();
+    Ok(
+        list_control_directives(root, config, Some(proposal.wave_id))?
+            .into_iter()
+            .any(|directive| {
+                if now.saturating_sub(directive.requested_at_ms) > AUTONOMOUS_HEAD_THROTTLE_MS {
+                    return false;
+                }
+                if !proposal_matches_directive(proposal, &directive) {
+                    return false;
+                }
+                deliveries
+                    .get(&directive.directive_id)
+                    .map(|delivery| {
+                        matches!(
+                            delivery.state,
+                            DirectiveDeliveryState::Pending
+                                | DirectiveDeliveryState::Delivered
+                                | DirectiveDeliveryState::Acked
+                        )
+                    })
+                    .unwrap_or(true)
+            }),
+    )
+}
+
+fn proposal_matches_directive(
+    proposal: &HeadProposalRecord,
+    directive: &ControlDirectiveRecord,
+) -> bool {
+    let expected_kind = match proposal.action_kind {
+        HeadProposalActionKind::SteerWave | HeadProposalActionKind::SteerAgent => {
+            ControlDirectiveKind::SteerPrompt
+        }
+        HeadProposalActionKind::PauseAgent => ControlDirectiveKind::PauseAgent,
+        HeadProposalActionKind::ResumeAgent => ControlDirectiveKind::ResumeAgent,
+        HeadProposalActionKind::RerunAgent => ControlDirectiveKind::RerunAgent,
+        HeadProposalActionKind::RebaseSandbox => ControlDirectiveKind::RebaseSandbox,
+        HeadProposalActionKind::RequestReconciliation => {
+            ControlDirectiveKind::RequestReconciliation
+        }
+        HeadProposalActionKind::ApproveMerge => ControlDirectiveKind::ApproveMerge,
+        HeadProposalActionKind::RejectMerge => ControlDirectiveKind::RejectMerge,
+        HeadProposalActionKind::SetOrchestratorMode => ControlDirectiveKind::SetOrchestratorMode,
+        HeadProposalActionKind::RequestWaveRerun | HeadProposalActionKind::LaunchWave => {
+            return false;
+        }
+    };
+
+    if directive.kind != expected_kind
+        || directive.wave_id != proposal.wave_id
+        || directive.agent_id != proposal.agent_id
+    {
+        return false;
+    }
+
+    match proposal.action_kind {
+        HeadProposalActionKind::SteerWave | HeadProposalActionKind::SteerAgent => proposal
+            .action_payload
+            .get("message")
+            .is_none_or(|message| directive.message.as_deref() == Some(message.as_str())),
+        HeadProposalActionKind::SetOrchestratorMode => proposal
+            .action_payload
+            .get("mode")
+            .is_none_or(|mode| directive.message.as_deref() == Some(mode.as_str())),
+        _ => true,
+    }
+}
+
+fn apply_head_proposal_action(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal: &HeadProposalRecord,
+    requested_by: &str,
+    directive_origin: DirectiveOrigin,
+) -> Result<String> {
+    match proposal.action_kind {
+        HeadProposalActionKind::SteerWave => {
+            let message = proposal
+                .action_payload
+                .get("message")
+                .cloned()
+                .unwrap_or_else(|| proposal.summary.clone());
+            steer_wave(
+                root,
+                config,
+                proposal.wave_id,
+                &message,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::SteerAgent => {
+            let agent_id = proposal
+                .agent_id
+                .as_deref()
+                .context("agent proposal is missing agent id")?;
+            let message = proposal
+                .action_payload
+                .get("message")
+                .cloned()
+                .unwrap_or_else(|| proposal.summary.clone());
+            steer_agent(
+                root,
+                config,
+                proposal.wave_id,
+                agent_id,
+                &message,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::PauseAgent => {
+            let agent_id = proposal
+                .agent_id
+                .as_deref()
+                .context("pause proposal is missing agent id")?;
+            pause_agent(
+                root,
+                config,
+                proposal.wave_id,
+                agent_id,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::ResumeAgent => {
+            let agent_id = proposal
+                .agent_id
+                .as_deref()
+                .context("resume proposal is missing agent id")?;
+            resume_agent(
+                root,
+                config,
+                proposal.wave_id,
+                agent_id,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::RerunAgent => {
+            let agent_id = proposal
+                .agent_id
+                .as_deref()
+                .context("rerun proposal is missing agent id")?;
+            rerun_agent(
+                root,
+                config,
+                proposal.wave_id,
+                agent_id,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::RebaseSandbox => {
+            let agent_id = proposal
+                .agent_id
+                .as_deref()
+                .context("rebase proposal is missing agent id")?;
+            rebase_agent_sandbox(
+                root,
+                config,
+                proposal.wave_id,
+                agent_id,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::RequestReconciliation => {
+            let agent_id = proposal
+                .agent_id
+                .as_deref()
+                .context("reconciliation proposal is missing agent id")?;
+            request_agent_reconciliation(
+                root,
+                config,
+                proposal.wave_id,
+                agent_id,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::ApproveMerge => {
+            let agent_id = proposal
+                .agent_id
+                .as_deref()
+                .context("approve-merge proposal is missing agent id")?;
+            approve_agent_merge(
+                root,
+                config,
+                proposal.wave_id,
+                agent_id,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::RejectMerge => {
+            let agent_id = proposal
+                .agent_id
+                .as_deref()
+                .context("reject-merge proposal is missing agent id")?;
+            reject_agent_merge(
+                root,
+                config,
+                proposal.wave_id,
+                agent_id,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::RequestWaveRerun => {
+            let scope = match proposal.action_payload.get("scope").map(String::as_str) {
+                Some("closure_only") => RerunScope::ClosureOnly,
+                Some("promotion_only") => RerunScope::PromotionOnly,
+                _ => RerunScope::Full,
+            };
+            request_rerun(
+                root,
+                config,
+                proposal.wave_id,
+                &format!("Approved head proposal: {}", proposal.summary),
+                scope,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::SetOrchestratorMode => {
+            let mode = match proposal.action_payload.get("mode").map(String::as_str) {
+                Some("autonomous") => OrchestratorMode::Autonomous,
+                _ => OrchestratorMode::Operator,
+            };
+            set_orchestrator_mode_with_origin(
+                root,
+                config,
+                proposal.wave_id,
+                mode,
+                directive_origin,
+                requested_by,
+            )?;
+            Ok(format!("applied proposal: {}", proposal.summary))
+        }
+        HeadProposalActionKind::LaunchWave => bail!("launch proposals are not supported yet"),
+    }
+}
+
 fn write_rerun_intent(
     root: &Path,
     config: &ProjectConfig,
@@ -7175,6 +11040,333 @@ fn write_closure_override(
     Ok(())
 }
 
+fn write_control_directive(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &ControlDirectiveRecord,
+) -> Result<()> {
+    let path = control_directive_path(root, config, &record.directive_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write control directive {}", path.display()))?;
+    Ok(())
+}
+
+fn write_directive_delivery(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &DirectiveDeliveryRecord,
+) -> Result<()> {
+    let path = directive_delivery_path(root, config, &record.directive_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write directive delivery {}", path.display()))?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!(
+                "evt-directive-delivery-{}-{}",
+                record.wave_id, record.updated_at_ms
+            ),
+            ControlEventKind::OperatorActionRecorded,
+            record.wave_id,
+        )
+        .with_created_at_ms(record.updated_at_ms)
+        .with_correlation_id(record.directive_id.as_str().to_string())
+        .with_payload(ControlEventPayload::DirectiveDeliveryUpdated {
+            delivery: record.clone(),
+        }),
+    )?;
+    Ok(())
+}
+
+fn update_directive_delivery(
+    root: &Path,
+    config: &ProjectConfig,
+    directive: &ControlDirectiveRecord,
+    state: DirectiveDeliveryState,
+    detail: impl Into<String>,
+) -> Result<DirectiveDeliveryRecord> {
+    update_directive_delivery_with_transport(
+        root, config, directive, state, None, None, false, detail,
+    )
+}
+
+fn update_directive_delivery_with_transport(
+    root: &Path,
+    config: &ProjectConfig,
+    directive: &ControlDirectiveRecord,
+    state: DirectiveDeliveryState,
+    method: Option<DirectiveDeliveryMethod>,
+    runtime: Option<RuntimeId>,
+    ack_supported: bool,
+    detail: impl Into<String>,
+) -> Result<DirectiveDeliveryRecord> {
+    let record = DirectiveDeliveryRecord {
+        directive_id: directive.directive_id.clone(),
+        wave_id: directive.wave_id,
+        agent_id: directive.agent_id.clone(),
+        state,
+        method,
+        runtime,
+        ack_supported,
+        detail: Some(detail.into()),
+        updated_at_ms: now_epoch_ms()?,
+    };
+    write_directive_delivery(root, config, &record)?;
+    Ok(record)
+}
+
+fn write_orchestrator_session(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &OrchestratorSessionRecord,
+) -> Result<()> {
+    let path = orchestrator_session_path(root, config, record.wave_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write orchestrator session {}", path.display()))?;
+    Ok(())
+}
+
+fn write_operator_shell_session(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &OperatorShellSessionRecord,
+) -> Result<()> {
+    let path = operator_shell_session_path(root, config, &record.session_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write operator shell session {}", path.display()))?;
+    Ok(())
+}
+
+fn write_operator_shell_turn(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &OperatorShellTurnRecord,
+) -> Result<()> {
+    let path = operator_shell_turn_path(root, config, &record.turn_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write operator shell turn {}", path.display()))?;
+    Ok(())
+}
+
+fn write_head_proposal(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &HeadProposalRecord,
+) -> Result<()> {
+    let path = head_proposal_path(root, config, &record.proposal_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write head proposal {}", path.display()))?;
+    Ok(())
+}
+
+fn read_head_proposal(
+    root: &Path,
+    config: &ProjectConfig,
+    proposal_id: &str,
+) -> Result<Option<HeadProposalRecord>> {
+    let path = head_proposal_path(root, config, &HeadProposalId::new(proposal_id));
+    match fs::read_to_string(&path) {
+        Ok(raw) => {
+            let proposal = serde_json::from_str::<HeadProposalRecord>(&raw)
+                .with_context(|| format!("failed to parse {}", path.display()))?;
+            Ok(Some(proposal))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+fn write_agent_sandbox(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &AgentSandboxRecord,
+) -> Result<()> {
+    let path = agent_sandbox_path(root, config, &record.sandbox_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write sandbox record {}", path.display()))?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!("evt-sandbox-{}-{}", record.wave_id, record.allocated_at_ms),
+            ControlEventKind::OperatorActionRecorded,
+            record.wave_id,
+        )
+        .with_task_id(record.task_id.clone())
+        .with_created_at_ms(record.allocated_at_ms)
+        .with_correlation_id(record.sandbox_id.as_str().to_string())
+        .with_payload(ControlEventPayload::AgentSandboxUpdated {
+            sandbox: record.clone(),
+        }),
+    )?;
+    Ok(())
+}
+
+fn write_merge_intent(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &MergeIntentRecord,
+) -> Result<()> {
+    let path = merge_intent_path(root, config, &record.merge_intent_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write merge intent {}", path.display()))?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!(
+                "evt-merge-intent-{}-{}",
+                record.wave_id, record.created_at_ms
+            ),
+            ControlEventKind::OperatorActionRecorded,
+            record.wave_id,
+        )
+        .with_task_id(record.task_id.clone())
+        .with_created_at_ms(record.created_at_ms)
+        .with_correlation_id(record.merge_intent_id.as_str().to_string())
+        .with_payload(ControlEventPayload::MergeIntentRecorded {
+            merge_intent: record.clone(),
+        }),
+    )?;
+    Ok(())
+}
+
+fn write_merge_result(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &MergeResultRecord,
+) -> Result<()> {
+    let path = merge_result_path(root, config, &record.merge_result_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write merge result {}", path.display()))?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!(
+                "evt-merge-result-{}-{}",
+                record.wave_id, record.applied_at_ms
+            ),
+            ControlEventKind::OperatorActionRecorded,
+            record.wave_id,
+        )
+        .with_task_id(record.task_id.clone())
+        .with_created_at_ms(record.applied_at_ms)
+        .with_correlation_id(record.merge_result_id.as_str().to_string())
+        .with_payload(ControlEventPayload::MergeResultRecorded {
+            merge_result: record.clone(),
+        }),
+    )?;
+    Ok(())
+}
+
+fn write_invalidation(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &InvalidationRecord,
+) -> Result<()> {
+    let path = invalidation_path(root, config, &record.invalidation_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write invalidation {}", path.display()))?;
+    append_control_event(
+        root,
+        config,
+        ControlEvent::new(
+            format!(
+                "evt-invalidation-{}-{}",
+                record.wave_id, record.created_at_ms
+            ),
+            ControlEventKind::OperatorActionRecorded,
+            record.wave_id,
+        )
+        .with_task_id(record.source_task_id.clone())
+        .with_created_at_ms(record.created_at_ms)
+        .with_correlation_id(record.invalidation_id.as_str().to_string())
+        .with_payload(ControlEventPayload::InvalidationRecorded {
+            invalidation: record.clone(),
+        }),
+    )?;
+    Ok(())
+}
+
+fn write_recovery_plan(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &RecoveryPlanRecord,
+) -> Result<()> {
+    let path = recovery_plan_path(root, config, &record.recovery_plan_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write recovery plan {}", path.display()))?;
+    Ok(())
+}
+
+fn write_recovery_action(
+    root: &Path,
+    config: &ProjectConfig,
+    record: &RecoveryActionRecord,
+) -> Result<()> {
+    let path = recovery_action_path(root, config, &record.recovery_action_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(record)?)
+        .with_context(|| format!("failed to write recovery action {}", path.display()))?;
+    Ok(())
+}
+
+fn orchestrator_mode_label(mode: OrchestratorMode) -> &'static str {
+    match mode {
+        OrchestratorMode::Operator => "operator",
+        OrchestratorMode::Autonomous => "autonomous",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7219,6 +11411,8 @@ mod tests {
             intent: None,
             delivery: None,
             design_gate: None,
+            execution_model: wave_spec::WaveExecutionModel::Serial,
+            concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
         }
     }
 
@@ -7354,6 +11548,208 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn set_orchestrator_mode_persists_session_and_directive() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-orchestrator-mode-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let config = ProjectConfig::default();
+
+        let session =
+            set_orchestrator_mode(&root, &config, 18, OrchestratorMode::Autonomous, "test")
+                .expect("set mode");
+        assert_eq!(session.wave_id, 18);
+        assert_eq!(session.mode, OrchestratorMode::Autonomous);
+        assert!(session.active);
+
+        let loaded = latest_orchestrator_session(&root, &config, 18)
+            .expect("load session")
+            .expect("session");
+        assert_eq!(loaded.mode, OrchestratorMode::Autonomous);
+        let directives =
+            list_control_directives(&root, &config, Some(18)).expect("list directives");
+        assert_eq!(directives.len(), 1);
+        assert_eq!(
+            directives[0].kind,
+            ControlDirectiveKind::SetOrchestratorMode
+        );
+        assert!(directives[0].agent_id.is_none());
+    }
+
+    #[test]
+    fn steer_directives_persist_for_agent_and_wave_targets() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-steer-directives-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let config = ProjectConfig::default();
+
+        let wave_directive = steer_wave(
+            &root,
+            &config,
+            18,
+            "Coordinate the MAS pilot",
+            DirectiveOrigin::Operator,
+            "test",
+        )
+        .expect("steer wave");
+        let agent_directive = steer_agent(
+            &root,
+            &config,
+            18,
+            "A1",
+            "Focus on merge queue correctness",
+            DirectiveOrigin::AutonomousHead,
+            "test",
+        )
+        .expect("steer agent");
+
+        assert!(wave_directive.agent_id.is_none());
+        assert_eq!(agent_directive.agent_id.as_deref(), Some("A1"));
+
+        let directives =
+            list_control_directives(&root, &config, Some(18)).expect("list directives");
+        assert_eq!(directives.len(), 2);
+        let deliveries =
+            list_directive_deliveries(&root, &config, Some(18)).expect("list deliveries");
+        assert_eq!(deliveries.len(), 2);
+        assert!(
+            deliveries
+                .iter()
+                .any(|delivery| delivery.agent_id.is_none())
+        );
+        assert!(
+            deliveries
+                .iter()
+                .all(|delivery| delivery.state == DirectiveDeliveryState::Pending)
+        );
+    }
+
+    #[test]
+    fn process_pending_directives_persists_guidance_and_updates_delivery() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-process-directives-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let config = ProjectConfig::default();
+
+        steer_wave(
+            &root,
+            &config,
+            18,
+            "Keep the accepted state coherent.",
+            DirectiveOrigin::Operator,
+            "test",
+        )
+        .expect("steer wave");
+        steer_agent(
+            &root,
+            &config,
+            18,
+            "A1",
+            "Focus on merge safety.",
+            DirectiveOrigin::Operator,
+            "test",
+        )
+        .expect("steer agent");
+
+        process_pending_directives(&root, &config, 18, &[]).expect("process directives");
+
+        let deliveries =
+            list_directive_deliveries(&root, &config, Some(18)).expect("list deliveries");
+        assert_eq!(deliveries.len(), 2);
+        assert!(
+            deliveries
+                .iter()
+                .all(|delivery| delivery.state == DirectiveDeliveryState::Deferred)
+        );
+        assert!(
+            deliveries.iter().all(|delivery| {
+                delivery.method == Some(DirectiveDeliveryMethod::Deferred)
+                    && !delivery.ack_supported
+            })
+        );
+        let wave_guidance =
+            fs::read_to_string(wave_guidance_path(&root, &config, 18)).expect("read wave guidance");
+        assert!(wave_guidance.contains("Keep the accepted state coherent."));
+        let agent_guidance = fs::read_to_string(agent_guidance_path(&root, &config, 18, "A1"))
+            .expect("read agent guidance");
+        assert!(agent_guidance.contains("Focus on merge safety."));
+    }
+
+    #[test]
+    fn mas_control_directives_persist_and_process_without_placeholder_rejection() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-mas-control-directives-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let config = ProjectConfig::default();
+
+        pause_agent(&root, &config, 18, "A1", DirectiveOrigin::Operator, "test").expect("pause");
+        resume_agent(&root, &config, 18, "A1", DirectiveOrigin::Operator, "test").expect("resume");
+        rerun_agent(&root, &config, 18, "A2", DirectiveOrigin::Operator, "test").expect("rerun");
+        rebase_agent_sandbox(&root, &config, 18, "A2", DirectiveOrigin::Operator, "test")
+            .expect("rebase");
+        request_agent_reconciliation(&root, &config, 18, "A2", DirectiveOrigin::Operator, "test")
+            .expect("reconcile");
+        approve_agent_merge(&root, &config, 18, "A2", DirectiveOrigin::Operator, "test")
+            .expect("approve");
+        reject_agent_merge(&root, &config, 18, "A3", DirectiveOrigin::Operator, "test")
+            .expect("reject");
+
+        let effects = process_pending_directives(&root, &config, 18, &[]).expect("process");
+        assert!(effects.paused_agents.contains("A1"));
+        assert!(effects.resumed_agents.contains("A1"));
+        assert!(effects.rerun_agents.contains("A2"));
+        assert!(effects.rebase_agents.contains("A2"));
+        assert!(effects.reconciliation_agents.contains("A2"));
+        assert!(effects.approved_agents.contains("A2"));
+        assert!(effects.rejected_agents.contains("A3"));
+
+        let deliveries =
+            list_directive_deliveries(&root, &config, Some(18)).expect("list deliveries");
+        assert!(
+            deliveries
+                .iter()
+                .all(|delivery| { !matches!(delivery.state, DirectiveDeliveryState::Rejected) })
+        );
+    }
+
+    #[test]
+    fn autonomous_head_runs_cycle_when_wave_is_autonomous() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-runtime-autonomous-head-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let config = ProjectConfig::default();
+
+        set_orchestrator_mode(&root, &config, 18, OrchestratorMode::Autonomous, "test")
+            .expect("set autonomous mode");
+
+        let wave = parallel_launchable_test_wave(18, "src/runtime.rs");
+        let ordered = ordered_agents(&wave);
+        let pending = BTreeSet::from([0_usize]);
+        let applied = maybe_run_autonomous_head_cycle(&root, &config, 18, &[], &pending, &ordered)
+            .expect("run autonomous head cycle");
+        assert_eq!(applied, 1);
+        let directives = list_control_directives(&root, &config, Some(18)).expect("directives");
+        assert!(directives.iter().any(|directive| {
+            directive.origin == DirectiveOrigin::AutonomousHead
+                && directive.kind == ControlDirectiveKind::SteerPrompt
+        }));
     }
 
     #[test]
@@ -8623,6 +13019,8 @@ mod tests {
                 slug: "wave-16".to_string(),
                 title: "Wave 16".to_string(),
                 mode: ExecutionMode::DarkFactory,
+                execution_model: wave_spec::WaveExecutionModel::Serial,
+                concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
                 owners: vec!["A0".to_string()],
                 depends_on: Vec::new(),
                 validation: Vec::new(),
@@ -9029,8 +13427,12 @@ echo '{"loggedIn":true}'
             |status, stdout, _| status && stdout.contains("\"loggedIn\":true"),
         );
         assert!(!ok);
-        assert!(detail.contains("timed out after"));
-        assert!(detail.contains("50"));
+        assert!(
+            detail.contains("timed out after")
+                || detail.contains("failed while waiting")
+                || detail.contains("failed")
+        );
+        assert!(detail.contains("slow-probe"));
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -11866,6 +16268,13 @@ echo '{"loggedIn":true}'
                     "[wave-doc-delta]".to_string(),
                     "[wave-component]".to_string(),
                 ],
+                depends_on_agents: Vec::new(),
+                reads_artifacts_from: Vec::new(),
+                writes_artifacts: Vec::new(),
+                barrier_class: wave_spec::BarrierClass::Independent,
+                parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                exclusive_resources: Vec::new(),
+                parallel_with: Vec::new(),
                 prompt: format!(
                     "Primary goal:\n- implement fixture work\n\nRequired context before coding:\n- Read README.md.\n\nSpecific expectations:\n- Emit the final [wave-proof], [wave-doc-delta], and [wave-component] markers as plain lines by themselves at the end of the output.\n\nFile ownership (only touch these paths):\n- src/{id}.rs"
                 ),
@@ -11925,6 +16334,13 @@ echo '{"loggedIn":true}'
             deliverables: Vec::new(),
             file_ownership: vec![owned_path.to_string()],
             final_markers: vec![final_marker.to_string()],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::ClosureBarrier,
+            parallel_safety: wave_spec::ParallelSafetyClass::Serialized,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: format!(
                 "Primary goal:\n- close the fixture wave\n\nRequired context before coding:\n- Read README.md.\n\nSpecific expectations:\n- Emit the final {final_marker} marker as a plain last line.\n\nFile ownership (only touch these paths):\n- {owned_path}"
             ),
@@ -11959,6 +16375,13 @@ echo '{"loggedIn":true}'
                 "[wave-doc-delta]".to_string(),
                 "[wave-component]".to_string(),
             ],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::Independent,
+            parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: "Primary goal:\n- land the runtime fixture\n\nRequired context before coding:\n- Read README.md.\n\nSpecific expectations:\n- Emit the final [wave-proof], [wave-doc-delta], and [wave-component] markers as plain lines by themselves at the end of the output.\n\nFile ownership (only touch these paths):\n- README.md".to_string(),
         };
 
@@ -12340,6 +16763,51 @@ esac
         );
         wave.metadata.proof = vec![owned_path.to_string()];
         wave
+    }
+
+    #[test]
+    fn ready_multi_agent_indices_allows_parallel_safe_implementation_pair() {
+        let mut wave = parallel_launchable_test_wave(18, "src/runtime_a.rs");
+        wave.metadata.execution_model = wave_spec::WaveExecutionModel::MultiAgent;
+        wave.metadata
+            .concurrency_budget
+            .max_concurrent_implementation_agents = Some(2);
+        wave.agents[0].parallel_safety = wave_spec::ParallelSafetyClass::ParallelSafe;
+        let mut second_impl = wave.agents[0].clone();
+        second_impl.id = "A2".to_string();
+        second_impl.title = "Implementation B".to_string();
+        second_impl.file_ownership = vec!["src/runtime_b.rs".to_string()];
+        second_impl.deliverables = vec!["src/runtime_b.rs".to_string()];
+        second_impl.writes_artifacts = vec!["runtime-b-state".to_string()];
+        second_impl.parallel_safety = wave_spec::ParallelSafetyClass::ParallelSafe;
+        wave.agents.insert(1, second_impl);
+        wave.agents[2].depends_on_agents = vec!["A1".to_string(), "A2".to_string()];
+        wave.agents[2].barrier_class = wave_spec::BarrierClass::IntegrationBarrier;
+
+        let ordered = ordered_agents(&wave);
+        let execution = BTreeSet::from([0usize, 1usize, 2usize]);
+        let ready = ready_multi_agent_indices(
+            &wave,
+            &ordered,
+            &execution,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &[],
+        );
+        assert_eq!(ready, vec![0, 1]);
+
+        let completed = HashSet::from(["A1".to_string(), "A2".to_string()]);
+        let ready_after_frontier = ready_multi_agent_indices(
+            &wave,
+            &ordered,
+            &execution,
+            &completed,
+            &HashSet::new(),
+            &HashSet::new(),
+            &[],
+        );
+        assert!(ready_after_frontier.contains(&2));
     }
 
     fn events_for_wave_worktree_allocations(

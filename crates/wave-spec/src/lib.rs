@@ -35,6 +35,10 @@ pub struct WaveMetadata {
     pub delivery: Option<WaveDeliveryLink>,
     #[serde(default)]
     pub design_gate: Option<DesignGateSpec>,
+    #[serde(default)]
+    pub execution_model: WaveExecutionModel,
+    #[serde(default)]
+    pub concurrency_budget: WaveConcurrencyBudget,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -75,6 +79,42 @@ pub struct DesignGateSpec {
 
 fn default_design_gate_ready_marker() -> String {
     "ready-for-implementation".to_string()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum WaveExecutionModel {
+    #[default]
+    Serial,
+    MultiAgent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WaveConcurrencyBudget {
+    pub max_concurrent_implementation_agents: Option<u32>,
+    pub max_concurrent_report_only_agents: Option<u32>,
+    pub max_merge_operations: Option<u32>,
+    pub max_conflict_resolution_agents: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum BarrierClass {
+    #[default]
+    Independent,
+    MergeAfter,
+    IntegrationBarrier,
+    ClosureBarrier,
+    ReportOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ParallelSafetyClass {
+    #[default]
+    Derived,
+    ParallelSafe,
+    Serialized,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -150,6 +190,13 @@ pub struct WaveAgent {
     pub deliverables: Vec<String>,
     pub file_ownership: Vec<String>,
     pub final_markers: Vec<String>,
+    pub depends_on_agents: Vec<String>,
+    pub reads_artifacts_from: Vec<String>,
+    pub writes_artifacts: Vec<String>,
+    pub barrier_class: BarrierClass,
+    pub parallel_safety: ParallelSafetyClass,
+    pub exclusive_resources: Vec<String>,
+    pub parallel_with: Vec<String>,
     pub prompt: String,
 }
 
@@ -296,6 +343,13 @@ impl WaveDocument {
             .as_ref()
             .map(|gate| gate.agent_ids.as_slice())
             .unwrap_or(&[])
+    }
+
+    pub fn is_multi_agent(&self) -> bool {
+        matches!(
+            self.metadata.execution_model,
+            WaveExecutionModel::MultiAgent
+        )
     }
 }
 
@@ -537,8 +591,49 @@ fn parse_agent(section: &MarkdownSection) -> Result<WaveAgent> {
         deliverables: parse_bullet_section(find_section(&subsections, "Deliverables"))?,
         file_ownership: parse_bullet_section(find_section(&subsections, "File ownership"))?,
         final_markers: parse_bullet_section(find_section(&subsections, "Final markers"))?,
+        depends_on_agents: parse_bullet_section(find_section(&subsections, "Depends on agents"))?,
+        reads_artifacts_from: parse_bullet_section(find_section(
+            &subsections,
+            "Reads artifacts from",
+        ))?,
+        writes_artifacts: parse_bullet_section(find_section(&subsections, "Writes artifacts"))?,
+        barrier_class: parse_barrier_class(find_section(&subsections, "Barrier class"))?,
+        parallel_safety: parse_parallel_safety(find_section(&subsections, "Parallel safety"))?,
+        exclusive_resources: parse_bullet_section(find_section(
+            &subsections,
+            "Exclusive resources",
+        ))?,
+        parallel_with: parse_bullet_section(find_section(&subsections, "Parallel with"))?,
         prompt: parse_prompt(find_section(&subsections, "Prompt")),
     })
+}
+
+fn parse_barrier_class(value: Option<&String>) -> Result<BarrierClass> {
+    let Some(section) = value else {
+        return Ok(BarrierClass::default());
+    };
+    let raw = section.trim();
+    match raw {
+        "independent" => Ok(BarrierClass::Independent),
+        "merge-after" => Ok(BarrierClass::MergeAfter),
+        "integration-barrier" => Ok(BarrierClass::IntegrationBarrier),
+        "closure-barrier" => Ok(BarrierClass::ClosureBarrier),
+        "report-only" => Ok(BarrierClass::ReportOnly),
+        _ => anyhow::bail!("invalid barrier class `{raw}`"),
+    }
+}
+
+fn parse_parallel_safety(value: Option<&String>) -> Result<ParallelSafetyClass> {
+    let Some(section) = value else {
+        return Ok(ParallelSafetyClass::default());
+    };
+    let raw = section.trim();
+    match raw {
+        "derived" => Ok(ParallelSafetyClass::Derived),
+        "parallel-safe" => Ok(ParallelSafetyClass::ParallelSafe),
+        "serialized" => Ok(ParallelSafetyClass::Serialized),
+        _ => anyhow::bail!("invalid parallel safety `{raw}`"),
+    }
 }
 
 fn parse_context7(value: Option<&String>) -> Result<Option<Context7Defaults>> {
@@ -1200,6 +1295,13 @@ queue-reducer: repo-landed
                 "docs/plans/".to_string(),
             ],
             final_markers: vec!["[wave-integration]".to_string()],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: BarrierClass::Independent,
+            parallel_safety: ParallelSafetyClass::Derived,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: [
                 "Primary goal:",
                 "- Reconcile the authored-wave slices.",

@@ -2,11 +2,19 @@
 
 ## Status
 
-Partially live.
+Mostly live.
 
-The current shell already lands the thin right-side operator panel, queue selection, rerun controls, live runtime and stall visibility, and confirm-first manual-close actions.
+The current shell already lands the operator-shell split:
 
-What is still missing is the full detailed TUI UX and ergonomics spec at the level this harness now needs.
+- left-side header, transcript, and composer
+- right-side `Overview`, `Agents`, `Queue`, `Proof`, and `Control`
+- focus-lane navigation
+- operator/autonomous mode switching
+- MAS and recovery visibility
+- transcript search and compare mode
+- explicit `wave tui --alt-screen ...` and `--fresh-session`
+
+What is still missing is not a usable shell baseline. It is the deeper end-state UX polish and richer operator-agent help beyond the current product pass.
 
 ## What exists today
 
@@ -19,16 +27,17 @@ At the architecture level, the current docs already cover the intended operator 
 
 That is the right information architecture and the right control-plane posture.
 
-The live repo-local shell currently proves a narrower slice of that design:
+The live repo-local shell currently proves a substantial slice of that design:
 
-- a stable right-side `Run`, `Agents`, `Queue`, and `Control` panel
-- queue selection plus direct rerun control from the shell
-- explicit runtime identity, fallback, last-activity, and stalled-run visibility
-- confirm-first manual-close apply and clear actions for the selected wave via `m` and `M`
+- a Codex-style main shell with transcript and composer
+- a stable right-side operator dashboard
+- queue selection plus direct rerun/manual-close/operator-action control
+- explicit runtime identity, fallback, last-activity, autonomy, and recovery visibility
+- MAS-aware agent state, merge state, sandbox state, and directive status
 
 ## What is still missing
 
-We do not yet have a detailed TUI UX plan that specifies all of this concretely:
+What remains for the full end-state is:
 
 - exact screen layout and panel hierarchy
 - keyboard model and navigation flows

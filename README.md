@@ -19,23 +19,24 @@ The current state is an executable local operator slice:
 Working now:
 
 - `wave`
+- `wave tui [--alt-screen auto|always|never] [--fresh-session]`
 - `wave project show [--json]`
 - `wave doctor [--json]`
 - `wave lint [--json]`
 - `wave control status [--json]`
+- `wave control show|task|agent|rerun|close|proof|orchestrator`
 - `wave delivery status [--json]`
 - `wave delivery initiative|release|acceptance show --id <id> [--json]`
 - `wave launch`
 - `wave autonomous`
 - `wave draft`
 - `wave adhoc plan|run|list|show|promote`
-- `wave control show|task|rerun|proof`
 - `wave trace latest|replay`
 
 Still pending:
 
 - `wave dep`
-- terminal-surface integration beyond the built-in TUI shell
+- the real Wave 18 proof run that ratifies concurrent MAS execution, targeted recovery, and honest closure end to end
 
 `wave dep` is still present in the CLI surface but currently short-circuits with a not-implemented message.
 
@@ -64,13 +65,21 @@ Still pending:
 4. Run `cargo run -p wave-cli -- doctor --json`.
 5. Run `cargo run -p wave-cli -- control status --json`.
 
-If you want the interactive operator shell with the right-side status panel:
+If you want the interactive operator shell:
 
 ```bash
 cargo run -p wave-cli --
 ```
 
 In a non-interactive shell, the same command falls back to a text summary.
+
+Useful shell entry points:
+
+```bash
+cargo run -p wave-cli -- tui --help
+cargo run -p wave-cli -- tui --alt-screen never
+cargo run -p wave-cli -- tui --fresh-session
+```
 
 Useful live commands:
 
@@ -142,7 +151,7 @@ cargo run -p wave-cli -- trace latest --json
 cargo run -p wave-cli -- trace replay --json
 ```
 
-6. Open the TUI on an interactive terminal to inspect `Run`, `Agents`, `Queue`, and `Control` from one snapshot:
+6. Open the TUI on an interactive terminal to inspect `Overview`, `Agents`, `Queue`, `Proof`, and `Control` from one reducer-backed snapshot:
 
 ```bash
 cargo run -p wave-cli --
@@ -156,6 +165,7 @@ Current gaps remain explicit:
 - The TUI is the built-in operator shell, not a separate dashboard app.
 - Self-host dogfooding is local-first; it does not imply live-host deployment or remote fleet control.
 - Wave 0.2 now lands authority-core plus reducer-backed planning, queue, and control projections over compatibility run inputs; proof and closure surfaces are envelope-first through stored result envelopes, with legacy proof adaptation isolated to `wave-results`, while replay ratification still depends on compatibility run and trace artifacts until later waves retire those adapters.
+- Wave 18 is partially live, not fully ratified: MAS waves now have per-agent sandboxes, recovery-required state, runtime-backed head control, and the finished shell product, but the live proof run is still outstanding.
 
 ## Context7
 
@@ -307,31 +317,57 @@ For future waves, write the spec as if `wave lint` were the first reviewer:
 
 ## Operator Shell
 
-On an interactive terminal, `wave` opens a Ratatui shell with a right-side panel.
+On an interactive terminal, `wave` opens a Ratatui operator shell.
 
-The right-side panel currently exposes:
+The shell is split into:
 
-- `Run`
-  Active wave, run id, elapsed time, proof counts, and declared proof artifacts.
-- `Agents`
-  Per-agent state, proof-marker completeness, and deliverables for the active run.
-- `Queue`
-  Wave readiness, blockers, and dependency-driven queue state.
-- `Control`
-  Rerun intents, replay/proof state, and the available operator keybindings.
+- a left-side operator shell with header, transcript, and composer
+- a right-side dashboard with `Overview`, `Agents`, `Queue`, `Proof`, and `Control`
+
+The shell supports:
+
+- `head`, `wave`, and `agent` scopes
+- operator and autonomous mode
+- reducer-backed queue, proof, control, autonomy, and recovery visibility
+- transcript search and compare mode
+- explicit `--alt-screen` and `--fresh-session` startup controls via `wave tui`
 
 Current keybindings:
 
 - `q`
   Quit the shell.
 - `Tab` / `Shift+Tab`
-  Cycle the right-side panel tabs.
+  Cycle transcript, composer, and dashboard focus.
+- `[` / `]`
+  Cycle the right-side dashboard tabs.
 - `j` / `k`
-  Move the selected wave.
+  Scroll transcript or move dashboard selection, depending on focus.
 - `r`
   Request a rerun for the selected wave.
 - `c`
   Clear the selected wave's rerun intent.
+- `m` / `M`
+  Apply or clear manual close with confirmation.
+- `u` / `x`
+  Approve or reject the selected operator action.
+- `?`
+  Open shell help.
+
+Live shell commands include:
+
+- `/wave <id>`
+- `/agent <id>`
+- `/scope head|wave|agent`
+- `/mode operator|autonomous`
+- `/launch [wave-id]`
+- `/rerun [full|closure-only|promotion-only]`
+- `/clear-rerun`
+- `/pause`, `/resume`, `/rerun-agent`, `/rebase`, `/reconcile`
+- `/approve-merge`, `/reject-merge`
+- `/open overview|agents|queue|proof|control`
+- `/follow run|agent|off`
+- `/search <text>`, `/clear-search`
+- `/compare wave <id> | /compare agent <id>`, `/clear-compare`
 
 When authoring or updating a wave, keep the docs and the executable contract aligned in the same slice.
 

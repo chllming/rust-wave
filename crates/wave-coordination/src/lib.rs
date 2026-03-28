@@ -37,6 +37,9 @@ pub enum CoordinationRecordKind {
     Escalation,
     Decision,
     SupersededDecision,
+    ArtifactPublished,
+    MergeConflict,
+    InvalidationNotice,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

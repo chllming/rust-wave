@@ -1,10 +1,13 @@
 # True Multi-Agent Wave Rollout
 
-Status: target-state.
+Status: in-progress target-state.
 
 This document translates the true intra-wave multi-agent architecture into an implementation plan that fits the Rust-first product-factory branch.
 
-It does not claim that the current runtime already ships this behavior.
+The repo now has a partial Wave 18 MAS landing. This document therefore tracks both:
+
+- what is already live in the current worktree
+- what still remains before Wave 18 can close and `factory-mas-v2` can be called landed
 
 For live behavior today, read:
 
@@ -37,6 +40,43 @@ to:
 
 This is the cut that turns Wave from parallel-wave orchestration into true intra-wave MAS execution.
 
+## Current Implementation Status
+
+Wave 18 is no longer just authored intent. The current worktree already includes:
+
+- opt-in MAS authored-wave metadata through `execution_model = multi-agent`
+- per-wave MAS budget metadata and per-agent dependency, barrier, artifact, and resource fields
+- durable orchestrator-session records and durable control directives for agent-level and wave-level steering
+- CLI, app-server, and TUI orchestrator surfaces that expose MAS agent detail, directive history, and operator or autonomous mode
+- a separate MAS runtime launch path with per-agent sandboxes, ready-set computation, parallel-safe concurrent launch, merge sidecars, and invalidation sidecars
+- an active autonomous-head steering loop for MAS runs plus durable steering-delivery state that now progresses beyond static placeholder records
+- durable MAS control actions for pause, resume, rerun, rebase, reconciliation, and merge approval or rejection through the same control-plane record family
+- runtime handling that preserves accepted sibling work when one MAS agent hits merge conflict or rejection and moves the wave into recovery-required state instead of discarding accepted work immediately
+- reducer/projection/app-server/TUI recovery visibility for unresolved recovery plans, preserved sibling work, and required recovery actions
+- directive-delivery transport semantics that now distinguish live injection, checkpoint overlays, and deferred delivery
+- a finished operator shell product pass with transcript search, compare mode, explicit alt-screen policy, and fresh-session controls
+
+Wave 18 is still not closable. The remaining gaps are:
+
+- one live Wave 18 proof run that demonstrates concurrent launch, steering, recovery-required state, targeted repair, and honest closure
+
+Later expansion after that proof boundary may still deepen autonomous/operator-head behavior beyond the current safe action family and proposal synthesis, but it is no longer the blocker for calling the current MAS cut code-landed.
+
+## First Authored Milestone
+
+The first concrete authored milestone for this release should be `Wave 18`.
+
+`Wave 18` is the first repo-local MAS pilot. Its closure bar remains:
+
+- at least two implementation agents running concurrently inside one wave
+- per-agent sandboxes and lease-backed runtime identity
+- clean auto-merge for policy-valid merges
+- conflict and invalidation routing that preserves already accepted sibling work
+- an integrated TUI orchestrator workspace with direct per-agent signaling
+- full `operator` and `autonomous` mode switching through one durable control path
+
+That pilot wave should remain narrow enough for repo-local proof, but broad enough that the MAS runtime, merge authority, and head-control surfaces are all exercised by one real authored wave rather than only by fixtures.
+
 ## Release Boundary
 
 `factory-mas-v2` should branch from the merged post-Wave-17 `factory-core-v1` baseline.
@@ -47,7 +87,7 @@ It should not begin from:
 - the existing Wave 17 worktree
 - package-era launcher state under `.tmp/<lane>-wave-launcher/`
 
-The current worktree should carry only the roadmap, catalog, and architecture documentation for that release, plus any compatibility-safe schema seeds that do not alter the live serial runtime contract.
+The repo has now moved past documentation-only seeding. The current worktree already contains compatibility-safe MAS contract work plus a partial runtime and operator-surface landing. The remaining implementation should build on that baseline rather than re-design it.
 
 ## Carry-Forward From The Sibling Repo
 
@@ -141,6 +181,8 @@ That separation is deliberate:
 
 ## Domain And Event Additions
 
+Most of this record set is now seeded and used in the current worktree. The remaining gap is proving the end-to-end recovery path against a real Wave 18 run rather than only through fixtures.
+
 The Rust domain and event model should grow these core records:
 
 - `BarrierClass`
@@ -199,6 +241,12 @@ The reducer must compute from authoritative state:
 
 No projection should infer those states from launcher temp files.
 
+Current status:
+
+- MAS-authored waves now parse and lint through the extended contract
+- projections and app snapshots now expose MAS agent detail such as sandbox ids, merge state, barrier reasons, directive delivery, and recovery-required state
+- reducer and replay authority now compute the selective-recovery and MAS-control story from persisted records; the remaining work is a real proof run that ratifies those paths end to end
+
 ## Runtime And Workspace Model
 
 The runtime should supervise execution, not own policy.
@@ -223,6 +271,19 @@ The first sandbox backend should be Git-based and rooted under the wave worktree
 
 Each running agent sandbox must be derived from the current accepted integration head. Shared writable agent mutation is not allowed.
 
+Current status:
+
+- the runtime now allocates per-agent MAS sandboxes under the wave worktree
+- it computes a launch-ready set for parallel-safe MAS agents and can launch more than one agent concurrently
+- it records merge intents, merge results, and invalidations as runtime-side authoritative sidecars
+- it can merge accepted work back into the integration head for clean policy-valid cases
+- it can now issue autonomous-head steering directives during MAS execution and persist steering overlays plus delivery acknowledgements or deferrals for later checkpoints
+
+What still remains:
+
+- one real repo-local proof run that exercises the already-landed lease, merge, reconciliation, rerun, and recovery paths under live Wave 18 conditions
+- later expansion for broader head behaviors beyond the current safe action family after the pilot boundary is proven
+
 ## Operator Surfaces
 
 `wave control status`, `wave control show --wave <id>`, the TUI, and the app-server should surface:
@@ -243,8 +304,20 @@ Operator actions should remain thin requests into the control plane:
 - rerun one agent
 - rebase one invalidated sandbox
 - approve or reject a merge
-- request reconciliation
-- widen or narrow a per-wave concurrency budget
+- steer one agent or one wave
+- switch the wave between `operator` and `autonomous`
+
+Current status:
+
+- `wave control orchestrator mode|show|steer` is live
+- app-server and TUI orchestrator surfaces now show MAS agent sandbox ids, merge state, barrier reasons, and directive history
+- the selected-agent TUI view is MAS-aware rather than single-agent-run oriented
+- steering directives now progress through durable delivery state instead of remaining static placeholders only
+
+What still remains:
+
+- live Wave 18 proof that the already-landed operator and autonomous controls behave honestly under real concurrent-agent conditions
+- later ergonomics and policy expansion after the pilot boundary closes
 
 ## Rollout Phases
 

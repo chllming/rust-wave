@@ -138,6 +138,7 @@ pub enum ControlEventKind {
     ClosureOverrideApplied,
     ClosureOverrideCleared,
     HumanInputUpdated,
+    OperatorActionRecorded,
     ResultEnvelopeRecorded,
     WaveCompleted,
 }

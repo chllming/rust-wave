@@ -1248,6 +1248,8 @@ mod tests {
                 intent: None,
                 delivery: None,
                 design_gate: None,
+                execution_model: wave_spec::WaveExecutionModel::Serial,
+                concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
             },
             heading_title: Some(format!("Wave {id}")),
             commit_message: Some("Feat: test".to_string()),
@@ -1296,6 +1298,13 @@ mod tests {
             deliverables: Vec::new(),
             file_ownership: vec![format!(".wave/reviews/{id}.md")],
             final_markers: vec![marker.to_string()],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::ClosureBarrier,
+            parallel_safety: wave_spec::ParallelSafetyClass::Serialized,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: "Primary goal:\n- Close the wave honestly.".to_string(),
         }
     }

@@ -13,8 +13,8 @@ use wave_spec::load_wave_documents;
 use wave_spec::parse_wave_document;
 use wave_trace::now_epoch_ms;
 
-use super::LaunchReport;
 use super::LaunchOptions;
+use super::LaunchReport;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -138,8 +138,11 @@ pub fn plan_adhoc(
 
     write_json(&request_path, &request_record)?;
     write_json(&spec_path, &spec)?;
-    fs::write(&wave_path, render_adhoc_wave_document(&spec, &request_record))
-        .with_context(|| format!("failed to write {}", wave_path.display()))?;
+    fs::write(
+        &wave_path,
+        render_adhoc_wave_document(&spec, &request_record),
+    )
+    .with_context(|| format!("failed to write {}", wave_path.display()))?;
     write_json(&result_path, &result)?;
 
     Ok(AdhocPlanReport {
@@ -165,17 +168,23 @@ pub fn run_adhoc(root: &Path, config: &ProjectConfig, run_id: &str) -> Result<Ad
         .resolved_paths(root)
         .authority
         .materialize_canonical_state_tree()?;
-    fs::create_dir_all(runtime_config.resolved_paths(root).authority.trace_runs_dir.clone())
-        .with_context(|| {
-            format!(
-                "failed to create {}",
-                runtime_config
-                    .resolved_paths(root)
-                    .authority
-                    .trace_runs_dir
-                    .display()
-            )
-        })?;
+    fs::create_dir_all(
+        runtime_config
+            .resolved_paths(root)
+            .authority
+            .trace_runs_dir
+            .clone(),
+    )
+    .with_context(|| {
+        format!(
+            "failed to create {}",
+            runtime_config
+                .resolved_paths(root)
+                .authority
+                .trace_runs_dir
+                .display()
+        )
+    })?;
 
     record.result = AdhocResult {
         run_id: record.run_id.clone(),
@@ -191,8 +200,7 @@ pub fn run_adhoc(root: &Path, config: &ProjectConfig, run_id: &str) -> Result<Ad
     write_adhoc_result(root, config, &record)?;
 
     let waves = vec![wave];
-    let planning_status =
-        build_planning_status(&runtime_config, &waves, &[], &HashMap::new());
+    let planning_status = build_planning_status(&runtime_config, &waves, &[], &HashMap::new());
     let launch = super::launch_wave(
         root,
         &runtime_config,
@@ -272,18 +280,23 @@ pub fn promote_adhoc(
         .with_context(|| format!("failed to read {}", wave_path.display()))?;
     let next_wave_id = match target_wave_id {
         Some(wave_id) => wave_id,
-        None => load_wave_documents(config, root)?
-            .into_iter()
-            .map(|wave| wave.metadata.id)
-            .max()
-            .unwrap_or(0)
-            + 1,
+        None => {
+            load_wave_documents(config, root)?
+                .into_iter()
+                .map(|wave| wave.metadata.id)
+                .max()
+                .unwrap_or(0)
+                + 1
+        }
     };
     let promoted_path = root
         .join(&config.waves_dir)
         .join(format!("{next_wave_id:02}-{}.md", record.spec.slug));
     if promoted_path.exists() {
-        bail!("promoted wave path already exists: {}", promoted_path.display());
+        bail!(
+            "promoted wave path already exists: {}",
+            promoted_path.display()
+        );
     }
 
     let promoted = rewrite_adhoc_wave_for_promotion(&raw, &record.spec.title, next_wave_id);
@@ -310,7 +323,11 @@ pub fn promote_adhoc(
     })
 }
 
-fn read_adhoc_run_record(root: &Path, config: &ProjectConfig, run_id: &str) -> Result<AdhocRunRecord> {
+fn read_adhoc_run_record(
+    root: &Path,
+    config: &ProjectConfig,
+    run_id: &str,
+) -> Result<AdhocRunRecord> {
     let run_dir = adhoc_runs_dir(root, config).join(run_id);
     let request = read_json::<AdhocRequest>(&run_dir.join("request.json"))?;
     let spec = read_json::<AdhocSpec>(&run_dir.join("spec.json"))?;
@@ -331,7 +348,9 @@ fn read_adhoc_run_record(root: &Path, config: &ProjectConfig, run_id: &str) -> R
 
 fn write_adhoc_result(root: &Path, config: &ProjectConfig, record: &AdhocRunRecord) -> Result<()> {
     write_json(
-        &adhoc_runs_dir(root, config).join(&record.run_id).join("result.json"),
+        &adhoc_runs_dir(root, config)
+            .join(&record.run_id)
+            .join("result.json"),
         &record.result,
     )
 }
@@ -342,8 +361,8 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let value = serde_json::from_str(&raw)
         .with_context(|| format!("failed to parse {}", path.display()))?;
     Ok(value)
@@ -351,7 +370,11 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
 
 fn adhoc_runtime_config(config: &ProjectConfig, run_id: &str) -> ProjectConfig {
     let mut cloned = config.clone();
-    let runtime_root = config.authority.state_adhoc_dir.join("runtime").join(run_id);
+    let runtime_root = config
+        .authority
+        .state_adhoc_dir
+        .join("runtime")
+        .join(run_id);
     cloned.authority.project_codex_home = runtime_root.join("codex");
     cloned.authority.state_dir = runtime_root.clone();
     cloned.authority.state_build_specs_dir = runtime_root.join("build/specs");
@@ -663,7 +686,10 @@ mod tests {
 
         assert_eq!(parsed.metadata.id, 0);
         assert_eq!(parsed.metadata.slug, "smoke-test-adhoc");
-        assert_eq!(parsed.metadata.wave_class, wave_spec::WaveClass::Implementation);
+        assert_eq!(
+            parsed.metadata.wave_class,
+            wave_spec::WaveClass::Implementation
+        );
         assert_eq!(
             parsed.metadata.intent,
             Some(wave_spec::WaveIntent::Investigation)

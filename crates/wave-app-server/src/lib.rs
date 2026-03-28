@@ -17,10 +17,6 @@ use std::fs;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 use wave_config::ProjectConfig;
-use wave_control_plane::build_control_status_read_model_from_spine;
-use wave_control_plane::build_projection_spine_from_authority;
-use wave_control_plane::load_canonical_compatibility_runs;
-use wave_control_plane::load_scheduler_events;
 use wave_control_plane::ControlActionReadModel;
 use wave_control_plane::ControlStatusReadModel;
 use wave_control_plane::DashboardReadModel;
@@ -29,6 +25,10 @@ use wave_control_plane::OperatorSnapshotInputs;
 use wave_control_plane::PlanningStatusReadModel;
 use wave_control_plane::ProjectionSpine;
 use wave_control_plane::QueueBlockerSummary;
+use wave_control_plane::build_control_status_read_model_from_spine;
+use wave_control_plane::build_projection_spine_from_authority;
+use wave_control_plane::load_canonical_compatibility_runs;
+use wave_control_plane::load_scheduler_events;
 use wave_coordination::CoordinationLog;
 use wave_coordination::CoordinationRecord;
 use wave_coordination::CoordinationRecordKind;
@@ -46,22 +46,34 @@ use wave_domain::WaveClosureOverrideRecord;
 use wave_events::ControlEvent;
 use wave_events::ControlEventLog;
 use wave_reducer::reduce_planning_state_with_authorities;
+use wave_runtime::RerunIntentRecord;
 use wave_runtime::active_closure_override_wave_ids;
+use wave_runtime::latest_operator_shell_session;
+use wave_runtime::latest_orchestrator_session;
+use wave_runtime::list_agent_sandboxes;
 use wave_runtime::list_closure_overrides;
+use wave_runtime::list_control_directives;
+use wave_runtime::list_directive_deliveries;
+use wave_runtime::list_head_proposals;
+use wave_runtime::list_invalidations;
+use wave_runtime::list_merge_results;
+use wave_runtime::list_operator_shell_turns;
+use wave_runtime::list_recovery_actions;
+use wave_runtime::list_recovery_plans;
 use wave_runtime::list_rerun_intents;
 use wave_runtime::load_latest_runs;
 use wave_runtime::load_relevant_runs;
 use wave_runtime::pending_rerun_wave_ids;
 use wave_runtime::runtime_boundary_status;
-use wave_runtime::RerunIntentRecord;
-use wave_spec::load_wave_documents;
+use wave_spec::BarrierClass;
 use wave_spec::WaveAgent;
 use wave_spec::WaveDocument;
-use wave_trace::now_epoch_ms;
-use wave_trace::validate_replay;
+use wave_spec::load_wave_documents;
 use wave_trace::ReplayReport;
 use wave_trace::WaveRunRecord;
 use wave_trace::WaveRunStatus;
+use wave_trace::now_epoch_ms;
+use wave_trace::validate_replay;
 
 /// Stable label for the snapshot assembly landing zone.
 pub const SNAPSHOT_LANDING_ZONE: &str = "operator-snapshot-bootstrap";
@@ -102,6 +114,7 @@ pub struct OperatorSnapshot {
     pub rerun_intents: Vec<RerunIntentRecord>,
     pub closure_overrides: Vec<WaveClosureOverrideRecord>,
     pub control_actions: Vec<ControlAction>,
+    pub shell: OperatorShellSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -110,6 +123,7 @@ pub struct OperatorPanelsSnapshot {
     pub agents: AgentsPanelSnapshot,
     pub queue: QueuePanelSnapshot,
     pub control: ControlPanelSnapshot,
+    pub orchestrator: OrchestratorPanelSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -180,6 +194,167 @@ pub struct ControlPanelSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OrchestratorPanelSnapshot {
+    pub mode: String,
+    pub active: bool,
+    pub multi_agent_wave_count: usize,
+    pub selected_wave_id: Option<u32>,
+    pub autonomous_wave_ids: Vec<u32>,
+    pub pending_proposal_count: usize,
+    pub autonomous_action_count: usize,
+    pub failed_head_turn_count: usize,
+    pub unresolved_recovery_count: usize,
+    pub recent_autonomous_actions: Vec<AutonomousActionSnapshot>,
+    pub recent_autonomous_failures: Vec<AutonomousFailureSnapshot>,
+    pub waves: Vec<WaveOrchestratorSnapshot>,
+    pub directives: Vec<DirectiveSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AutonomousActionSnapshot {
+    pub proposal_id: String,
+    pub wave_id: u32,
+    pub agent_id: Option<String>,
+    pub summary: String,
+    pub resolution: String,
+    pub updated_at_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AutonomousFailureSnapshot {
+    pub turn_id: String,
+    pub wave_id: u32,
+    pub agent_id: Option<String>,
+    pub summary: String,
+    pub detail: Option<String>,
+    pub created_at_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct OperatorShellSnapshot {
+    pub default_target: OperatorShellTargetSnapshot,
+    pub session: Option<OperatorShellSessionSnapshot>,
+    pub transcript: Vec<OperatorShellTranscriptItem>,
+    pub proposals: Vec<OperatorShellProposalItem>,
+    pub command_availability: BTreeMap<String, bool>,
+    pub commands: Vec<OperatorShellCommand>,
+    pub last_event_at_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OperatorShellSessionSnapshot {
+    pub session_id: String,
+    pub scope: String,
+    pub wave_id: Option<u32>,
+    pub agent_id: Option<String>,
+    pub tab: String,
+    pub follow_mode: String,
+    pub mode: String,
+    pub active: bool,
+    pub started_at_ms: u128,
+    pub updated_at_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct OperatorShellTargetSnapshot {
+    pub scope: String,
+    pub wave_id: Option<u32>,
+    pub agent_id: Option<String>,
+    pub label: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OperatorShellTranscriptItem {
+    pub item_id: String,
+    pub kind: String,
+    pub title: String,
+    pub detail: String,
+    pub origin: Option<String>,
+    pub wave_id: Option<u32>,
+    pub agent_id: Option<String>,
+    pub session_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub proposal_id: Option<String>,
+    pub created_at_ms: u128,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OperatorShellProposalItem {
+    pub proposal_id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub cycle_id: Option<String>,
+    pub wave_id: u32,
+    pub agent_id: Option<String>,
+    pub action_kind: String,
+    pub state: String,
+    pub resolution: Option<String>,
+    pub resolved_by: Option<String>,
+    pub resolved_at_ms: Option<u128>,
+    pub summary: String,
+    pub detail: Option<String>,
+    pub created_at_ms: u128,
+    pub updated_at_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OperatorShellCommand {
+    pub name: String,
+    pub usage: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WaveOrchestratorSnapshot {
+    pub wave_id: u32,
+    pub title: String,
+    pub execution_model: String,
+    pub mode: String,
+    pub active_run_id: Option<String>,
+    pub pending_proposal_count: usize,
+    pub autonomous_action_count: usize,
+    pub recovery_required: bool,
+    pub last_head_turn_at_ms: Option<u128>,
+    pub last_head_summary: Option<String>,
+    pub last_autonomous_failure: Option<String>,
+    pub agents: Vec<MasAgentSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MasAgentSnapshot {
+    pub id: String,
+    pub title: String,
+    pub barrier_class: String,
+    pub depends_on_agents: Vec<String>,
+    pub writes_artifacts: Vec<String>,
+    pub exclusive_resources: Vec<String>,
+    pub status: String,
+    pub merge_state: Option<String>,
+    pub sandbox_id: Option<String>,
+    pub heartbeat_age_ms: Option<u128>,
+    pub pending_directive_count: usize,
+    pub last_head_action: Option<String>,
+    pub recovery_state: Option<String>,
+    pub barrier_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DirectiveSnapshot {
+    pub directive_id: String,
+    pub wave_id: u32,
+    pub agent_id: Option<String>,
+    pub kind: String,
+    pub origin: String,
+    pub message: Option<String>,
+    pub requested_by: String,
+    pub requested_at_ms: u128,
+    pub delivery_state: Option<String>,
+    pub delivery_detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ActiveRunDetail {
     pub wave_id: u32,
     pub wave_slug: String,
@@ -201,6 +376,68 @@ pub struct ActiveRunDetail {
     pub proof: ProofSnapshot,
     pub replay: ReplayReport,
     pub agents: Vec<AgentPanelItem>,
+    pub mas: Option<MasRunDetail>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MasRunDetail {
+    pub execution_model: String,
+    pub running_agent_ids: Vec<String>,
+    pub merged_agent_ids: Vec<String>,
+    pub conflicted_agent_ids: Vec<String>,
+    pub invalidated_agent_ids: Vec<String>,
+    pub sandboxes: Vec<MasSandboxSnapshot>,
+    pub merges: Vec<MasMergeSnapshot>,
+    pub invalidations: Vec<MasInvalidationSnapshot>,
+    pub recovery: Option<MasRecoverySnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MasSandboxSnapshot {
+    pub sandbox_id: String,
+    pub agent_id: String,
+    pub path: String,
+    pub base_integration_ref: Option<String>,
+    pub released_at_ms: Option<u128>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MasMergeSnapshot {
+    pub agent_id: String,
+    pub disposition: String,
+    pub conflict_paths: Vec<String>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MasInvalidationSnapshot {
+    pub source_agent_id: String,
+    pub invalidated_agent_ids: Vec<String>,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MasRecoverySnapshot {
+    pub recovery_plan_id: String,
+    pub run_id: String,
+    pub status: String,
+    pub causes: Vec<String>,
+    pub affected_agent_ids: Vec<String>,
+    pub preserved_accepted_agent_ids: Vec<String>,
+    pub required_actions: Vec<String>,
+    pub detail: Option<String>,
+    pub recent_actions: Vec<MasRecoveryActionSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MasRecoveryActionSnapshot {
+    pub recovery_action_id: String,
+    pub agent_id: Option<String>,
+    pub action_kind: String,
+    pub requested_by: String,
+    pub created_at_ms: u128,
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -352,6 +589,7 @@ pub struct DeliveryStateItem {
 #[serde(rename_all = "snake_case")]
 pub enum OperatorActionableKind {
     Approval,
+    Proposal,
     Override,
     Escalation,
 }
@@ -554,6 +792,9 @@ pub fn load_operator_snapshot(root: &Path, config: &ProjectConfig) -> Result<Ope
     let closure_overrides = list_closure_overrides(root, config)?
         .into_values()
         .collect::<Vec<_>>();
+    let shell_session = latest_operator_shell_session(root, config)?;
+    let shell_turns = list_operator_shell_turns(root, config, None)?;
+    let head_proposals = list_head_proposals(root, config, None)?;
     let design_details = load_wave_design_details(
         root,
         config,
@@ -563,16 +804,21 @@ pub fn load_operator_snapshot(root: &Path, config: &ProjectConfig) -> Result<Ope
         &rerun_wave_ids,
         &closure_override_wave_ids,
     )?;
-    let operator_objects =
-        load_operator_actionable_items(root, config, &design_details, &closure_overrides)?;
+    let operator_objects = load_operator_actionable_items(
+        root,
+        config,
+        &design_details,
+        &closure_overrides,
+        &head_proposals,
+    )?;
     let relevant_runs = load_relevant_run_records(root, config)?;
-    let latest_run_details = latest_relevant_run_details(root, &waves, &relevant_runs);
+    let latest_run_details = latest_relevant_run_details(root, config, &waves, &relevant_runs);
     let active_run_details = latest_run_details
         .iter()
         .filter(|run| matches!(run.status, WaveRunStatus::Planned | WaveRunStatus::Running))
         .cloned()
         .collect::<Vec<_>>();
-    Ok(build_operator_snapshot_with_design_details(
+    let mut snapshot = build_operator_snapshot_with_design_details(
         &spine,
         runtime_boundary,
         rerun_intents,
@@ -581,7 +827,23 @@ pub fn load_operator_snapshot(root: &Path, config: &ProjectConfig) -> Result<Ope
         active_run_details,
         design_details,
         operator_objects,
-    )?)
+    )?;
+    snapshot.panels.orchestrator = build_orchestrator_panel_snapshot(
+        root,
+        config,
+        &waves,
+        &snapshot.planning.waves,
+        &snapshot.active_run_details,
+        &shell_turns,
+        &head_proposals,
+    )?;
+    snapshot.shell = build_operator_shell_snapshot(
+        &snapshot,
+        shell_session.as_ref(),
+        &shell_turns,
+        &head_proposals,
+    );
+    Ok(snapshot)
 }
 
 pub fn load_relevant_run_records(
@@ -665,7 +927,7 @@ pub fn build_operator_snapshot_with_design_details(
         control_actions.clone(),
     );
 
-    Ok(OperatorSnapshot {
+    let mut snapshot = OperatorSnapshot {
         generated_at_ms: now_epoch_ms()?,
         dashboard: build_dashboard_snapshot(&spine.operator.dashboard),
         planning: spine.planning.status.clone(),
@@ -681,7 +943,10 @@ pub fn build_operator_snapshot_with_design_details(
         rerun_intents,
         closure_overrides,
         control_actions,
-    })
+        shell: OperatorShellSnapshot::default(),
+    };
+    snapshot.shell = build_operator_shell_snapshot(&snapshot, None, &[], &[]);
+    Ok(snapshot)
 }
 
 fn build_acceptance_packages(
@@ -907,7 +1172,9 @@ fn build_acceptance_signoff(
         .filter(|item| {
             matches!(
                 item.kind,
-                OperatorActionableKind::Approval | OperatorActionableKind::Escalation
+                OperatorActionableKind::Approval
+                    | OperatorActionableKind::Proposal
+                    | OperatorActionableKind::Escalation
             )
         })
         .map(|item| item.summary.clone())
@@ -1431,7 +1698,972 @@ fn build_operator_panels_snapshot(
                 .collect(),
             unavailable_reasons: operator.control.unavailable_reasons.clone(),
         },
+        orchestrator: OrchestratorPanelSnapshot {
+            mode: "operator".to_string(),
+            active: false,
+            multi_agent_wave_count: 0,
+            selected_wave_id: None,
+            autonomous_wave_ids: Vec::new(),
+            pending_proposal_count: 0,
+            autonomous_action_count: 0,
+            failed_head_turn_count: 0,
+            unresolved_recovery_count: 0,
+            recent_autonomous_actions: Vec::new(),
+            recent_autonomous_failures: Vec::new(),
+            waves: Vec::new(),
+            directives: Vec::new(),
+        },
     }
+}
+
+fn build_orchestrator_panel_snapshot(
+    root: &Path,
+    config: &ProjectConfig,
+    waves: &[WaveDocument],
+    planning_waves: &[wave_control_plane::WaveStatusReadModel],
+    active_run_details: &[ActiveRunDetail],
+    turns: &[wave_domain::OperatorShellTurnRecord],
+    proposals: &[wave_domain::HeadProposalRecord],
+) -> Result<OrchestratorPanelSnapshot> {
+    let directives = list_control_directives(root, config, None)?;
+    let deliveries = list_directive_deliveries(root, config, None)?;
+    let recovery_plans = list_recovery_plans(root, config, None)?;
+    let recovery_actions = list_recovery_actions(root, config, None)?;
+    let active_wave_ids = active_run_details
+        .iter()
+        .map(|run| run.wave_id)
+        .collect::<BTreeSet<_>>();
+    let planning_waves_by_id = planning_waves
+        .iter()
+        .map(|wave| (wave.id, wave))
+        .collect::<BTreeMap<_, _>>();
+    let multi_agent_waves = waves
+        .iter()
+        .filter(|wave| wave.is_multi_agent())
+        .collect::<Vec<_>>();
+    let selected_wave_id = active_wave_ids
+        .iter()
+        .next()
+        .copied()
+        .or_else(|| multi_agent_waves.first().map(|wave| wave.metadata.id));
+    let mut modes_by_wave = BTreeMap::new();
+    for wave in &multi_agent_waves {
+        if let Some(session) = latest_orchestrator_session(root, config, wave.metadata.id)? {
+            modes_by_wave.insert(wave.metadata.id, session.mode);
+        }
+    }
+    let autonomous_wave_ids = active_wave_ids
+        .iter()
+        .copied()
+        .filter(|wave_id| {
+            modes_by_wave
+                .get(wave_id)
+                .is_some_and(|mode| matches!(mode, wave_domain::OrchestratorMode::Autonomous))
+        })
+        .collect::<Vec<_>>();
+    let mode = if autonomous_wave_ids.is_empty() {
+        modes_by_wave
+            .get(&selected_wave_id.unwrap_or_default())
+            .copied()
+            .unwrap_or(wave_domain::OrchestratorMode::Operator)
+    } else if autonomous_wave_ids.len() == active_wave_ids.len() && !active_wave_ids.is_empty() {
+        wave_domain::OrchestratorMode::Autonomous
+    } else {
+        wave_domain::OrchestratorMode::Operator
+    };
+    let directive_snapshots = directives
+        .into_iter()
+        .map(|directive| {
+            let delivery = deliveries
+                .iter()
+                .find(|delivery| delivery.directive_id == directive.directive_id);
+            DirectiveSnapshot {
+                directive_id: directive.directive_id.as_str().to_string(),
+                wave_id: directive.wave_id,
+                agent_id: directive.agent_id.clone(),
+                kind: format!("{:?}", directive.kind).to_ascii_lowercase(),
+                origin: format!("{:?}", directive.origin).to_ascii_lowercase(),
+                message: directive.message.clone(),
+                requested_by: directive.requested_by.clone(),
+                requested_at_ms: directive.requested_at_ms,
+                delivery_state: delivery
+                    .map(|delivery| format!("{:?}", delivery.state).to_ascii_lowercase()),
+                delivery_detail: delivery.and_then(|delivery| delivery.detail.clone()),
+            }
+        })
+        .collect::<Vec<_>>();
+    let pending_proposals_by_wave = proposals
+        .iter()
+        .filter(|proposal| matches!(proposal.state, wave_domain::HeadProposalState::Pending))
+        .fold(BTreeMap::<u32, usize>::new(), |mut counts, proposal| {
+            *counts.entry(proposal.wave_id).or_default() += 1;
+            counts
+        });
+    let autonomous_actions = proposals
+        .iter()
+        .filter_map(|proposal| {
+            proposal.resolution.as_ref().and_then(|resolution| {
+                matches!(
+                    resolution.kind,
+                    wave_domain::HeadProposalResolutionKind::AutonomousApplied
+                )
+                .then(|| AutonomousActionSnapshot {
+                    proposal_id: proposal.proposal_id.as_str().to_string(),
+                    wave_id: proposal.wave_id,
+                    agent_id: proposal.agent_id.clone(),
+                    summary: proposal.summary.clone(),
+                    resolution: debug_label(resolution.kind),
+                    updated_at_ms: proposal.updated_at_ms,
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    let latest_recovery_by_wave = recovery_plans.into_iter().fold(
+        BTreeMap::<u32, wave_domain::RecoveryPlanRecord>::new(),
+        |mut acc, recovery_plan| {
+            let replace = acc
+                .get(&recovery_plan.wave_id)
+                .map(|current| {
+                    (
+                        recovery_plan.updated_at_ms.max(recovery_plan.created_at_ms),
+                        recovery_plan.recovery_plan_id.as_str(),
+                    ) >= (
+                        current.updated_at_ms.max(current.created_at_ms),
+                        current.recovery_plan_id.as_str(),
+                    )
+                })
+                .unwrap_or(true);
+            if replace {
+                acc.insert(recovery_plan.wave_id, recovery_plan);
+            }
+            acc
+        },
+    );
+    let _recovery_actions_by_plan = recovery_actions.into_iter().fold(
+        BTreeMap::<String, Vec<wave_domain::RecoveryActionRecord>>::new(),
+        |mut acc, action| {
+            acc.entry(action.recovery_plan_id.as_str().to_string())
+                .or_default()
+                .push(action);
+            acc
+        },
+    );
+    let autonomous_action_counts =
+        autonomous_actions
+            .iter()
+            .fold(BTreeMap::<u32, usize>::new(), |mut counts, action| {
+                *counts.entry(action.wave_id).or_default() += 1;
+                counts
+            });
+    let mut latest_head_turn_by_wave = BTreeMap::new();
+    let mut latest_failed_turn_by_wave = BTreeMap::new();
+    let mut recent_autonomous_failures = turns
+        .iter()
+        .filter(|turn| turn.status == wave_domain::OperatorShellTurnStatus::Failed)
+        .filter_map(|turn| {
+            turn.wave_id.map(|wave_id| AutonomousFailureSnapshot {
+                turn_id: turn.turn_id.as_str().to_string(),
+                wave_id,
+                agent_id: turn.agent_id.clone(),
+                summary: first_line(turn.output.as_deref()).unwrap_or_else(|| turn.input.clone()),
+                detail: turn.failed_reason.clone().or_else(|| turn.output.clone()),
+                created_at_ms: turn.created_at_ms,
+            })
+        })
+        .collect::<Vec<_>>();
+    recent_autonomous_failures.sort_by_key(|item| item.created_at_ms);
+    if recent_autonomous_failures.len() > 8 {
+        recent_autonomous_failures =
+            recent_autonomous_failures.split_off(recent_autonomous_failures.len() - 8);
+    }
+    for turn in turns {
+        if let Some(wave_id) = turn.wave_id {
+            if turn.origin == wave_domain::OperatorShellTurnOrigin::Head {
+                latest_head_turn_by_wave.insert(wave_id, turn);
+            }
+            if turn.status == wave_domain::OperatorShellTurnStatus::Failed {
+                latest_failed_turn_by_wave.insert(wave_id, turn);
+            }
+        }
+    }
+    let waves = multi_agent_waves
+        .into_iter()
+        .map(|wave| {
+            let active_run = active_run_details
+                .iter()
+                .find(|run| run.wave_id == wave.metadata.id);
+            let mas_detail = active_run.and_then(|run| run.mas.as_ref());
+            let planning_wave = planning_waves_by_id.get(&wave.metadata.id).copied();
+            let recovery_plan = latest_recovery_by_wave.get(&wave.metadata.id);
+            let statuses = active_run
+                .map(|run| {
+                    run.agents
+                        .iter()
+                        .map(|agent| {
+                            (
+                                agent.id.clone(),
+                                format!("{:?}", agent.status).to_ascii_lowercase(),
+                            )
+                        })
+                        .collect::<BTreeMap<_, _>>()
+                })
+                .unwrap_or_default();
+            let mode = modes_by_wave
+                .get(&wave.metadata.id)
+                .copied()
+                .unwrap_or(wave_domain::OrchestratorMode::Operator);
+            WaveOrchestratorSnapshot {
+                wave_id: wave.metadata.id,
+                title: wave.metadata.title.clone(),
+                execution_model: "multi-agent".to_string(),
+                mode: debug_label(mode),
+                active_run_id: active_run.map(|run| run.run_id.clone()),
+                pending_proposal_count: pending_proposals_by_wave
+                    .get(&wave.metadata.id)
+                    .copied()
+                    .unwrap_or_default(),
+                autonomous_action_count: autonomous_action_counts
+                    .get(&wave.metadata.id)
+                    .copied()
+                    .unwrap_or_default(),
+                recovery_required: planning_wave
+                    .map(|wave| wave.recovery.required)
+                    .unwrap_or_else(|| {
+                        recovery_plan
+                            .map(|plan| {
+                                !matches!(plan.status, wave_domain::RecoveryPlanStatus::Resolved)
+                            })
+                            .unwrap_or(false)
+                    }),
+                last_head_turn_at_ms: latest_head_turn_by_wave
+                    .get(&wave.metadata.id)
+                    .map(|turn| turn.created_at_ms),
+                last_head_summary: latest_head_turn_by_wave
+                    .get(&wave.metadata.id)
+                    .and_then(|turn| first_line(turn.output.as_deref())),
+                last_autonomous_failure: latest_failed_turn_by_wave.get(&wave.metadata.id).map(
+                    |turn| {
+                        first_line(turn.failed_reason.as_deref())
+                            .or_else(|| first_line(turn.output.as_deref()))
+                            .unwrap_or_else(|| "autonomous head failure".to_string())
+                    },
+                ),
+                agents: wave
+                    .agents
+                    .iter()
+                    .map(|agent| MasAgentSnapshot {
+                        id: agent.id.clone(),
+                        title: agent.title.clone(),
+                        barrier_class: barrier_class_label(agent.barrier_class).to_string(),
+                        depends_on_agents: agent.depends_on_agents.clone(),
+                        writes_artifacts: agent.writes_artifacts.clone(),
+                        exclusive_resources: agent.exclusive_resources.clone(),
+                        status: statuses
+                            .get(&agent.id)
+                            .cloned()
+                            .unwrap_or_else(|| "planned".to_string()),
+                        merge_state: mas_detail.and_then(|detail| {
+                            detail
+                                .merges
+                                .iter()
+                                .find(|merge| merge.agent_id == agent.id)
+                                .map(|merge| merge.disposition.clone())
+                        }),
+                        sandbox_id: mas_detail.and_then(|detail| {
+                            detail
+                                .sandboxes
+                                .iter()
+                                .find(|sandbox| sandbox.agent_id == agent.id)
+                                .map(|sandbox| sandbox.sandbox_id.clone())
+                        }),
+                        heartbeat_age_ms: planning_wave.and_then(|wave_state| {
+                            wave_state
+                                .ownership
+                                .active_leases
+                                .iter()
+                                .chain(wave_state.ownership.stale_leases.iter())
+                                .find(|lease| {
+                                    task_id_agent_id(&wave_domain::TaskId::new(
+                                        lease.task_id.clone(),
+                                    ))
+                                    .as_deref()
+                                        == Some(agent.id.as_str())
+                                })
+                                .map(|lease| lease.heartbeat_at_ms.unwrap_or(lease.granted_at_ms))
+                                .and_then(|heartbeat_at_ms| {
+                                    now_epoch_ms()
+                                        .ok()
+                                        .map(|now| now.saturating_sub(heartbeat_at_ms))
+                                })
+                        }),
+                        pending_directive_count: directive_snapshots
+                            .iter()
+                            .filter(|directive| {
+                                directive.wave_id == wave.metadata.id
+                                    && directive.agent_id.as_deref() == Some(agent.id.as_str())
+                                    && directive.delivery_state.as_deref() != Some("rejected")
+                                    && directive.delivery_state.as_deref() != Some("acked")
+                            })
+                            .count(),
+                        last_head_action: proposals
+                            .iter()
+                            .filter(|proposal| proposal.wave_id == wave.metadata.id)
+                            .filter(|proposal| {
+                                proposal.agent_id.as_deref() == Some(agent.id.as_str())
+                            })
+                            .max_by_key(|proposal| proposal.updated_at_ms)
+                            .map(|proposal| proposal.summary.clone()),
+                        recovery_state: recovery_plan.and_then(|plan| {
+                            plan.agent_plans
+                                .iter()
+                                .find(|entry| entry.agent_id == agent.id)
+                                .map(|entry| format!("{:?}", entry.cause).to_ascii_lowercase())
+                        }),
+                        barrier_reasons: build_agent_barrier_reasons(
+                            wave, active_run, agent, mas_detail,
+                        ),
+                    })
+                    .collect(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut recent_autonomous_actions = autonomous_actions;
+    recent_autonomous_actions.sort_by_key(|item| item.updated_at_ms);
+    if recent_autonomous_actions.len() > 8 {
+        recent_autonomous_actions =
+            recent_autonomous_actions.split_off(recent_autonomous_actions.len() - 8);
+    }
+    Ok(OrchestratorPanelSnapshot {
+        mode: if !autonomous_wave_ids.is_empty()
+            && autonomous_wave_ids.len() != active_wave_ids.len()
+        {
+            "mixed".to_string()
+        } else {
+            match mode {
+                wave_domain::OrchestratorMode::Operator => "operator".to_string(),
+                wave_domain::OrchestratorMode::Autonomous => "autonomous".to_string(),
+            }
+        },
+        active: !autonomous_wave_ids.is_empty(),
+        multi_agent_wave_count: waves.len(),
+        selected_wave_id,
+        autonomous_wave_ids,
+        pending_proposal_count: pending_proposals_by_wave.values().sum(),
+        autonomous_action_count: autonomous_action_counts.values().sum(),
+        failed_head_turn_count: recent_autonomous_failures.len(),
+        unresolved_recovery_count: latest_recovery_by_wave
+            .values()
+            .filter(|plan| !matches!(plan.status, wave_domain::RecoveryPlanStatus::Resolved))
+            .count(),
+        recent_autonomous_actions,
+        recent_autonomous_failures,
+        waves,
+        directives: directive_snapshots,
+    })
+}
+
+fn first_line(value: Option<&str>) -> Option<String> {
+    value.and_then(|text| {
+        text.lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn build_operator_shell_snapshot(
+    snapshot: &OperatorSnapshot,
+    session: Option<&wave_domain::OperatorShellSessionRecord>,
+    turns: &[wave_domain::OperatorShellTurnRecord],
+    proposals: &[wave_domain::HeadProposalRecord],
+) -> OperatorShellSnapshot {
+    let mut transcript = build_operator_shell_transcript(snapshot, turns);
+    transcript.sort_by_key(|item| (item.created_at_ms, item.item_id.clone()));
+    if transcript.len() > 40 {
+        transcript = transcript.split_off(transcript.len().saturating_sub(40));
+    }
+    let last_event_at_ms = transcript.last().map(|item| item.created_at_ms);
+
+    OperatorShellSnapshot {
+        default_target: build_default_shell_target(snapshot, session),
+        session: session.map(build_operator_shell_session_snapshot),
+        transcript,
+        proposals: build_operator_shell_proposals(proposals),
+        command_availability: default_shell_command_availability(),
+        commands: default_shell_commands(),
+        last_event_at_ms,
+    }
+}
+
+fn build_default_shell_target(
+    snapshot: &OperatorSnapshot,
+    session: Option<&wave_domain::OperatorShellSessionRecord>,
+) -> OperatorShellTargetSnapshot {
+    if let Some(session) = session {
+        let scope_label = match session.scope {
+            wave_domain::OperatorShellScope::Head => "Head",
+            wave_domain::OperatorShellScope::Wave => "Wave",
+            wave_domain::OperatorShellScope::Agent => "Agent",
+        };
+        return OperatorShellTargetSnapshot {
+            scope: debug_label(session.scope),
+            wave_id: session.wave_id,
+            agent_id: session.agent_id.clone(),
+            label: match session.agent_id.as_deref() {
+                Some(agent_id) => format!(
+                    "{scope_label} / Wave {} / {}",
+                    session.wave_id.unwrap_or_default(),
+                    agent_id
+                ),
+                None if session.wave_id.is_some() => {
+                    format!(
+                        "{scope_label} / Wave {}",
+                        session.wave_id.unwrap_or_default()
+                    )
+                }
+                None => scope_label.to_string(),
+            },
+            summary: format!(
+                "resumed operator shell session {}",
+                session.session_id.as_str()
+            ),
+        };
+    }
+    if let Some(run) = snapshot.active_run_details.first() {
+        return OperatorShellTargetSnapshot {
+            scope: "head".to_string(),
+            wave_id: None,
+            agent_id: None,
+            label: "Head".to_string(),
+            summary: format!(
+                "default operator shell target for active waves; currently includes wave {} {}",
+                run.wave_id, run.wave_title
+            ),
+        };
+    }
+
+    if let Some(wave_id) = snapshot.dashboard.next_ready_wave_ids.first().copied() {
+        let title = snapshot
+            .planning
+            .waves
+            .iter()
+            .find(|wave| wave.id == wave_id)
+            .map(|wave| wave.title.clone())
+            .unwrap_or_else(|| format!("wave {wave_id}"));
+        return OperatorShellTargetSnapshot {
+            scope: "head".to_string(),
+            wave_id: None,
+            agent_id: None,
+            label: "Head".to_string(),
+            summary: format!("default operator shell target for ready wave {wave_id} {title}"),
+        };
+    }
+
+    if let Some(wave) = snapshot.planning.waves.first() {
+        return OperatorShellTargetSnapshot {
+            scope: "head".to_string(),
+            wave_id: None,
+            agent_id: None,
+            label: "Head".to_string(),
+            summary: format!(
+                "default operator shell target for wave {} {}",
+                wave.id, wave.title
+            ),
+        };
+    }
+
+    OperatorShellTargetSnapshot {
+        scope: "head".to_string(),
+        wave_id: None,
+        agent_id: None,
+        label: "Head".to_string(),
+        summary: "operator shell has no wave target yet".to_string(),
+    }
+}
+
+fn build_operator_shell_transcript(
+    snapshot: &OperatorSnapshot,
+    turns: &[wave_domain::OperatorShellTurnRecord],
+) -> Vec<OperatorShellTranscriptItem> {
+    let mut items = Vec::new();
+
+    for turn in turns {
+        let kind = match turn.origin {
+            wave_domain::OperatorShellTurnOrigin::Operator => "operator-turn",
+            wave_domain::OperatorShellTurnOrigin::Head => "head-turn",
+            wave_domain::OperatorShellTurnOrigin::System => "system-turn",
+        };
+        let title = match turn.origin {
+            wave_domain::OperatorShellTurnOrigin::Operator => "Operator input",
+            wave_domain::OperatorShellTurnOrigin::Head => "Head response",
+            wave_domain::OperatorShellTurnOrigin::System => "System update",
+        };
+        let detail = turn.output.clone().unwrap_or_else(|| turn.input.clone());
+        items.push(OperatorShellTranscriptItem {
+            item_id: turn.turn_id.as_str().to_string(),
+            kind: kind.to_string(),
+            title: title.to_string(),
+            detail,
+            origin: Some(debug_label(turn.origin)),
+            wave_id: turn.wave_id,
+            agent_id: turn.agent_id.clone(),
+            session_id: Some(turn.session_id.as_str().to_string()),
+            turn_id: Some(turn.turn_id.as_str().to_string()),
+            proposal_id: None,
+            created_at_ms: turn.created_at_ms,
+            status: Some(debug_label(turn.status)),
+        });
+    }
+
+    for run in snapshot.latest_run_details.iter().take(8) {
+        let mut detail_parts = Vec::new();
+        if let Some(agent_id) = run.current_agent_id.as_deref() {
+            let title = run
+                .current_agent_title
+                .as_deref()
+                .unwrap_or("current agent");
+            detail_parts.push(format!("agent {agent_id} {title}"));
+        }
+        detail_parts.push(format!(
+            "proof {}/{} complete={}",
+            run.proof.completed_agents, run.proof.total_agents, run.proof.complete
+        ));
+        if let Some(source) = run.activity_source.as_deref() {
+            detail_parts.push(format!("activity via {source}"));
+        }
+        let excerpt = run
+            .activity_excerpt
+            .lines()
+            .next()
+            .unwrap_or("no live activity");
+        detail_parts.push(excerpt.to_string());
+
+        items.push(OperatorShellTranscriptItem {
+            item_id: format!("run-{}", run.run_id),
+            kind: "run".to_string(),
+            title: format!(
+                "Wave {} {}",
+                run.wave_id,
+                debug_label(run.status).replace('_', " ")
+            ),
+            detail: detail_parts.join(" | "),
+            origin: Some("system".to_string()),
+            wave_id: Some(run.wave_id),
+            agent_id: run.current_agent_id.clone(),
+            session_id: None,
+            turn_id: None,
+            proposal_id: None,
+            created_at_ms: run
+                .last_activity_at_ms
+                .or(run.started_at_ms)
+                .unwrap_or(run.created_at_ms),
+            status: Some(debug_label(run.status)),
+        });
+    }
+
+    for directive in &snapshot.panels.orchestrator.directives {
+        let title = if let Some(agent_id) = directive.agent_id.as_deref() {
+            format!("Directive for {agent_id}")
+        } else {
+            format!("Wave {} directive", directive.wave_id)
+        };
+        let mut detail = Vec::new();
+        detail.push(format!(
+            "{} via {}",
+            directive.kind.replace('_', " "),
+            directive.origin.replace('_', " ")
+        ));
+        if let Some(message) = directive.message.as_deref() {
+            detail.push(message.to_string());
+        }
+        if let Some(state) = directive.delivery_state.as_deref() {
+            detail.push(format!("delivery {state}"));
+        }
+        if let Some(extra) = directive.delivery_detail.as_deref() {
+            detail.push(extra.to_string());
+        }
+        items.push(OperatorShellTranscriptItem {
+            item_id: directive.directive_id.clone(),
+            kind: "directive".to_string(),
+            title,
+            detail: detail.join(" | "),
+            origin: Some("system".to_string()),
+            wave_id: Some(directive.wave_id),
+            agent_id: directive.agent_id.clone(),
+            session_id: None,
+            turn_id: None,
+            proposal_id: None,
+            created_at_ms: directive.requested_at_ms,
+            status: directive.delivery_state.clone(),
+        });
+    }
+
+    for item in &snapshot.operator_objects {
+        let mut detail = Vec::new();
+        if let Some(waiting_on) = item.waiting_on.as_deref() {
+            detail.push(waiting_on.to_string());
+        }
+        if let Some(next_action) = item.next_action.as_deref() {
+            detail.push(next_action.to_string());
+        }
+        if let Some(extra) = item.detail.as_deref() {
+            detail.push(extra.to_string());
+        }
+        items.push(OperatorShellTranscriptItem {
+            item_id: item.record_id.clone(),
+            kind: operator_actionable_kind_label(item.kind).to_string(),
+            title: item.summary.clone(),
+            detail: if detail.is_empty() {
+                format!("state={}", item.state)
+            } else {
+                detail.join(" | ")
+            },
+            origin: Some("system".to_string()),
+            wave_id: Some(item.wave_id),
+            agent_id: None,
+            session_id: None,
+            turn_id: None,
+            proposal_id: matches!(item.kind, OperatorActionableKind::Proposal)
+                .then(|| item.record_id.clone()),
+            created_at_ms: item.created_at_ms.unwrap_or_default(),
+            status: Some(item.state.clone()),
+        });
+    }
+
+    for intent in &snapshot.rerun_intents {
+        items.push(OperatorShellTranscriptItem {
+            item_id: intent
+                .request_id
+                .clone()
+                .unwrap_or_else(|| format!("rerun-wave-{}", intent.wave_id)),
+            kind: "rerun".to_string(),
+            title: format!(
+                "Wave {} rerun {}",
+                intent.wave_id,
+                debug_label(intent.status)
+            ),
+            detail: format!("scope={} | {}", debug_label(intent.scope), intent.reason),
+            origin: Some("system".to_string()),
+            wave_id: Some(intent.wave_id),
+            agent_id: None,
+            session_id: None,
+            turn_id: None,
+            proposal_id: None,
+            created_at_ms: intent.requested_at_ms,
+            status: Some(debug_label(intent.status)),
+        });
+    }
+
+    for record in &snapshot.closure_overrides {
+        items.push(OperatorShellTranscriptItem {
+            item_id: record.override_id.clone(),
+            kind: "manual-close".to_string(),
+            title: format!(
+                "Wave {} manual close {}",
+                record.wave_id,
+                if record.is_active() {
+                    "applied"
+                } else {
+                    "cleared"
+                }
+            ),
+            detail: record
+                .detail
+                .clone()
+                .unwrap_or_else(|| record.reason.clone()),
+            origin: Some("system".to_string()),
+            wave_id: Some(record.wave_id),
+            agent_id: None,
+            session_id: None,
+            turn_id: None,
+            proposal_id: None,
+            created_at_ms: record.applied_at_ms,
+            status: Some(if record.is_active() {
+                "applied".to_string()
+            } else {
+                "cleared".to_string()
+            }),
+        });
+    }
+
+    items
+}
+
+fn build_operator_shell_session_snapshot(
+    session: &wave_domain::OperatorShellSessionRecord,
+) -> OperatorShellSessionSnapshot {
+    OperatorShellSessionSnapshot {
+        session_id: session.session_id.as_str().to_string(),
+        scope: debug_label(session.scope),
+        wave_id: session.wave_id,
+        agent_id: session.agent_id.clone(),
+        tab: session.tab.clone(),
+        follow_mode: session.follow_mode.clone(),
+        mode: debug_label(session.mode),
+        active: session.active,
+        started_at_ms: session.started_at_ms,
+        updated_at_ms: session.updated_at_ms,
+    }
+}
+
+fn build_operator_shell_proposals(
+    proposals: &[wave_domain::HeadProposalRecord],
+) -> Vec<OperatorShellProposalItem> {
+    proposals
+        .iter()
+        .map(|proposal| OperatorShellProposalItem {
+            proposal_id: proposal.proposal_id.as_str().to_string(),
+            session_id: proposal.session_id.as_str().to_string(),
+            turn_id: proposal.turn_id.as_str().to_string(),
+            cycle_id: proposal.cycle_id.clone(),
+            wave_id: proposal.wave_id,
+            agent_id: proposal.agent_id.clone(),
+            action_kind: debug_label(proposal.action_kind),
+            state: debug_label(proposal.state),
+            resolution: proposal
+                .resolution
+                .as_ref()
+                .map(|resolution| debug_label(resolution.kind)),
+            resolved_by: proposal
+                .resolution
+                .as_ref()
+                .map(|resolution| resolution.resolved_by.clone()),
+            resolved_at_ms: proposal
+                .resolution
+                .as_ref()
+                .map(|resolution| resolution.resolved_at_ms),
+            summary: proposal.summary.clone(),
+            detail: proposal.detail.clone(),
+            created_at_ms: proposal.created_at_ms,
+            updated_at_ms: proposal.updated_at_ms,
+        })
+        .collect()
+}
+
+fn default_shell_command_availability() -> BTreeMap<String, bool> {
+    default_shell_commands()
+        .into_iter()
+        .map(|command| (command.name, true))
+        .collect()
+}
+
+fn default_shell_commands() -> Vec<OperatorShellCommand> {
+    vec![
+        OperatorShellCommand {
+            name: "/wave".to_string(),
+            usage: "/wave <id>".to_string(),
+            summary: "retarget the shell to a wave".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/agent".to_string(),
+            usage: "/agent <id>".to_string(),
+            summary: "retarget the shell to an agent in the selected wave".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/scope".to_string(),
+            usage: "/scope head|wave|agent".to_string(),
+            summary: "switch the current shell target scope".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/mode".to_string(),
+            usage: "/mode operator|autonomous".to_string(),
+            summary: "change orchestrator mode for the current target or active head workspace"
+                .to_string(),
+        },
+        OperatorShellCommand {
+            name: "/launch".to_string(),
+            usage: "/launch [wave-id]".to_string(),
+            summary: "launch the selected or explicit wave".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/rerun".to_string(),
+            usage: "/rerun [full|closure-only|promotion-only]".to_string(),
+            summary: "request rerun for the selected wave".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/pause".to_string(),
+            usage: "/pause".to_string(),
+            summary: "pause the selected MAS agent".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/resume".to_string(),
+            usage: "/resume".to_string(),
+            summary: "resume the selected MAS agent".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/rerun-agent".to_string(),
+            usage: "/rerun-agent".to_string(),
+            summary: "request an agent-only rerun for the selected MAS agent".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/rebase".to_string(),
+            usage: "/rebase".to_string(),
+            summary: "rebase the selected MAS sandbox onto accepted state".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/reconcile".to_string(),
+            usage: "/reconcile".to_string(),
+            summary: "request reconciliation for the selected MAS agent".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/approve-merge".to_string(),
+            usage: "/approve-merge".to_string(),
+            summary: "approve the selected MAS merge or recovery item".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/reject-merge".to_string(),
+            usage: "/reject-merge".to_string(),
+            summary: "reject the selected MAS merge or recovery item".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/clear-rerun".to_string(),
+            usage: "/clear-rerun".to_string(),
+            summary: "clear rerun intent for the selected wave".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/approve".to_string(),
+            usage: "/approve".to_string(),
+            summary: "approve the selected operator action".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/reject".to_string(),
+            usage: "/reject".to_string(),
+            summary: "reject or dismiss the selected operator action".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/close".to_string(),
+            usage: "/close".to_string(),
+            summary: "prepare manual close for the selected wave".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/open".to_string(),
+            usage: "/open overview|agents|queue|proof|control".to_string(),
+            summary: "switch the right-side dashboard tab".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/follow".to_string(),
+            usage: "/follow run|agent|off".to_string(),
+            summary: "control transcript follow behavior".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/search".to_string(),
+            usage: "/search <text>".to_string(),
+            summary: "filter transcript rows by case-insensitive text".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/clear-search".to_string(),
+            usage: "/clear-search".to_string(),
+            summary: "clear the current transcript search".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/compare".to_string(),
+            usage: "/compare wave <id> | /compare agent <id>".to_string(),
+            summary: "open a shell-local compare view for waves or MAS agents".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/clear-compare".to_string(),
+            usage: "/clear-compare".to_string(),
+            summary: "clear the current compare view".to_string(),
+        },
+        OperatorShellCommand {
+            name: "/help".to_string(),
+            usage: "/help".to_string(),
+            summary: "show shell commands and keybindings".to_string(),
+        },
+    ]
+}
+
+fn operator_actionable_kind_label(kind: OperatorActionableKind) -> &'static str {
+    match kind {
+        OperatorActionableKind::Approval => "approval",
+        OperatorActionableKind::Proposal => "proposal",
+        OperatorActionableKind::Override => "manual-close",
+        OperatorActionableKind::Escalation => "escalation",
+    }
+}
+
+fn barrier_class_label(barrier_class: BarrierClass) -> &'static str {
+    match barrier_class {
+        BarrierClass::Independent => "independent",
+        BarrierClass::MergeAfter => "merge-after",
+        BarrierClass::IntegrationBarrier => "integration-barrier",
+        BarrierClass::ClosureBarrier => "closure-barrier",
+        BarrierClass::ReportOnly => "report-only",
+    }
+}
+
+fn build_agent_barrier_reasons(
+    wave: &WaveDocument,
+    active_run: Option<&ActiveRunDetail>,
+    agent: &WaveAgent,
+    mas: Option<&MasRunDetail>,
+) -> Vec<String> {
+    let Some(active_run) = active_run else {
+        return Vec::new();
+    };
+    let completed = active_run
+        .agents
+        .iter()
+        .filter(|candidate| candidate.status == WaveRunStatus::Succeeded)
+        .map(|candidate| candidate.id.clone())
+        .collect::<HashSet<_>>();
+    let mut reasons = agent
+        .depends_on_agents
+        .iter()
+        .filter(|dependency| !completed.contains(*dependency))
+        .map(|dependency| format!("waiting on {dependency}"))
+        .collect::<Vec<_>>();
+    if let Some(detail) = mas {
+        if detail
+            .conflicted_agent_ids
+            .iter()
+            .any(|candidate| candidate == &agent.id)
+        {
+            reasons.push("merge conflicted".to_string());
+        }
+        if detail
+            .invalidated_agent_ids
+            .iter()
+            .any(|candidate| candidate == &agent.id)
+        {
+            reasons.push("invalidated by newer accepted state".to_string());
+        }
+    }
+    match agent.barrier_class {
+        BarrierClass::IntegrationBarrier => {
+            let open_implementation = wave
+                .agents
+                .iter()
+                .filter(|candidate| !candidate.is_closure_agent())
+                .filter(|candidate| !completed.contains(&candidate.id))
+                .map(|candidate| candidate.id.clone())
+                .collect::<Vec<_>>();
+            if !open_implementation.is_empty() {
+                reasons.push(format!(
+                    "awaiting implementation frontier {}",
+                    open_implementation.join(", ")
+                ));
+            }
+        }
+        BarrierClass::ClosureBarrier => {
+            let open_non_report = wave
+                .agents
+                .iter()
+                .filter(|candidate| candidate.id != agent.id)
+                .filter(|candidate| !matches!(candidate.barrier_class, BarrierClass::ReportOnly))
+                .filter(|candidate| !completed.contains(&candidate.id))
+                .map(|candidate| candidate.id.clone())
+                .collect::<Vec<_>>();
+            if !open_non_report.is_empty() {
+                reasons.push(format!(
+                    "awaiting merged closure inputs {}",
+                    open_non_report.join(", ")
+                ));
+            }
+        }
+        _ => {}
+    }
+    reasons
 }
 
 fn build_control_actions(actions: &[ControlActionReadModel]) -> Vec<ControlAction> {
@@ -1906,8 +3138,9 @@ fn approval_waiting_on(request: &PendingHumanInputDetail) -> String {
 fn operator_actionable_kind_priority(kind: OperatorActionableKind) -> u8 {
     match kind {
         OperatorActionableKind::Approval => 0,
-        OperatorActionableKind::Escalation => 1,
-        OperatorActionableKind::Override => 2,
+        OperatorActionableKind::Proposal => 1,
+        OperatorActionableKind::Escalation => 2,
+        OperatorActionableKind::Override => 3,
     }
 }
 
@@ -1932,6 +3165,7 @@ fn load_operator_actionable_items(
     config: &ProjectConfig,
     design_details: &[WaveDesignDetail],
     closure_overrides: &[WaveClosureOverrideRecord],
+    head_proposals: &[wave_domain::HeadProposalRecord],
 ) -> Result<Vec<OperatorActionableItem>> {
     let mut items = Vec::new();
     let mut seen_approvals = HashSet::new();
@@ -2019,17 +3253,38 @@ fn load_operator_actionable_items(
             created_at_ms: Some(record.created_at_ms),
         });
     }
+    for proposal in head_proposals
+        .iter()
+        .filter(|proposal| matches!(proposal.state, wave_domain::HeadProposalState::Pending))
+    {
+        items.push(OperatorActionableItem {
+            kind: OperatorActionableKind::Proposal,
+            wave_id: proposal.wave_id,
+            record_id: proposal.proposal_id.as_str().to_string(),
+            state: debug_label(proposal.state),
+            summary: proposal.summary.clone(),
+            detail: proposal.detail.clone(),
+            waiting_on: Some("operator proposal review".to_string()),
+            next_action: Some("press u to apply or x to dismiss".to_string()),
+            route: Some(format!("head:{}", debug_label(proposal.action_kind))),
+            task_id: None,
+            source_run_id: None,
+            evidence_count: 0,
+            created_at_ms: Some(proposal.created_at_ms),
+        });
+    }
     Ok(items)
 }
 
 pub fn latest_relevant_run_details(
     root: &Path,
+    config: &ProjectConfig,
     waves: &[WaveDocument],
     latest_runs: &HashMap<u32, WaveRunRecord>,
 ) -> Vec<ActiveRunDetail> {
     let mut details = latest_runs
         .values()
-        .filter_map(|run| build_run_detail(root, waves, run))
+        .filter_map(|run| build_run_detail(root, config, waves, run))
         .collect::<Vec<_>>();
     details.sort_by_key(|detail| detail.wave_id);
     details
@@ -2037,17 +3292,19 @@ pub fn latest_relevant_run_details(
 
 pub fn latest_relevant_run_detail(
     root: &Path,
+    config: &ProjectConfig,
     waves: &[WaveDocument],
     latest_runs: &HashMap<u32, WaveRunRecord>,
     wave_id: u32,
 ) -> Option<ActiveRunDetail> {
     latest_runs
         .get(&wave_id)
-        .and_then(|run| build_run_detail(root, waves, run))
+        .and_then(|run| build_run_detail(root, config, waves, run))
 }
 
 pub fn build_run_detail(
     root: &Path,
+    config: &ProjectConfig,
     waves: &[WaveDocument],
     run: &WaveRunRecord,
 ) -> Option<ActiveRunDetail> {
@@ -2067,6 +3324,7 @@ pub fn build_run_detail(
             build_agent_panel_item(root, run, agent, declared)
         })
         .collect::<Vec<_>>();
+    let mas = build_mas_run_detail(root, config, wave, run).ok().flatten();
 
     Some(ActiveRunDetail {
         wave_id: run.wave_id,
@@ -2093,6 +3351,7 @@ pub fn build_run_detail(
         proof,
         replay,
         agents,
+        mas,
     })
 }
 
@@ -2102,6 +3361,171 @@ fn build_run_execution_state(run: &WaveRunRecord) -> wave_control_plane::WaveExe
         run.promotion.clone(),
         run.scheduling.clone(),
     )
+}
+
+fn build_mas_run_detail(
+    root: &Path,
+    config: &ProjectConfig,
+    wave: &WaveDocument,
+    run: &WaveRunRecord,
+) -> Result<Option<MasRunDetail>> {
+    if !wave.is_multi_agent() {
+        return Ok(None);
+    }
+    let sandboxes = list_agent_sandboxes(root, config, Some(run.wave_id))?;
+    let merge_results = list_merge_results(root, config, Some(run.wave_id))?;
+    let invalidations = list_invalidations(root, config, Some(run.wave_id))?;
+    let recovery_plans = list_recovery_plans(root, config, Some(run.wave_id))?;
+    let recovery_actions = list_recovery_actions(root, config, Some(run.wave_id))?;
+    let latest_sandboxes = sandboxes.into_iter().fold(
+        BTreeMap::<String, wave_domain::AgentSandboxRecord>::new(),
+        |mut acc, record| {
+            let key = record.agent_id.clone();
+            let replace = acc
+                .get(&key)
+                .map(|current| {
+                    (record.allocated_at_ms, record.sandbox_id.as_str())
+                        >= (current.allocated_at_ms, current.sandbox_id.as_str())
+                })
+                .unwrap_or(true);
+            if replace {
+                acc.insert(key, record);
+            }
+            acc
+        },
+    );
+    let latest_merges = merge_results.into_iter().fold(
+        BTreeMap::<String, wave_domain::MergeResultRecord>::new(),
+        |mut acc, record| {
+            let key = record.task_id.as_str().to_string();
+            let replace = acc
+                .get(&key)
+                .map(|current| {
+                    (record.applied_at_ms, record.merge_result_id.as_str())
+                        >= (current.applied_at_ms, current.merge_result_id.as_str())
+                })
+                .unwrap_or(true);
+            if replace {
+                acc.insert(key, record);
+            }
+            acc
+        },
+    );
+    let mut invalidated_agent_ids = BTreeSet::new();
+    let invalidation_snapshots = invalidations
+        .iter()
+        .map(|record| {
+            let invalidated = record
+                .invalidated_task_ids
+                .iter()
+                .filter_map(task_id_agent_id)
+                .collect::<Vec<_>>();
+            invalidated_agent_ids.extend(invalidated.iter().cloned());
+            MasInvalidationSnapshot {
+                source_agent_id: task_id_agent_id(&record.source_task_id)
+                    .unwrap_or_else(|| "unknown".to_string()),
+                invalidated_agent_ids: invalidated,
+                reasons: record.reasons.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let recovery = recovery_plans.into_iter().last().map(|plan| {
+        let mut recent_actions = recovery_actions
+            .iter()
+            .filter(|action| action.recovery_plan_id == plan.recovery_plan_id)
+            .map(|action| MasRecoveryActionSnapshot {
+                recovery_action_id: action.recovery_action_id.as_str().to_string(),
+                agent_id: action.agent_id.clone(),
+                action_kind: debug_label(action.action_kind),
+                requested_by: action.requested_by.clone(),
+                created_at_ms: action.created_at_ms,
+                detail: action.detail.clone(),
+            })
+            .collect::<Vec<_>>();
+        recent_actions.sort_by_key(|action| action.created_at_ms);
+        MasRecoverySnapshot {
+            recovery_plan_id: plan.recovery_plan_id.as_str().to_string(),
+            run_id: plan.run_id.clone(),
+            status: debug_label(plan.status),
+            causes: plan
+                .causes
+                .iter()
+                .map(|cause| debug_label(*cause))
+                .collect(),
+            affected_agent_ids: plan.affected_agent_ids.clone(),
+            preserved_accepted_agent_ids: plan.preserved_accepted_agent_ids.clone(),
+            required_actions: plan
+                .agent_plans
+                .iter()
+                .flat_map(|agent| agent.required_actions.iter().copied())
+                .map(debug_label)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            detail: plan.detail.clone(),
+            recent_actions,
+        }
+    });
+    let sandboxes = latest_sandboxes
+        .values()
+        .map(|sandbox| MasSandboxSnapshot {
+            sandbox_id: sandbox.sandbox_id.as_str().to_string(),
+            agent_id: sandbox.agent_id.clone(),
+            path: sandbox.path.clone(),
+            base_integration_ref: sandbox.base_integration_ref.clone(),
+            released_at_ms: sandbox.released_at_ms,
+            detail: sandbox.detail.clone(),
+        })
+        .collect::<Vec<_>>();
+    let merges = latest_merges
+        .values()
+        .map(|merge| MasMergeSnapshot {
+            agent_id: task_id_agent_id(&merge.task_id).unwrap_or_else(|| "unknown".to_string()),
+            disposition: format!("{:?}", merge.disposition).to_ascii_lowercase(),
+            conflict_paths: merge.conflict_paths.clone(),
+            detail: merge.detail.clone(),
+        })
+        .collect::<Vec<_>>();
+    let running_agent_ids = run
+        .agents
+        .iter()
+        .filter(|agent| agent.status == WaveRunStatus::Running)
+        .map(|agent| agent.id.clone())
+        .collect::<Vec<_>>();
+    let merged_agent_ids = latest_merges
+        .values()
+        .filter(|merge| matches!(merge.disposition, wave_domain::MergeDisposition::Accepted))
+        .filter_map(|merge| task_id_agent_id(&merge.task_id))
+        .collect::<Vec<_>>();
+    let conflicted_agent_ids = latest_merges
+        .values()
+        .filter(|merge| {
+            matches!(
+                merge.disposition,
+                wave_domain::MergeDisposition::Conflicted | wave_domain::MergeDisposition::Rejected
+            )
+        })
+        .filter_map(|merge| task_id_agent_id(&merge.task_id))
+        .collect::<Vec<_>>();
+    Ok(Some(MasRunDetail {
+        execution_model: "multi-agent".to_string(),
+        running_agent_ids,
+        merged_agent_ids,
+        conflicted_agent_ids,
+        invalidated_agent_ids: invalidated_agent_ids.into_iter().collect(),
+        sandboxes,
+        merges,
+        invalidations: invalidation_snapshots,
+        recovery,
+    }))
+}
+
+fn task_id_agent_id(task_id: &wave_domain::TaskId) -> Option<String> {
+    task_id
+        .as_str()
+        .split("agent-")
+        .nth(1)
+        .map(|agent| agent.to_ascii_uppercase())
 }
 
 #[derive(Debug, Clone)]
@@ -2669,7 +4093,6 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use wave_control_plane::build_dashboard_read_model;
     use wave_control_plane::PlanningProjectionBundle;
     use wave_control_plane::PlanningStatusReadModel;
     use wave_control_plane::PlanningStatusSummary;
@@ -2680,6 +4103,10 @@ mod tests {
     use wave_control_plane::SkillCatalogHealth;
     use wave_control_plane::WaveReadinessReadModel;
     use wave_control_plane::WaveStatusReadModel;
+    use wave_control_plane::build_dashboard_read_model;
+    use wave_runtime::set_orchestrator_mode;
+    use wave_runtime::steer_agent;
+    use wave_runtime::steer_wave;
     use wave_spec::CompletionLevel;
     use wave_spec::ComponentPromotion;
     use wave_spec::Context7Defaults;
@@ -2700,6 +4127,8 @@ mod tests {
             slug: String::new(),
             title: String::new(),
             mode: wave_config::ExecutionMode::DarkFactory,
+            execution_model: wave_spec::WaveExecutionModel::Serial,
+            concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
             owners: Vec::new(),
             depends_on: Vec::new(),
             validation: Vec::new(),
@@ -2744,6 +4173,28 @@ mod tests {
         }
     }
 
+    fn empty_recovery() -> wave_control_plane::WaveRecoveryState {
+        wave_control_plane::WaveRecoveryState::default()
+    }
+
+    fn unavailable_runtime(
+        runtime: wave_domain::RuntimeId,
+        binary: &str,
+        detail: &str,
+    ) -> wave_runtime::RuntimeAvailability {
+        wave_runtime::RuntimeAvailability {
+            runtime,
+            binary: binary.to_string(),
+            available: false,
+            detail: detail.to_string(),
+            directive_capabilities: wave_runtime::RuntimeDirectiveCapabilities {
+                live_injection: false,
+                checkpoint_overlay: false,
+                ack_support: false,
+            },
+        }
+    }
+
     fn closure_test_wave() -> WaveStatusReadModel {
         WaveStatusReadModel {
             id: 17,
@@ -2757,6 +4208,7 @@ mod tests {
             ready: true,
             ownership: empty_ownership(),
             execution: empty_execution(),
+            recovery: empty_recovery(),
             agent_count: 6,
             implementation_agent_count: 2,
             closure_agent_count: 4,
@@ -2831,6 +4283,7 @@ mod tests {
                 issues: Vec::new(),
             },
             agents,
+            mas: None,
         }
     }
 
@@ -2859,6 +4312,240 @@ mod tests {
             error: error.map(str::to_string),
             runtime: None,
         }
+    }
+
+    #[test]
+    fn build_orchestrator_panel_snapshot_surfaces_mode_and_directives() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-app-server-orchestrator-{}-{}",
+            std::process::id(),
+            now_epoch_ms().expect("timestamp")
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join(".wave")).expect("create wave dir");
+        let config = ProjectConfig::default();
+        set_orchestrator_mode(
+            &root,
+            &config,
+            18,
+            wave_domain::OrchestratorMode::Autonomous,
+            "test",
+        )
+        .expect("set mode");
+        steer_wave(
+            &root,
+            &config,
+            18,
+            "Coordinate the pilot wave",
+            wave_domain::DirectiveOrigin::Operator,
+            "test",
+        )
+        .expect("steer wave");
+        steer_agent(
+            &root,
+            &config,
+            18,
+            "A1",
+            "Focus on merge queue invariants",
+            wave_domain::DirectiveOrigin::Operator,
+            "test",
+        )
+        .expect("steer agent");
+
+        let waves = vec![WaveDocument {
+            path: PathBuf::from("waves/18.md"),
+            metadata: WaveMetadata {
+                id: 18,
+                slug: "true-mas-parallel-runtime-and-head-control".to_string(),
+                title: "Wave 18".to_string(),
+                execution_model: wave_spec::WaveExecutionModel::MultiAgent,
+                owners: vec!["architecture".to_string()],
+                ..default_wave_metadata()
+            },
+            heading_title: Some("Wave 18".to_string()),
+            commit_message: Some("Feat: wave 18".to_string()),
+            component_promotions: Vec::new(),
+            deploy_environments: Vec::new(),
+            context7_defaults: None,
+            agents: vec![wave_spec::WaveAgent {
+                id: "A1".to_string(),
+                title: "Parallel Runtime".to_string(),
+                role_prompts: Vec::new(),
+                executor: BTreeMap::new(),
+                context7: None,
+                skills: vec!["wave-core".to_string()],
+                components: Vec::new(),
+                capabilities: Vec::new(),
+                exit_contract: Some(ExitContract {
+                    completion: CompletionLevel::Integrated,
+                    durability: DurabilityLevel::Durable,
+                    proof: ProofLevel::Integration,
+                    doc_impact: DocImpact::Owned,
+                }),
+                deliverables: vec!["crates/wave-runtime/src/lib.rs".to_string()],
+                file_ownership: vec!["crates/wave-runtime/src/lib.rs".to_string()],
+                depends_on_agents: Vec::new(),
+                reads_artifacts_from: Vec::new(),
+                writes_artifacts: vec!["merge-queue-state".to_string()],
+                barrier_class: wave_spec::BarrierClass::Independent,
+                parallel_safety: wave_spec::ParallelSafetyClass::ParallelSafe,
+                exclusive_resources: vec!["runtime-core".to_string()],
+                parallel_with: Vec::new(),
+                final_markers: vec!["[wave-proof]".to_string()],
+                prompt: "Primary goal:\n- noop\n\nRequired context before coding:\n- Read crates/wave-runtime/src/lib.rs.\n\nSpecific expectations:\n- noop\n- emit the final [wave-proof] marker as a plain line by itself at the end of the output\n\nFile ownership (only touch these paths):\n- crates/wave-runtime/src/lib.rs".to_string(),
+            }],
+        }];
+        let active_run = ActiveRunDetail {
+            wave_id: 18,
+            wave_slug: "true-mas-parallel-runtime-and-head-control".to_string(),
+            wave_title: "Wave 18".to_string(),
+            run_id: "wave-18-test".to_string(),
+            status: WaveRunStatus::Running,
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            elapsed_ms: Some(10),
+            current_agent_id: Some("A1".to_string()),
+            current_agent_title: Some("Parallel Runtime".to_string()),
+            activity_excerpt: "running".to_string(),
+            last_activity_at_ms: Some(3),
+            activity_source: Some("events".to_string()),
+            stalled: false,
+            stall_reason: None,
+            execution: empty_execution(),
+            runtime_summary: RuntimeSummary {
+                selected_runtimes: vec!["codex".to_string()],
+                requested_runtimes: vec!["codex".to_string()],
+                selection_sources: vec!["executor.id".to_string()],
+                fallback_targets: Vec::new(),
+                fallback_count: 0,
+                agents_with_runtime: 1,
+            },
+            proof: ProofSnapshot {
+                declared_artifacts: Vec::new(),
+                complete: false,
+                proof_source: "none".to_string(),
+                completed_agents: 0,
+                envelope_backed_agents: 0,
+                compatibility_backed_agents: 0,
+                total_agents: 1,
+            },
+            replay: wave_trace::ReplayReport {
+                run_id: "wave-18-test".to_string(),
+                wave_id: 18,
+                ok: true,
+                issues: Vec::new(),
+            },
+            agents: vec![closure_test_agent(
+                "A1",
+                WaveRunStatus::Running,
+                false,
+                None,
+            )],
+            mas: Some(MasRunDetail {
+                execution_model: "multi-agent".to_string(),
+                running_agent_ids: vec!["A1".to_string()],
+                merged_agent_ids: Vec::new(),
+                conflicted_agent_ids: Vec::new(),
+                invalidated_agent_ids: Vec::new(),
+                sandboxes: vec![MasSandboxSnapshot {
+                    sandbox_id: "sandbox-wave-18-a1".to_string(),
+                    agent_id: "A1".to_string(),
+                    path: ".wave/state/worktrees/wave-18-a1".to_string(),
+                    base_integration_ref: Some("HEAD".to_string()),
+                    released_at_ms: None,
+                    detail: Some("isolated MAS agent sandbox".to_string()),
+                }],
+                merges: vec![MasMergeSnapshot {
+                    agent_id: "A1".to_string(),
+                    disposition: "pending".to_string(),
+                    conflict_paths: Vec::new(),
+                    detail: Some("queued for integration merge".to_string()),
+                }],
+                invalidations: Vec::new(),
+                recovery: None,
+            }),
+        };
+
+        let planning_wave = WaveStatusReadModel {
+            id: 18,
+            slug: "true-mas-parallel-runtime-and-head-control".to_string(),
+            title: "Wave 18".to_string(),
+            depends_on: Vec::new(),
+            blocked_by: vec!["active-run:running".to_string()],
+            blocker_state: Vec::new(),
+            design_completeness: wave_domain::DesignCompletenessState::ImplementationReady,
+            lint_errors: 0,
+            ready: false,
+            ownership: empty_ownership(),
+            execution: empty_execution(),
+            recovery: empty_recovery(),
+            agent_count: 1,
+            implementation_agent_count: 1,
+            closure_agent_count: 0,
+            closure_complete: true,
+            required_closure_agents: Vec::new(),
+            present_closure_agents: Vec::new(),
+            missing_closure_agents: Vec::new(),
+            readiness: WaveReadinessReadModel {
+                state: QueueReadinessStateReadModel::Active,
+                planning_ready: false,
+                claimable: false,
+                reasons: Vec::new(),
+                primary_reason: None,
+            },
+            rerun_requested: false,
+            closure_override_applied: false,
+            completed: false,
+            last_run_status: Some(WaveRunStatus::Running),
+            soft_state: wave_domain::SoftState::Clear,
+        };
+
+        let snapshot = build_orchestrator_panel_snapshot(
+            &root,
+            &config,
+            &waves,
+            &[planning_wave],
+            &[active_run],
+            &[],
+            &[],
+        )
+        .expect("snapshot");
+        assert_eq!(snapshot.mode, "autonomous");
+        assert!(snapshot.active);
+        assert_eq!(snapshot.selected_wave_id, Some(18));
+        assert_eq!(snapshot.waves.len(), 1);
+        assert_eq!(snapshot.waves[0].agents[0].status, "running");
+        assert_eq!(
+            snapshot.waves[0].agents[0].merge_state.as_deref(),
+            Some("pending")
+        );
+        assert_eq!(
+            snapshot.waves[0].agents[0].sandbox_id.as_deref(),
+            Some("sandbox-wave-18-a1")
+        );
+        assert_eq!(snapshot.directives.len(), 3);
+        assert!(
+            snapshot
+                .directives
+                .iter()
+                .any(|directive| directive.agent_id.is_none())
+        );
+        assert_eq!(
+            snapshot
+                .directives
+                .iter()
+                .filter(|directive| directive.delivery_state.as_deref() == Some("pending"))
+                .count(),
+            2
+        );
+        assert_eq!(
+            snapshot
+                .directives
+                .iter()
+                .filter(|directive| directive.delivery_state.as_deref() == Some("acked"))
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -3051,13 +4738,15 @@ mod tests {
                 &"contradiction contradiction-1 invalidates fact fact-api -> decision decision-api-shape"
                     .to_string()
             ));
-        assert!(narratives
-            .invalidation_routes_by_wave
-            .get(&5)
-            .unwrap()
-            .contains(
-                &"decision decision-api-shape invalidates task wave-05:agent-a1".to_string()
-            ));
+        assert!(
+            narratives
+                .invalidation_routes_by_wave
+                .get(&5)
+                .unwrap()
+                .contains(
+                    &"decision decision-api-shape invalidates task wave-05:agent-a1".to_string()
+                )
+        );
     }
 
     fn runtime_boundary_fixture() -> wave_runtime::RuntimeBoundaryStatus {
@@ -3071,13 +4760,17 @@ mod tests {
                     binary: "/tmp/fake-codex".to_string(),
                     available: true,
                     detail: "available".to_string(),
+                    directive_capabilities: wave_runtime::RuntimeDirectiveCapabilities {
+                        live_injection: true,
+                        checkpoint_overlay: true,
+                        ack_support: false,
+                    },
                 },
-                wave_runtime::RuntimeAvailability {
-                    runtime: wave_domain::RuntimeId::Claude,
-                    binary: "/tmp/fake-claude".to_string(),
-                    available: false,
-                    detail: "not authenticated".to_string(),
-                },
+                unavailable_runtime(
+                    wave_domain::RuntimeId::Claude,
+                    "/tmp/fake-claude",
+                    "not authenticated",
+                ),
             ],
         }
     }
@@ -3186,25 +4879,27 @@ mod tests {
 
     #[test]
     fn latest_human_inputs_preserve_legacy_route_fallback_for_unspecified_workflow_kind() {
-        let events = vec![wave_events::ControlEvent::new(
-            "evt-human",
-            wave_events::ControlEventKind::HumanInputUpdated,
-            16,
-        )
-        .with_created_at_ms(1)
-        .with_payload(wave_domain::ControlEventPayload::HumanInputUpdated {
-            request: HumanInputRequest {
-                request_id: wave_domain::HumanInputRequestId::new("human-legacy"),
-                wave_id: 16,
-                task_id: Some(wave_domain::task_id_for_agent(16, "A2")),
-                state: HumanInputState::Pending,
-                workflow_kind: HumanInputWorkflowKind::Unspecified,
-                prompt: "Need dependency confirmation".to_string(),
-                route: "dependency:wave-15".to_string(),
-                requested_by: "A2".to_string(),
-                answer: None,
-            },
-        })];
+        let events = vec![
+            wave_events::ControlEvent::new(
+                "evt-human",
+                wave_events::ControlEventKind::HumanInputUpdated,
+                16,
+            )
+            .with_created_at_ms(1)
+            .with_payload(wave_domain::ControlEventPayload::HumanInputUpdated {
+                request: HumanInputRequest {
+                    request_id: wave_domain::HumanInputRequestId::new("human-legacy"),
+                    wave_id: 16,
+                    task_id: Some(wave_domain::task_id_for_agent(16, "A2")),
+                    state: HumanInputState::Pending,
+                    workflow_kind: HumanInputWorkflowKind::Unspecified,
+                    prompt: "Need dependency confirmation".to_string(),
+                    route: "dependency:wave-15".to_string(),
+                    requested_by: "A2".to_string(),
+                    answer: None,
+                },
+            }),
+        ];
 
         let detail = latest_human_inputs_by_id(&events)
             .remove("human-legacy")
@@ -3272,6 +4967,7 @@ mod tests {
                     ready: false,
                     ownership: empty_ownership(),
                     execution: empty_execution(),
+                    recovery: empty_recovery(),
                     agent_count: 6,
                     implementation_agent_count: 3,
                     closure_agent_count: 3,
@@ -3320,6 +5016,7 @@ mod tests {
                     ready: true,
                     ownership: empty_ownership(),
                     execution: empty_execution(),
+                    recovery: empty_recovery(),
                     agent_count: 6,
                     implementation_agent_count: 3,
                     closure_agent_count: 3,
@@ -3440,6 +5137,7 @@ mod tests {
                 ready: true,
                 ownership: empty_ownership(),
                 execution: empty_execution(),
+                recovery: empty_recovery(),
                 agent_count: 3,
                 implementation_agent_count: 1,
                 closure_agent_count: 2,
@@ -3603,6 +5301,7 @@ mod tests {
                 ready: false,
                 ownership: empty_ownership(),
                 execution: empty_execution(),
+                recovery: empty_recovery(),
                 agent_count: 3,
                 implementation_agent_count: 1,
                 closure_agent_count: 2,
@@ -3736,6 +5435,7 @@ mod tests {
                     ready: false,
                     ownership: empty_ownership(),
                     execution: empty_execution(),
+                    recovery: empty_recovery(),
                     agent_count: 3,
                     implementation_agent_count: 1,
                     closure_agent_count: 2,
@@ -3788,6 +5488,7 @@ mod tests {
                     ready: false,
                     ownership: empty_ownership(),
                     execution: empty_execution(),
+                    recovery: empty_recovery(),
                     agent_count: 3,
                     implementation_agent_count: 1,
                     closure_agent_count: 2,
@@ -3840,6 +5541,7 @@ mod tests {
                     ready: false,
                     ownership: empty_ownership(),
                     execution: empty_execution(),
+                    recovery: empty_recovery(),
                     agent_count: 3,
                     implementation_agent_count: 1,
                     closure_agent_count: 2,
@@ -3933,6 +5635,7 @@ mod tests {
             std::process::id(),
             wave_trace::now_epoch_ms().expect("timestamp")
         ));
+        let config = ProjectConfig::default();
         let bundle_dir = root.join(".wave/state/build/specs/wave-12-1");
         let agent_dir = bundle_dir.join("agents/A1");
         let trace_path = root.join(".wave/traces/runs/wave-12-1.json");
@@ -4039,6 +5742,13 @@ mod tests {
                 deliverables: vec!["README.md".to_string()],
                 file_ownership: vec!["README.md".to_string()],
                 final_markers: vec!["[wave-proof]".to_string()],
+                depends_on_agents: Vec::new(),
+                reads_artifacts_from: Vec::new(),
+                writes_artifacts: Vec::new(),
+                barrier_class: wave_spec::BarrierClass::Independent,
+                parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                exclusive_resources: Vec::new(),
+                parallel_with: Vec::new(),
                 prompt: "Primary goal:\n- noop".to_string(),
             }],
         };
@@ -4080,7 +5790,7 @@ mod tests {
         };
         wave_trace::write_trace_bundle(&trace_path, &run).expect("write trace");
 
-        let detail = build_run_detail(&root, &[wave], &run).expect("run detail");
+        let detail = build_run_detail(&root, &config, &[wave], &run).expect("run detail");
 
         assert!(detail.proof.complete);
         assert_eq!(detail.proof.proof_source, "structured-envelope");
@@ -4099,6 +5809,7 @@ mod tests {
             std::process::id(),
             wave_trace::now_epoch_ms().expect("timestamp")
         ));
+        let config = ProjectConfig::default();
         let bundle_dir = root.join(".wave/state/build/specs/wave-12-1");
         let agent_dir = bundle_dir.join("agents/A8");
         let trace_path = root.join(".wave/traces/runs/wave-12-1.json");
@@ -4167,6 +5878,13 @@ mod tests {
                 deliverables: vec![".wave/integration/wave-12.md".to_string()],
                 file_ownership: vec![".wave/integration/wave-12.md".to_string()],
                 final_markers: vec!["[wave-integration]".to_string()],
+                depends_on_agents: Vec::new(),
+                reads_artifacts_from: Vec::new(),
+                writes_artifacts: Vec::new(),
+                barrier_class: wave_spec::BarrierClass::Independent,
+                parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                exclusive_resources: Vec::new(),
+                parallel_with: Vec::new(),
                 prompt: "Primary goal:\n- noop".to_string(),
             }],
         };
@@ -4208,7 +5926,7 @@ mod tests {
         };
         wave_trace::write_trace_bundle(&trace_path, &run).expect("write trace");
 
-        let detail = build_run_detail(&root, &[wave], &run).expect("run detail");
+        let detail = build_run_detail(&root, &config, &[wave], &run).expect("run detail");
 
         assert!(detail.proof.complete);
         assert_eq!(detail.proof.proof_source, "compatibility-adapter");
@@ -4231,6 +5949,7 @@ mod tests {
             std::process::id(),
             wave_trace::now_epoch_ms().expect("timestamp")
         ));
+        let config = ProjectConfig::default();
         let bundle_dir = root.join(".wave/state/build/specs/wave-12-2");
         let agent_dir = bundle_dir.join("agents/A1");
         let trace_path = root.join(".wave/traces/runs/wave-12-2.json");
@@ -4339,6 +6058,13 @@ mod tests {
                 deliverables: vec!["README.md".to_string()],
                 file_ownership: vec!["README.md".to_string()],
                 final_markers: vec!["[wave-proof]".to_string()],
+                depends_on_agents: Vec::new(),
+                reads_artifacts_from: Vec::new(),
+                writes_artifacts: Vec::new(),
+                barrier_class: wave_spec::BarrierClass::Independent,
+                parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                exclusive_resources: Vec::new(),
+                parallel_with: Vec::new(),
                 prompt: "Primary goal:\n- noop".to_string(),
             }],
         };
@@ -4380,8 +6106,9 @@ mod tests {
         };
         wave_trace::write_trace_bundle(&trace_path, &run).expect("write trace");
 
-        let detail = latest_relevant_run_detail(&root, &[wave], &HashMap::from([(12, run)]), 12)
-            .expect("failed run detail");
+        let detail =
+            latest_relevant_run_detail(&root, &config, &[wave], &HashMap::from([(12, run)]), 12)
+                .expect("failed run detail");
 
         assert_eq!(detail.status, WaveRunStatus::Failed);
         assert_eq!(detail.proof.proof_source, "structured-envelope");
@@ -4399,6 +6126,7 @@ mod tests {
             std::process::id(),
             wave_trace::now_epoch_ms().expect("timestamp")
         ));
+        let config = ProjectConfig::default();
         let bundle_dir = root.join(".wave/state/build/specs/wave-14-1");
         let agent_dir = bundle_dir.join("agents/A1");
         let trace_path = root.join(".wave/traces/runs/wave-14-1.json");
@@ -4460,6 +6188,13 @@ mod tests {
                 deliverables: vec!["src/lib.rs".to_string()],
                 file_ownership: vec!["src/lib.rs".to_string()],
                 final_markers: vec!["[wave-proof]".to_string()],
+                depends_on_agents: Vec::new(),
+                reads_artifacts_from: Vec::new(),
+                writes_artifacts: Vec::new(),
+                barrier_class: wave_spec::BarrierClass::Independent,
+                parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                exclusive_resources: Vec::new(),
+                parallel_with: Vec::new(),
                 prompt: "Primary goal:\n- noop".to_string(),
             }],
         };
@@ -4540,7 +6275,7 @@ mod tests {
         };
         wave_trace::write_trace_bundle(&trace_path, &run).expect("write trace");
 
-        let detail = build_run_detail(&root, &[wave], &run).expect("run detail");
+        let detail = build_run_detail(&root, &config, &[wave], &run).expect("run detail");
         let expected_execution = wave_reducer::wave_execution_state_from_records(
             Some(worktree),
             Some(promotion),
@@ -4558,6 +6293,7 @@ mod tests {
             std::process::id(),
             wave_trace::now_epoch_ms().expect("timestamp")
         ));
+        let config = ProjectConfig::default();
         let bundle_dir = root.join(".wave/state/build/specs/wave-15-1");
         let agent_dir = bundle_dir.join("agents/A1");
         let trace_path = root.join(".wave/traces/runs/wave-15-1.json");
@@ -4673,6 +6409,13 @@ mod tests {
                 deliverables: vec!["README.md".to_string()],
                 file_ownership: vec!["README.md".to_string()],
                 final_markers: vec!["[wave-proof]".to_string()],
+                depends_on_agents: Vec::new(),
+                reads_artifacts_from: Vec::new(),
+                writes_artifacts: Vec::new(),
+                barrier_class: wave_spec::BarrierClass::Independent,
+                parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                exclusive_resources: Vec::new(),
+                parallel_with: Vec::new(),
                 prompt: "Primary goal:\n- noop".to_string(),
             }],
         };
@@ -4714,7 +6457,7 @@ mod tests {
         };
         wave_trace::write_trace_bundle(&trace_path, &run).expect("write trace");
 
-        let detail = build_run_detail(&root, &[wave], &run).expect("run detail");
+        let detail = build_run_detail(&root, &config, &[wave], &run).expect("run detail");
 
         assert_eq!(
             detail.runtime_summary.selected_runtimes,
@@ -4780,6 +6523,7 @@ mod tests {
             std::process::id(),
             wave_trace::now_epoch_ms().expect("timestamp")
         ));
+        let config = ProjectConfig::default();
         let bundle_dir = root.join(".wave/state/build/specs/wave-15-stalled");
         let agent_dir = bundle_dir.join("agents/A1");
         std::fs::create_dir_all(&agent_dir).expect("agent dir");
@@ -4818,6 +6562,13 @@ mod tests {
                 deliverables: Vec::new(),
                 file_ownership: vec!["README.md".to_string()],
                 final_markers: vec!["[wave-proof]".to_string()],
+                depends_on_agents: Vec::new(),
+                reads_artifacts_from: Vec::new(),
+                writes_artifacts: Vec::new(),
+                barrier_class: wave_spec::BarrierClass::Independent,
+                parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                exclusive_resources: Vec::new(),
+                parallel_with: Vec::new(),
                 prompt: "Primary goal:\n- noop".to_string(),
             }],
         };
@@ -4859,16 +6610,18 @@ mod tests {
             error: None,
         };
 
-        let detail = build_run_detail(&root, &[wave], &run).expect("run detail");
+        let detail = build_run_detail(&root, &config, &[wave], &run).expect("run detail");
 
         assert!(detail.stalled);
         assert_eq!(detail.activity_source, None);
         assert!(detail.last_activity_at_ms.is_none());
-        assert!(detail
-            .stall_reason
-            .as_deref()
-            .expect("stall reason")
-            .contains("no agent activity"));
+        assert!(
+            detail
+                .stall_reason
+                .as_deref()
+                .expect("stall reason")
+                .contains("no agent activity")
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -4968,6 +6721,7 @@ mod tests {
             std::process::id(),
             wave_trace::now_epoch_ms().expect("timestamp")
         ));
+        let config = ProjectConfig::default();
         let bundle_dir = root.join(".wave/state/build/specs/wave-14-transport");
         let agent_dir = bundle_dir.join("agents/A1");
         let trace_path = root.join(".wave/traces/runs/wave-14-transport.json");
@@ -5029,6 +6783,13 @@ mod tests {
                 deliverables: vec!["src/lib.rs".to_string()],
                 file_ownership: vec!["src/lib.rs".to_string()],
                 final_markers: vec!["[wave-proof]".to_string()],
+                depends_on_agents: Vec::new(),
+                reads_artifacts_from: Vec::new(),
+                writes_artifacts: Vec::new(),
+                barrier_class: wave_spec::BarrierClass::Independent,
+                parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                exclusive_resources: Vec::new(),
+                parallel_with: Vec::new(),
                 prompt: "Primary goal:\n- noop".to_string(),
             }],
         };
@@ -5111,6 +6872,7 @@ mod tests {
 
         let latest_run_details = latest_relevant_run_details(
             &root,
+            &config,
             std::slice::from_ref(&wave),
             &HashMap::from([(14, run)]),
         );
@@ -5164,6 +6926,7 @@ mod tests {
             std::process::id(),
             wave_trace::now_epoch_ms().expect("timestamp")
         ));
+        let config = ProjectConfig::default();
         let bundle_dir = root.join(".wave/state/build/specs/wave-15-proof");
         let agent_dir = bundle_dir.join("agents/A1");
         let trace_path = root.join(".wave/traces/runs/wave-15-proof.json");
@@ -5279,6 +7042,13 @@ mod tests {
                 deliverables: vec!["README.md".to_string()],
                 file_ownership: vec!["README.md".to_string()],
                 final_markers: vec!["[wave-proof]".to_string()],
+                depends_on_agents: Vec::new(),
+                reads_artifacts_from: Vec::new(),
+                writes_artifacts: Vec::new(),
+                barrier_class: wave_spec::BarrierClass::Independent,
+                parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                exclusive_resources: Vec::new(),
+                parallel_with: Vec::new(),
                 prompt: "Primary goal:\n- noop".to_string(),
             }],
         };
@@ -5322,6 +7092,7 @@ mod tests {
 
         let latest_run_details = latest_relevant_run_details(
             &root,
+            &config,
             std::slice::from_ref(&wave),
             &HashMap::from([(15, run)]),
         );

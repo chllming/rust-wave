@@ -21,6 +21,10 @@ use wave_domain::LineageRecordSubject;
 use wave_domain::LineageRef;
 use wave_domain::LineageState;
 use wave_domain::PortfolioDeliveryModel;
+use wave_domain::RecoveryActionKind;
+use wave_domain::RecoveryCause;
+use wave_domain::RecoveryPlanRecord;
+use wave_domain::RecoveryPlanStatus;
 use wave_domain::SchedulerBudget;
 use wave_domain::SchedulerBudgetRecord;
 use wave_domain::SchedulerEventPayload;
@@ -54,6 +58,7 @@ use wave_trace::WaveRunStatus;
 pub enum WaveBlockerKind {
     Dependency,
     Design,
+    Recovery,
     Lint,
     Closure,
     Ownership,
@@ -173,6 +178,18 @@ pub struct WaveDesignAuthorityState {
     pub blocker_reasons: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct WaveRecoveryState {
+    pub required: bool,
+    pub status: Option<RecoveryPlanStatus>,
+    pub causes: Vec<RecoveryCause>,
+    pub affected_agent_ids: Vec<String>,
+    pub preserved_accepted_agent_ids: Vec<String>,
+    pub required_actions: Vec<RecoveryActionKind>,
+    pub source_run_id: Option<String>,
+    pub detail: Option<String>,
+}
+
 pub fn wave_execution_state_from_records(
     worktree: Option<WaveWorktreeRecord>,
     promotion: Option<WavePromotionRecord>,
@@ -227,6 +244,7 @@ pub struct WaveRef {
 pub struct WaveBlockerFlags {
     pub dependency: bool,
     pub design: bool,
+    pub recovery: bool,
     pub lint: bool,
     pub closure: bool,
     pub ownership: bool,
@@ -278,6 +296,7 @@ pub struct WavePlanningState {
     pub ownership: WaveOwnershipState,
     pub execution: WaveExecutionState,
     pub design: WaveDesignAuthorityState,
+    pub recovery: WaveRecoveryState,
     pub agents: WaveAgentCounts,
     pub closure: WaveClosureFacts,
     pub lifecycle: WaveLifecycleSummary,
@@ -316,6 +335,7 @@ pub struct SkillCatalogHealth {
 pub struct QueueBlockerSummary {
     pub dependency: usize,
     pub design: usize,
+    pub recovery: usize,
     pub lint: usize,
     pub closure: usize,
     pub ownership: usize,
@@ -330,6 +350,7 @@ pub struct QueueBlockerSummary {
 pub struct QueueBlockerWaves {
     pub dependency: Vec<WaveRef>,
     pub design: Vec<WaveRef>,
+    pub recovery: Vec<WaveRef>,
     pub lint: Vec<WaveRef>,
     pub closure: Vec<WaveRef>,
     pub ownership: Vec<WaveRef>,
@@ -551,6 +572,11 @@ struct DesignAuthorityIndex {
 }
 
 #[derive(Debug, Clone, Default)]
+struct RecoveryAuthorityState {
+    plans_by_wave: BTreeMap<u32, RecoveryPlanRecord>,
+}
+
+#[derive(Debug, Clone, Default)]
 struct DesignWaveAuthority {
     unresolved_question_ids: BTreeSet<String>,
     unresolved_assumption_ids: BTreeSet<String>,
@@ -621,6 +647,7 @@ pub fn reduce_planning_state_with_authorities(
 
     let scheduler_state = reduce_scheduler_authority(scheduler_events);
     let design_authority = reduce_design_authority(control_events);
+    let recovery_authority = reduce_recovery_authority(control_events);
     let mut waves_state = Vec::new();
     for wave in waves {
         let latest_run = latest_runs.get(&wave.metadata.id);
@@ -658,6 +685,7 @@ pub fn reduce_planning_state_with_authorities(
             &run_gate,
         );
         let design = build_wave_design_state(&design_authority, wave, run_gate.completed);
+        let recovery = build_wave_recovery_state(&recovery_authority, wave.metadata.id);
         let planning_ready =
             planning_gate.blocking_reasons.is_empty() && design.blocker_reasons.is_empty();
         let ownership =
@@ -666,6 +694,7 @@ pub fn reduce_planning_state_with_authorities(
         let blocked_by = combined_blockers(
             &planning_gate.blocking_reasons,
             &design.blocker_reasons,
+            &recovery,
             &ownership,
             &execution,
             planning_ready,
@@ -695,6 +724,7 @@ pub fn reduce_planning_state_with_authorities(
             ownership,
             execution,
             design,
+            recovery,
             agents: WaveAgentCounts {
                 total: wave.agents.len(),
                 implementation: wave.implementation_agents().count(),
@@ -1474,6 +1504,61 @@ fn reduce_design_authority(control_events: &[ControlEvent]) -> DesignAuthorityIn
     }
 }
 
+fn reduce_recovery_authority(control_events: &[ControlEvent]) -> RecoveryAuthorityState {
+    let mut sorted_events = control_events.to_vec();
+    sorted_events.sort_by_key(|event| (event.created_at_ms, event.event_id.clone()));
+    let mut plans_by_wave = BTreeMap::<u32, RecoveryPlanRecord>::new();
+
+    for event in sorted_events {
+        if let ControlEventPayload::RecoveryPlanUpdated { recovery_plan } = event.payload {
+            let replace = plans_by_wave
+                .get(&recovery_plan.wave_id)
+                .map(|current| {
+                    (
+                        recovery_plan.updated_at_ms.max(recovery_plan.created_at_ms),
+                        recovery_plan.recovery_plan_id.as_str(),
+                    ) >= (
+                        current.updated_at_ms.max(current.created_at_ms),
+                        current.recovery_plan_id.as_str(),
+                    )
+                })
+                .unwrap_or(true);
+            if replace {
+                plans_by_wave.insert(recovery_plan.wave_id, recovery_plan);
+            }
+        }
+    }
+
+    RecoveryAuthorityState { plans_by_wave }
+}
+
+fn build_wave_recovery_state(
+    authority: &RecoveryAuthorityState,
+    wave_id: u32,
+) -> WaveRecoveryState {
+    let Some(plan) = authority.plans_by_wave.get(&wave_id) else {
+        return WaveRecoveryState::default();
+    };
+    let mut required_actions = plan
+        .agent_plans
+        .iter()
+        .flat_map(|agent| agent.required_actions.iter().copied())
+        .collect::<Vec<_>>();
+    required_actions.sort_by_key(|action| format!("{action:?}"));
+    required_actions.dedup();
+
+    WaveRecoveryState {
+        required: !matches!(plan.status, RecoveryPlanStatus::Resolved),
+        status: Some(plan.status),
+        causes: plan.causes.clone(),
+        affected_agent_ids: plan.affected_agent_ids.clone(),
+        preserved_accepted_agent_ids: plan.preserved_accepted_agent_ids.clone(),
+        required_actions,
+        source_run_id: Some(plan.run_id.clone()),
+        detail: plan.detail.clone(),
+    }
+}
+
 fn build_wave_design_state(
     authority: &DesignAuthorityIndex,
     wave: &WaveDocument,
@@ -1664,6 +1749,12 @@ fn classify_blockers(blocked_by: &[String]) -> Vec<WaveBlockerState> {
                     raw: blocker.clone(),
                     detail: Some(detail.to_string()),
                 }
+            } else if let Some(detail) = blocker.strip_prefix("recovery:") {
+                WaveBlockerState {
+                    kind: WaveBlockerKind::Recovery,
+                    raw: blocker.clone(),
+                    detail: Some(detail.to_string()),
+                }
             } else if blocker == "lint:error" {
                 WaveBlockerState {
                     kind: WaveBlockerKind::Lint,
@@ -1723,6 +1814,7 @@ fn classify_blocker_flags(blocker_state: &[WaveBlockerState]) -> WaveBlockerFlag
         match blocker.kind {
             WaveBlockerKind::Dependency => flags.dependency = true,
             WaveBlockerKind::Design => flags.design = true,
+            WaveBlockerKind::Recovery => flags.recovery = true,
             WaveBlockerKind::Lint => flags.lint = true,
             WaveBlockerKind::Closure => flags.closure = true,
             WaveBlockerKind::Ownership => flags.ownership = true,
@@ -1800,6 +1892,8 @@ fn accumulate_blockers(summary: &mut QueueBlockerSummary, blocked_by: &[String])
             summary.dependency += 1;
         } else if blocker.starts_with("design:") {
             summary.design += 1;
+        } else if blocker.starts_with("recovery:") {
+            summary.recovery += 1;
         } else if blocker == "lint:error" {
             summary.lint += 1;
         } else if blocker.starts_with("closure:") {
@@ -1830,6 +1924,9 @@ fn accumulate_blocker_waves(
     }
     if flags.design {
         summary.design.push(wave.clone());
+    }
+    if flags.recovery {
+        summary.recovery.push(wave.clone());
     }
     if flags.lint {
         summary.lint.push(wave.clone());
@@ -2087,6 +2184,7 @@ fn build_budget_state(
 fn combined_blockers(
     planning_blockers: &[String],
     design_blockers: &[String],
+    recovery: &WaveRecoveryState,
     ownership: &WaveOwnershipState,
     execution: &WaveExecutionState,
     planning_ready: bool,
@@ -2094,6 +2192,14 @@ fn combined_blockers(
 ) -> Vec<String> {
     let mut blocked_by = planning_blockers.to_vec();
     blocked_by.extend(design_blockers.iter().cloned());
+    if recovery.required && !rerun_requested {
+        let cause = recovery
+            .causes
+            .first()
+            .map(|cause| format!("{cause:?}").to_ascii_lowercase())
+            .unwrap_or_else(|| "required".to_string());
+        blocked_by.push(format!("recovery:{cause}"));
+    }
 
     if let Some(owner) = ownership.blocked_by_owner.as_ref() {
         blocked_by.push(format!("ownership:claimed-by:{}", owner.scheduler_path));
@@ -3172,6 +3278,8 @@ mod tests {
                 intent: None,
                 delivery: None,
                 design_gate: None,
+                execution_model: wave_spec::WaveExecutionModel::Serial,
+                concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
             },
             heading_title: Some(format!("Wave {id}")),
             commit_message: Some("Feat: test".to_string()),
@@ -3219,6 +3327,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: [
                         "Primary goal:",
                         "- Land the reducer.",
@@ -3260,6 +3375,13 @@ mod tests {
             deliverables: Vec::new(),
             file_ownership: vec![format!(".wave/reviews/{id}.md")],
             final_markers: vec![marker.to_string()],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::ClosureBarrier,
+            parallel_safety: wave_spec::ParallelSafetyClass::Serialized,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: [
                 "Primary goal:",
                 "- Close the wave honestly.",

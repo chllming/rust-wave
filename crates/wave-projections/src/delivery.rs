@@ -168,13 +168,13 @@ pub fn build_delivery_read_model(
             severity: risk.severity,
             soft_state: risk.soft_state,
             release_id: risk.release_id.as_ref().map(ToString::to_string),
-            acceptance_package_id: risk
-                .acceptance_package_id
-                .as_ref()
-                .map(ToString::to_string),
+            acceptance_package_id: risk.acceptance_package_id.as_ref().map(ToString::to_string),
             wave_ids: risk.wave_ids.clone(),
             owners: risk.owners.clone(),
-            blocking: risk.severity.map(DeliverySeverity::is_blocking).unwrap_or(false),
+            blocking: risk
+                .severity
+                .map(DeliverySeverity::is_blocking)
+                .unwrap_or(false),
         })
         .collect::<Vec<_>>();
     let debts = catalog
@@ -187,13 +187,13 @@ pub fn build_delivery_read_model(
             severity: debt.severity,
             soft_state: debt.soft_state,
             release_id: debt.release_id.as_ref().map(ToString::to_string),
-            acceptance_package_id: debt
-                .acceptance_package_id
-                .as_ref()
-                .map(ToString::to_string),
+            acceptance_package_id: debt.acceptance_package_id.as_ref().map(ToString::to_string),
             wave_ids: debt.wave_ids.clone(),
             owners: debt.owners.clone(),
-            blocking: debt.severity.map(DeliverySeverity::is_blocking).unwrap_or(false),
+            blocking: debt
+                .severity
+                .map(DeliverySeverity::is_blocking)
+                .unwrap_or(false),
         })
         .collect::<Vec<_>>();
 
@@ -248,7 +248,10 @@ pub fn build_delivery_read_model(
             }
 
             let mut blocked_reasons = Vec::new();
-            if !matches!(release.state, Some(ReleaseState::Ready | ReleaseState::Shipped)) {
+            if !matches!(
+                release.state,
+                Some(ReleaseState::Ready | ReleaseState::Shipped)
+            ) {
                 blocked_reasons.push(format!(
                     "state={}",
                     release
@@ -263,8 +266,10 @@ pub fn build_delivery_read_model(
             for debt_id in &blocking_debt_ids {
                 blocked_reasons.push(format!("blocking debt {}", debt_id));
             }
-            let ready = matches!(release.state, Some(ReleaseState::Ready | ReleaseState::Shipped))
-                && blocking_risk_ids.is_empty()
+            let ready = matches!(
+                release.state,
+                Some(ReleaseState::Ready | ReleaseState::Shipped)
+            ) && blocking_risk_ids.is_empty()
                 && blocking_debt_ids.is_empty();
 
             ReleaseReadModel {
@@ -416,7 +421,11 @@ pub fn build_delivery_read_model(
                 .unwrap_or(&initiative.soft_state),
             owners: initiative.owners.clone(),
             wave_ids: initiative.wave_ids.clone(),
-            release_ids: initiative.release_ids.iter().map(ToString::to_string).collect(),
+            release_ids: initiative
+                .release_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             outcome: initiative.outcome.clone(),
         })
         .collect::<Vec<_>>();
@@ -431,7 +440,9 @@ pub fn build_delivery_read_model(
         let mut soft_state = SoftState::Clear;
         if let Some(delivery) = wave.metadata.delivery.as_ref() {
             if let Some(initiative_id) = delivery.initiative_id.as_deref() {
-                if let Some(initiative) = initiatives.iter().find(|initiative| initiative.id == initiative_id)
+                if let Some(initiative) = initiatives
+                    .iter()
+                    .find(|initiative| initiative.id == initiative_id)
                 {
                     soft_state = soft_state.merge(initiative.soft_state);
                 }
@@ -499,7 +510,11 @@ pub fn build_delivery_read_model(
         .iter()
         .map(|initiative| initiative.soft_state)
         .chain(releases.iter().map(|release| release.soft_state))
-        .chain(acceptance_packages.iter().map(|acceptance| acceptance.soft_state))
+        .chain(
+            acceptance_packages
+                .iter()
+                .map(|acceptance| acceptance.soft_state),
+        )
         .chain(risks.iter().map(|risk| risk.soft_state))
         .chain(debts.iter().map(|debt| debt.soft_state))
         .max()
@@ -524,20 +539,34 @@ pub fn build_delivery_read_model(
     let blocked_wave_ids = status
         .waves
         .iter()
-        .filter(|wave| !wave.ready && !wave.completed && !matches!(wave.readiness.state, crate::QueueReadinessState::Active | crate::QueueReadinessState::Claimed))
+        .filter(|wave| {
+            !wave.ready
+                && !wave.completed
+                && !matches!(
+                    wave.readiness.state,
+                    crate::QueueReadinessState::Active | crate::QueueReadinessState::Claimed
+                )
+        })
         .map(|wave| wave.id)
         .collect::<Vec<_>>();
     let active_wave_ids = status
         .waves
         .iter()
-        .filter(|wave| matches!(wave.readiness.state, crate::QueueReadinessState::Active | crate::QueueReadinessState::Claimed))
+        .filter(|wave| {
+            matches!(
+                wave.readiness.state,
+                crate::QueueReadinessState::Active | crate::QueueReadinessState::Claimed
+            )
+        })
         .map(|wave| wave.id)
         .collect::<Vec<_>>();
     let queue_state = if !active_wave_ids.is_empty() {
         "active".to_string()
     } else if !ready_wave_ids.is_empty() {
         "ready".to_string()
-    } else if status.summary.completed_waves == status.summary.total_waves && status.summary.total_waves > 0 {
+    } else if status.summary.completed_waves == status.summary.total_waves
+        && status.summary.total_waves > 0
+    {
         "completed".to_string()
     } else {
         "blocked".to_string()
@@ -567,9 +596,30 @@ pub fn build_delivery_read_model(
             .iter()
             .filter(|acceptance| matches!(acceptance.state, Some(AcceptancePackageState::Rejected)))
             .count(),
-        advisory_count: count_soft_state(&initiatives, &releases, &acceptance_packages, &risks, &debts, SoftState::Advisory),
-        degraded_count: count_soft_state(&initiatives, &releases, &acceptance_packages, &risks, &debts, SoftState::Degraded),
-        stale_count: count_soft_state(&initiatives, &releases, &acceptance_packages, &risks, &debts, SoftState::Stale),
+        advisory_count: count_soft_state(
+            &initiatives,
+            &releases,
+            &acceptance_packages,
+            &risks,
+            &debts,
+            SoftState::Advisory,
+        ),
+        degraded_count: count_soft_state(
+            &initiatives,
+            &releases,
+            &acceptance_packages,
+            &risks,
+            &debts,
+            SoftState::Degraded,
+        ),
+        stale_count: count_soft_state(
+            &initiatives,
+            &releases,
+            &acceptance_packages,
+            &risks,
+            &debts,
+            SoftState::Stale,
+        ),
     };
 
     let signal = DeliverySignalReadModel {
@@ -616,13 +666,22 @@ fn count_soft_state(
         .iter()
         .filter(|item| item.soft_state == target)
         .count()
-        + releases.iter().filter(|item| item.soft_state == target).count()
+        + releases
+            .iter()
+            .filter(|item| item.soft_state == target)
+            .count()
         + acceptance_packages
             .iter()
             .filter(|item| item.soft_state == target)
             .count()
-        + risks.iter().filter(|item| item.soft_state == target).count()
-        + debts.iter().filter(|item| item.soft_state == target).count()
+        + risks
+            .iter()
+            .filter(|item| item.soft_state == target)
+            .count()
+        + debts
+            .iter()
+            .filter(|item| item.soft_state == target)
+            .count()
 }
 
 fn format_string_list(values: &[String]) -> String {
@@ -638,7 +697,9 @@ fn signal_queue_label(status: &PlanningStatus) -> &'static str {
         "active"
     } else if status.summary.ready_waves > 0 {
         "ready"
-    } else if status.summary.completed_waves == status.summary.total_waves && status.summary.total_waves > 0 {
+    } else if status.summary.completed_waves == status.summary.total_waves
+        && status.summary.total_waves > 0
+    {
         "completed"
     } else {
         "blocked"

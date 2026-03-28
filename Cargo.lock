@@ -2608,6 +2608,7 @@ dependencies = [
  "wave-control-plane",
  "wave-domain",
  "wave-runtime",
+ "wave-spec",
  "wave-trace",
 ]
 

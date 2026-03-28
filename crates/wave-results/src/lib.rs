@@ -2132,6 +2132,13 @@ mod tests {
                 "[wave-doc-delta]".to_string(),
                 "[wave-component]".to_string(),
             ],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::Independent,
+            parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: String::new(),
         };
 
@@ -2169,6 +2176,13 @@ mod tests {
                 "[wave-doc-delta]".to_string(),
                 "[wave-component]".to_string(),
             ],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::Independent,
+            parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: String::new(),
         };
 
@@ -3081,6 +3095,13 @@ mod tests {
             deliverables: Vec::new(),
             file_ownership: Vec::new(),
             final_markers: final_markers.into_iter().map(str::to_string).collect(),
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::Independent,
+            parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: String::new(),
         }
     }

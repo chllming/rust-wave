@@ -24,11 +24,14 @@ use wave_domain::PortfolioMilestone;
 use wave_domain::ReleaseTrain;
 use wave_domain::ReleaseTrainId;
 use wave_domain::SoftState;
+use wave_events::ControlEvent;
+use wave_events::ControlEventLog;
 use wave_events::SchedulerEvent;
 use wave_gates::CompatibilityRunInput;
 use wave_gates::REQUIRED_CLOSURE_AGENT_IDS;
 use wave_gates::compatibility_run_inputs_by_wave;
 use wave_reducer::PlanningReducerState;
+use wave_reducer::reduce_planning_state_with_authorities;
 use wave_reducer::reduce_planning_state_with_scheduler;
 use wave_reducer::with_portfolio_delivery_model;
 use wave_spec::WaveDocument;
@@ -38,7 +41,6 @@ use wave_trace::WaveRunStatus;
 pub use authority::load_canonical_compatibility_runs;
 pub use authority::load_scheduler_events;
 pub use delivery::AcceptancePackageReadModel;
-pub use delivery::build_delivery_read_model;
 pub use delivery::DeliveryDebtReadModel;
 pub use delivery::DeliveryReadModel;
 pub use delivery::DeliveryRiskReadModel;
@@ -46,6 +48,7 @@ pub use delivery::DeliverySignalReadModel;
 pub use delivery::DeliverySummaryReadModel;
 pub use delivery::InitiativeReadModel;
 pub use delivery::ReleaseReadModel;
+pub use delivery::build_delivery_read_model;
 pub use delivery::load_delivery_catalog;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -53,6 +56,7 @@ pub use delivery::load_delivery_catalog;
 pub enum WaveBlockerKind {
     Dependency,
     Design,
+    Recovery,
     Lint,
     Closure,
     Ownership,
@@ -95,6 +99,7 @@ pub type TaskLeaseStateView = wave_reducer::TaskLeaseStateView;
 pub type SchedulerBudgetState = wave_reducer::SchedulerBudgetState;
 pub type WaveOwnershipState = wave_reducer::WaveOwnershipState;
 pub type WaveExecutionState = wave_reducer::WaveExecutionState;
+pub type WaveRecoveryState = wave_reducer::WaveRecoveryState;
 pub type PortfolioDeliveryReadModel = wave_reducer::PortfolioReducerState;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -125,6 +130,7 @@ pub struct WaveQueueEntry {
     pub ready: bool,
     pub ownership: WaveOwnershipState,
     pub execution: WaveExecutionState,
+    pub recovery: WaveRecoveryState,
     pub agent_count: usize,
     pub implementation_agent_count: usize,
     pub closure_agent_count: usize,
@@ -190,6 +196,7 @@ pub struct WaveRef {
 pub struct WaveBlockerFlags {
     pub dependency: bool,
     pub design: bool,
+    pub recovery: bool,
     pub lint: bool,
     pub closure: bool,
     pub ownership: bool,
@@ -229,6 +236,7 @@ pub struct WavePlanningProjection {
     pub ready: bool,
     pub ownership: WaveOwnershipState,
     pub execution: WaveExecutionState,
+    pub recovery: WaveRecoveryState,
     pub rerun_requested: bool,
     pub closure_override_applied: bool,
     pub completed: bool,
@@ -272,6 +280,7 @@ pub struct ClosureCoverageProjection {
 pub struct QueueBlockerSummary {
     pub dependency: usize,
     pub design: usize,
+    pub recovery: usize,
     pub lint: usize,
     pub closure: usize,
     pub ownership: usize,
@@ -313,6 +322,7 @@ pub struct QueueProjection {
 pub struct QueueBlockerWaves {
     pub dependency: Vec<WaveRef>,
     pub design: Vec<WaveRef>,
+    pub recovery: Vec<WaveRef>,
     pub lint: Vec<WaveRef>,
     pub closure: Vec<WaveRef>,
     pub ownership: Vec<WaveRef>,
@@ -394,13 +404,20 @@ pub type QueueBlockerReadModel = WaveBlockerState;
 pub type QueueBlockerKindReadModel = WaveBlockerKind;
 
 fn repo_portfolio_delivery_model(waves: &[WaveDocument]) -> PortfolioDeliveryModel {
-    let available_wave_ids = waves.iter().map(|wave| wave.metadata.id).collect::<Vec<_>>();
+    let available_wave_ids = waves
+        .iter()
+        .map(|wave| wave.metadata.id)
+        .collect::<Vec<_>>();
     let mut selected_wave_ids = [15_u32, 16, 17]
         .into_iter()
         .filter(|wave_id| available_wave_ids.contains(wave_id))
         .collect::<Vec<_>>();
     if selected_wave_ids.len() < 2 {
-        selected_wave_ids = available_wave_ids.into_iter().rev().take(3).collect::<Vec<_>>();
+        selected_wave_ids = available_wave_ids
+            .into_iter()
+            .rev()
+            .take(3)
+            .collect::<Vec<_>>();
         selected_wave_ids.sort_unstable();
     }
     if selected_wave_ids.is_empty() {
@@ -410,7 +427,8 @@ fn repo_portfolio_delivery_model(waves: &[WaveDocument]) -> PortfolioDeliveryMod
     let release_titles = selected_wave_ids
         .iter()
         .filter_map(|wave_id| {
-            waves.iter()
+            waves
+                .iter()
                 .find(|wave| wave.metadata.id == *wave_id)
                 .map(|wave| format!("wave {} {}", wave.metadata.id, wave.metadata.title))
         })
@@ -728,6 +746,7 @@ pub fn build_planning_projection_bundle_with_scheduler_state(
         rerun_wave_ids,
         closure_override_wave_ids,
         scheduler_events,
+        &[],
         &repo_portfolio_delivery_model(waves),
     )
 }
@@ -741,10 +760,11 @@ pub fn build_planning_projection_bundle_with_portfolio_scheduler_state(
     rerun_wave_ids: &HashSet<u32>,
     closure_override_wave_ids: &HashSet<u32>,
     scheduler_events: &[SchedulerEvent],
+    control_events: &[ControlEvent],
     portfolio_model: &PortfolioDeliveryModel,
 ) -> PlanningProjectionBundle {
     let reduced = with_portfolio_delivery_model(
-        reduce_planning_state_with_scheduler(
+        reduce_planning_state_with_authorities(
             waves,
             findings,
             skill_catalog_issues,
@@ -752,6 +772,7 @@ pub fn build_planning_projection_bundle_with_portfolio_scheduler_state(
             rerun_wave_ids,
             closure_override_wave_ids,
             scheduler_events,
+            control_events,
         ),
         portfolio_model,
     );
@@ -831,9 +852,10 @@ pub fn build_projection_spine_with_scheduler_state(
     rerun_wave_ids: &HashSet<u32>,
     closure_override_wave_ids: &HashSet<u32>,
     scheduler_events: &[SchedulerEvent],
+    control_events: &[ControlEvent],
     launcher_ready: bool,
 ) -> ProjectionSpine {
-    let mut planning = build_planning_projection_bundle_with_scheduler_state(
+    let mut planning = build_planning_projection_bundle_with_portfolio_scheduler_state(
         config,
         waves,
         findings,
@@ -842,6 +864,8 @@ pub fn build_projection_spine_with_scheduler_state(
         rerun_wave_ids,
         closure_override_wave_ids,
         scheduler_events,
+        control_events,
+        &repo_portfolio_delivery_model(waves),
     );
     let delivery = build_delivery_read_model(&planning.status, waves, delivery_catalog);
     overlay_delivery_onto_planning(&mut planning, &delivery);
@@ -883,6 +907,7 @@ pub fn build_projection_spine_from_authority(
         }
     }
     let scheduler_events = load_scheduler_events(root, config)?;
+    let control_events = ControlEventLog::under_repo(root).load_all()?;
     let delivery_catalog = load_delivery_catalog(root, config)?;
 
     Ok(build_projection_spine_with_scheduler_state(
@@ -895,6 +920,7 @@ pub fn build_projection_spine_from_authority(
         rerun_wave_ids,
         closure_override_wave_ids,
         &scheduler_events,
+        &control_events,
         launcher_ready,
     ))
 }
@@ -1136,6 +1162,7 @@ pub fn build_planning_status_projection(status: &PlanningStatus) -> PlanningStat
             ready: wave.ready,
             ownership: wave.ownership.clone(),
             execution: wave.execution.clone(),
+            recovery: wave.recovery.clone(),
             rerun_requested: wave.rerun_requested,
             closure_override_applied: wave.closure_override_applied,
             completed: wave.completed,
@@ -1638,9 +1665,10 @@ fn queue_decision_story_lines(
         ),
         format!("queue decision: queue ready reason={queue_ready_reason}"),
         format!(
-            "queue decision: blocker story dependency={} design={} lint={} closure={} ownership={} lease_expired={} budget={} active_run={}",
+            "queue decision: blocker story dependency={} design={} recovery={} lint={} closure={} ownership={} lease_expired={} budget={} active_run={}",
             blocker_summary.dependency,
             blocker_summary.design,
+            blocker_summary.recovery,
             blocker_summary.lint,
             blocker_summary.closure,
             blocker_summary.ownership,
@@ -1757,6 +1785,7 @@ fn build_planning_status_from_reducer(
                 ready: wave.ready,
                 ownership: wave.ownership.clone(),
                 execution: wave.execution.clone(),
+                recovery: wave.recovery.clone(),
                 agent_count: wave.agents.total,
                 implementation_agent_count: wave.agents.implementation,
                 closure_agent_count: wave.agents.closure,
@@ -1918,6 +1947,7 @@ fn convert_blocker_kind(kind: wave_reducer::WaveBlockerKind) -> WaveBlockerKind 
     match kind {
         wave_reducer::WaveBlockerKind::Dependency => WaveBlockerKind::Dependency,
         wave_reducer::WaveBlockerKind::Design => WaveBlockerKind::Design,
+        wave_reducer::WaveBlockerKind::Recovery => WaveBlockerKind::Recovery,
         wave_reducer::WaveBlockerKind::Lint => WaveBlockerKind::Lint,
         wave_reducer::WaveBlockerKind::Closure => WaveBlockerKind::Closure,
         wave_reducer::WaveBlockerKind::Ownership => WaveBlockerKind::Ownership,
@@ -1945,6 +1975,8 @@ fn accumulate_blockers(summary: &mut QueueBlockerSummary, blocked_by: &[String])
             summary.dependency += 1;
         } else if blocker.starts_with("design:") {
             summary.design += 1;
+        } else if blocker.starts_with("recovery:") {
+            summary.recovery += 1;
         } else if blocker == "lint:error" {
             summary.lint += 1;
         } else if blocker.starts_with("closure:") {
@@ -1978,6 +2010,12 @@ fn classify_blockers(blocked_by: &[String]) -> Vec<WaveBlockerState> {
             } else if let Some(detail) = blocker.strip_prefix("design:") {
                 WaveBlockerState {
                     kind: WaveBlockerKind::Design,
+                    raw: blocker.clone(),
+                    detail: Some(detail.to_string()),
+                }
+            } else if let Some(detail) = blocker.strip_prefix("recovery:") {
+                WaveBlockerState {
+                    kind: WaveBlockerKind::Recovery,
                     raw: blocker.clone(),
                     detail: Some(detail.to_string()),
                 }
@@ -2040,6 +2078,7 @@ fn classify_blocker_flags(blocker_state: &[WaveBlockerState]) -> WaveBlockerFlag
         match blocker.kind {
             WaveBlockerKind::Dependency => flags.dependency = true,
             WaveBlockerKind::Design => flags.design = true,
+            WaveBlockerKind::Recovery => flags.recovery = true,
             WaveBlockerKind::Lint => flags.lint = true,
             WaveBlockerKind::Closure => flags.closure = true,
             WaveBlockerKind::Ownership => flags.ownership = true,
@@ -2063,6 +2102,9 @@ fn accumulate_blocker_waves(
     }
     if flags.design {
         summary.design.push(wave.clone());
+    }
+    if flags.recovery {
+        summary.recovery.push(wave.clone());
     }
     if flags.lint {
         summary.lint.push(wave.clone());
@@ -2511,7 +2553,12 @@ mod tests {
 
         assert_eq!(wave.last_run_status, Some(WaveRunStatus::Failed));
         assert_eq!(wave.readiness.state, QueueReadinessState::Ready);
-        assert!(!wave.blocked_by.iter().any(|blocker| blocker == "active-run:running"));
+        assert!(
+            !wave
+                .blocked_by
+                .iter()
+                .any(|blocker| blocker == "active-run:running")
+        );
         assert!(spine.operator.dashboard.active_runs.is_empty());
 
         let _ = fs::remove_dir_all(&root);
@@ -3114,6 +3161,8 @@ mod tests {
                 intent: None,
                 delivery: None,
                 design_gate: None,
+                execution_model: wave_spec::WaveExecutionModel::Serial,
+                concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
             },
             heading_title: Some(format!("Wave {id}")),
             commit_message: Some("Feat: test".to_string()),
@@ -3161,6 +3210,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: [
                         "Primary goal:",
                         "- Land reducer-backed projections.",
@@ -3202,6 +3258,13 @@ mod tests {
             deliverables: Vec::new(),
             file_ownership: vec![format!(".wave/reviews/{id}.md")],
             final_markers: vec![marker.to_string()],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::ClosureBarrier,
+            parallel_safety: wave_spec::ParallelSafetyClass::Serialized,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: [
                 "Primary goal:",
                 "- Close the wave honestly.",

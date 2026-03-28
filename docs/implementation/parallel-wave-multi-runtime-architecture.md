@@ -54,6 +54,16 @@ What is still later work:
 - decision, contradiction, and invalidation lineage
 - true concurrent intra-wave MAS execution with per-agent sandboxes, merge queue authority, and invalidation control
 
+Wave 18 now partially lands that later MAS step on top of the Wave 14 and Wave 15 baseline:
+
+- MAS-authored waves can opt into `execution_model = "multi-agent"`
+- the control plane can persist orchestrator mode and MAS control directives for MAS waves
+- the runtime now has a separate MAS path with per-agent sandboxes, ready-set computation, parallel-safe concurrent launch, merge sidecars, and invalidation sidecars
+- MAS waves now also have runtime-backed operator/autonomous head control, durable MAS control actions, steering-delivery transport semantics, and recovery-required visibility
+- CLI, app-server, and TUI surfaces can now inspect MAS agent sandbox, merge, invalidation, and barrier detail
+
+That does not change the purpose of this document. This file still defines the parallel-wave boundary. The full intra-wave MAS operating model remains tracked in the Wave 18 rollout and end-state docs, and it is not yet fully ratified in repo-local proof.
+
 ## Architectural Readout
 
 The current Rust repo is a stronger architectural base than the older launcher-centered system because it already separates:
@@ -69,12 +79,14 @@ The current Rust repo is a stronger architectural base than the older launcher-c
 
 That is the right direction.
 
-The main remaining gap is richer runtime policy breadth above the landed adapter seam. The live runtime is now:
+The main remaining gaps are richer runtime policy breadth above the landed adapter seam plus completion of the still-open Wave 18 MAS proof cut. The live runtime is now:
 
 - parallel for up to two non-conflicting repo-local waves at a time
-- one agent at a time inside each wave, sharing that wave's worktree
+- one agent at a time inside each non-MAS wave, sharing that wave's worktree
 - runtime-neutral at the boundary with Codex and Claude adapters
 - scheduler-enforced and lease-aware, with FIFO fairness inside claimable implementation admission plus reserved closure capacity and lease-level preemption above that lane, but still not yet a multi-runtime policy engine
+
+For opt-in MAS waves only, the repo now also has an in-progress intra-wave runtime path with per-agent sandboxes, concurrent launch of parallel-safe agents, runtime-backed operator and autonomous head control, directive-delivery transport semantics, and recovery-required handling that preserves accepted sibling work when one agent conflicts or is rejected. That path is not yet the fully closed live boundary because one real end-to-end Wave 18 proof run is still open.
 
 So the target architecture should not be “make the current launcher slightly smarter.”
 

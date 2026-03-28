@@ -1,14 +1,23 @@
 # True Multi-Agent Wave Architecture
 
-Status: target-state.
+Status: target-state with a partial live Wave 18 landing.
 
 This document defines how Wave should support real multi-agent execution inside a single wave.
 
-Live behavior today is narrower:
+Live behavior today is no longer purely serial:
 
 - up to two non-conflicting waves may run in parallel
-- each active wave gets one wave-scoped worktree
-- agents inside a wave still execute one at a time
+- serial waves still use one wave-scoped worktree with one running agent at a time
+- opt-in Wave 18 MAS waves can allocate per-agent sandboxes, compute a ready set, and run parallel-safe agents concurrently
+- merge, invalidation, directive, and orchestrator state is now surfaced through reducer/projection-backed operator views
+- recovery-required state is now a first-class control/reducer/projection concept instead of an implicit launcher failure mode
+
+The remaining non-doc gap is one real repo-local Wave 18 proof run that exercises:
+
+- concurrent agent launch inside one wave
+- recovery-required state after conflict, invalidation, or lease failure
+- targeted repair preserving accepted sibling work
+- honest continuation to closure
 
 That live boundary is documented in:
 
@@ -24,12 +33,15 @@ how should the Rust control plane, scheduler, runtime, and operator surfaces wor
 
 The current runtime keeps orchestration authority in the Rust control plane rather than in the executor.
 
-Inside a wave, however, it still behaves like a serial launcher:
+Inside a wave, the live repo is now split:
 
-- pick one agent
-- give it the wave worktree
-- wait for it to finish
-- move to the next agent
+- serial waves still behave like a serial launcher
+- MAS waves can launch multiple ready, non-conflicting agents concurrently
+
+What is still incomplete is the proof and closure boundary around that MAS path:
+
+- selective recovery needs a real proof run, not only fixtures and reducer state
+- closure must be demonstrated against preserved sibling work after a real recovery event
 
 That is safe, but it leaves too much value on the table:
 

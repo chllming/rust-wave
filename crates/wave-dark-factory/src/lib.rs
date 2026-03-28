@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
-use wave_spec::WaveClass;
 use wave_spec::WaveAgent;
+use wave_spec::WaveClass;
 use wave_spec::WaveDocument;
 
 const REQUIRED_PROMPT_SECTIONS: [&str; 4] = [
@@ -148,9 +148,7 @@ pub fn lint_project(root: &Path, waves: &[WaveDocument]) -> Vec<LintFinding> {
             });
         }
 
-        if wave.metadata.wave_class != WaveClass::Implementation
-            && wave.metadata.intent.is_none()
-        {
+        if wave.metadata.wave_class != WaveClass::Implementation && wave.metadata.intent.is_none() {
             findings.push(LintFinding {
                 wave_id: wave.metadata.id,
                 severity: FindingSeverity::Error,
@@ -159,12 +157,7 @@ pub fn lint_project(root: &Path, waves: &[WaveDocument]) -> Vec<LintFinding> {
             });
         }
 
-        if wave.metadata.delivery.is_some()
-            && wave
-                .metadata
-                .intent
-                .is_none()
-        {
+        if wave.metadata.delivery.is_some() && wave.metadata.intent.is_none() {
             findings.push(LintFinding {
                 wave_id: wave.metadata.id,
                 severity: FindingSeverity::Error,
@@ -174,8 +167,18 @@ pub fn lint_project(root: &Path, waves: &[WaveDocument]) -> Vec<LintFinding> {
         }
 
         if let Some(delivery) = wave.metadata.delivery.as_ref() {
-            if delivery.initiative_id.as_deref().unwrap_or("").trim().is_empty()
-                && delivery.release_id.as_deref().unwrap_or("").trim().is_empty()
+            if delivery
+                .initiative_id
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+                && delivery
+                    .release_id
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
                 && delivery
                     .acceptance_package_id
                     .as_deref()
@@ -388,7 +391,8 @@ pub fn lint_project(root: &Path, waves: &[WaveDocument]) -> Vec<LintFinding> {
                 wave_id: wave.metadata.id,
                 severity: FindingSeverity::Error,
                 rule: "code-implementation-agent-required",
-                message: "implementation waves must declare at least one non-design code agent".to_string(),
+                message: "implementation waves must declare at least one non-design code agent"
+                    .to_string(),
             });
         }
 
@@ -1661,6 +1665,8 @@ mod tests {
             intent: None,
             delivery: None,
             design_gate: None,
+            execution_model: wave_spec::WaveExecutionModel::Serial,
+            concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
         }
     }
 
@@ -1766,6 +1772,13 @@ mod tests {
                     "[wave-doc-delta]".to_string(),
                     "[wave-component]".to_string(),
                 ],
+                depends_on_agents: Vec::new(),
+                reads_artifacts_from: Vec::new(),
+                writes_artifacts: Vec::new(),
+                barrier_class: wave_spec::BarrierClass::Independent,
+                parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                exclusive_resources: Vec::new(),
+                parallel_with: Vec::new(),
                 prompt: implementation_prompt("README.md"),
             }],
         };
@@ -1871,6 +1884,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("README.md"),
                 },
             ],
@@ -1972,6 +1992,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("crates/wave-control-plane/"),
                 },
                 WaveAgent {
@@ -2004,6 +2031,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("crates/wave-control-plane/src/lib.rs"),
                 },
             ],
@@ -2203,6 +2237,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("crates/wave-dark-factory/src/lib.rs"),
                 },
             ],
@@ -2296,6 +2337,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("crates/wave-dark-factory/src/lib.rs"),
                 },
             ],
@@ -2400,6 +2448,13 @@ mod tests {
                         "[wave-component]".to_string(),
                         "[wave-gate]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: [
                         "Primary goal:",
                         "- Ship the implementation slice.",
@@ -2532,6 +2587,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("crates/wave-dark-factory/src/lib.rs"),
                 },
             ],
@@ -2633,6 +2695,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: [
                         "Primary goal:",
                         "- Ship the implementation slice.",
@@ -2740,6 +2809,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("crates/wave-dark-factory/src/lib.rs"),
                 },
             ],
@@ -2834,6 +2910,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("README.md"),
                 },
             ],
@@ -2943,6 +3026,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: implementation_prompt("crates/wave-spec/src/lib.rs"),
                 },
             ],
@@ -3051,6 +3141,13 @@ mod tests {
                         "[wave-doc-delta]".to_string(),
                         "[wave-component]".to_string(),
                     ],
+                    depends_on_agents: Vec::new(),
+                    reads_artifacts_from: Vec::new(),
+                    writes_artifacts: Vec::new(),
+                    barrier_class: wave_spec::BarrierClass::Independent,
+                    parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                    exclusive_resources: Vec::new(),
+                    parallel_with: Vec::new(),
                     prompt: [
                         "Primary goal:",
                         "- Ship the implementation slice.",
@@ -3145,6 +3242,13 @@ mod tests {
             deliverables: Vec::new(),
             file_ownership: vec![owned_path.to_string()],
             final_markers: vec![marker.to_string()],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::Independent,
+            parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: [
                 "Primary goal:",
                 "- Close the wave honestly.",

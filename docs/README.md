@@ -24,12 +24,14 @@ For this repo, start with the Rust-specific docs first and treat the generic pac
 
 - Current repo baseline:
   Read [implementation/rust-codex-refactor.md](./implementation/rust-codex-refactor.md) for the shipped Rust/Codex operator slice, the self-host loop, and the current compatibility boundary.
+- Operator shell contract:
+  Read [implementation/operator-shell-tui.md](./implementation/operator-shell-tui.md) and [guides/terminal-surfaces.md](./guides/terminal-surfaces.md) for the live TUI split, shell command model, search/compare/startup controls, and source-of-truth boundaries.
 - Rust 0.2 target:
   Read [implementation/rust-wave-0.2-architecture.md](./implementation/rust-wave-0.2-architecture.md) for the post-bootstrap authority model and the later reducer cutover plan.
 - Parallel-wave multi-runtime target:
   Read [implementation/parallel-wave-multi-runtime-architecture.md](./implementation/parallel-wave-multi-runtime-architecture.md) for the intended end-state harness: parallel waves, scheduler/lease control, and a shared planning/skills abstraction above Codex and Claude adapters.
 - True intra-wave MAS target:
-  Read [implementation/true-multi-agent-wave-architecture.md](./implementation/true-multi-agent-wave-architecture.md) and [plans/true-multi-agent-wave-rollout.md](./plans/true-multi-agent-wave-rollout.md) for the follow-on architecture after the current parallel-wave boundary: graph-aware execution inside one wave, per-agent sandboxes, merge or invalidation authority, and phased rollout from the product-factory baseline.
+  Read [implementation/true-multi-agent-wave-architecture.md](./implementation/true-multi-agent-wave-architecture.md) and [plans/true-multi-agent-wave-rollout.md](./plans/true-multi-agent-wave-rollout.md) for the now-partially-live follow-on architecture after the current parallel-wave boundary: graph-aware execution inside one wave, per-agent sandboxes, merge or invalidation authority, recovery-required state, and the remaining proof-run gap from the product-factory baseline.
 - Full-cycle wave model:
   Read [plans/full-cycle-waves.md](./plans/full-cycle-waves.md) for the design-first operating model: spec, architecture, product/design, synthesis, implementation, and post-implementation hardening on one shared substrate.
 - Rust 0.3 carry-forward notes:

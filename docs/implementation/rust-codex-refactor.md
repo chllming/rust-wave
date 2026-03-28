@@ -285,8 +285,8 @@ If a future wave changes the contract, update the parser, lint rules, queue/stat
   Validates wave files and dark-factory requirements.
 - `wave control status [--json]`
   Shows dependency-driven wave readiness, closure coverage, blocker state, and skill-catalog state.
-- `wave control show|task|rerun|proof`
-  Exposes wave detail, active tasks, rerun intents, and proof/replay state from the same operator snapshot used by the TUI.
+- `wave control show|task|agent|rerun|close|proof|orchestrator`
+  Exposes wave detail, active tasks, MAS agent state, rerun/manual-close state, proof/replay state, and orchestrator detail from the same operator snapshot used by the TUI.
 - `wave delivery status [--json]`
   Exposes release, acceptance-package, risk, debt, and delivery-signal truth from the repo-local delivery catalog.
 - `wave delivery initiative|release|acceptance show --id <id> [--json]`
@@ -317,7 +317,7 @@ This repo now dogfoods the Rust operator on itself through the surfaces that alr
 5. Run `wave launch --wave <id> --dry-run --json` before any live local mutation.
 6. If the dry run is clean, run `wave launch --wave <id> --json`.
 7. Watch the attempt through `wave trace latest --json` and `wave trace replay --json`.
-8. Open `wave` in an interactive terminal to inspect `Run`, `Agents`, `Queue`, and `Control` in the built-in Ratatui shell.
+8. Open `wave` in an interactive terminal to inspect `Overview`, `Agents`, `Queue`, `Proof`, and `Control` in the built-in Ratatui operator shell.
 
 This is a real self-host loop, but it is local and repo-scoped. It uses the launcher, queue, TUI, and trace surfaces already shipped in this slice; it does not claim live-host deployment or remote fleet control.
 
@@ -374,34 +374,31 @@ Keep these assumptions aligned with the launcher code. If one changes, update th
 
 ## Operator Shell
 
-The built-in TUI is the current dashboard surface for this repo. It uses a right-side operator panel instead of a separate browser/dashboard app, and the non-interactive fallback is a text summary rather than a second dashboard mode.
-This panel is the shipped operator surface, not a future affordance.
+The built-in TUI is now the live operator shell for this repo. It is no longer just a narrow right-side dashboard panel plus a few queue actions.
 
-The live right-side panel contract is intentionally narrow:
+The shipped shell contract is:
 
-- `Run`
-  active wave, run id, elapsed time, envelope-backed proof counts, and declared proof artifacts
-- `Agents`
-  per-agent state, typed proof source, final-marker completeness, and deliverables
-- `Queue`
-  readiness, blockers, dependency state, and claimability
-- `Control`
-  rerun intents, replay/proof state, and operator keybindings
+- left side: header, transcript, and composer
+- right side: stable `Overview`, `Agents`, `Queue`, `Proof`, and `Control` dashboard
+- explicit `head`, `wave`, and `agent` scopes
+- operator and autonomous modes on the same durable control path
+- reducer/projection-backed queue, proof, autonomy, and recovery visibility
+- shell-local transcript search and compare views
+- explicit `wave tui --alt-screen auto|always|never` and `wave tui --fresh-session`
 
-Only the tab-switching, wave-navigation, rerun-intent, and quit bindings are live today. Other dashboard affordances mentioned in older docs should be treated as planned until the TUI actually ships them.
+The TUI remains a consumer of control-plane truth, not an independent planner. Queue, proof, recovery, and control state still come from the same reducer/projection/app-server path the CLI uses. Replay is still an explicit compatibility boundary here: it compares normalized run, trace, and result-envelope references, but it still ratifies the compatibility run and trace artifacts rather than a final canonical replay v2 surface.
 
-The TUI is a consumer of control-plane truth, not an independent planner. Any future terminal-surface changes should preserve that dependency so the queue view, `wave control status`, and replay/proof surfaces remain consistent. The current app-server snapshot now carries the projection-owned control-status read model directly so the TUI does not have to rebuild the queue decision story from planning status in its own process, and proof views now resolve the latest relevant run for a wave instead of only currently active runs. Replay is still an explicit compatibility boundary here: it compares normalized run, trace, and result-envelope references, but it still ratifies the compatibility run and trace artifacts rather than a final canonical replay v2 surface.
-When there are multiple active runs, the `Run`, `Agents`, and `Control` tabs should bind to the currently selected wave rather than drifting to an unrelated first-active-run snapshot.
+The live interaction model now includes:
 
-Only these actions are shipped today:
+- `Tab` / `Shift+Tab` to cycle transcript, composer, and dashboard focus
+- `[` / `]` to cycle dashboard tabs
+- `j` / `k` or arrows to scroll transcript or move dashboard selection
+- `r` / `c` for rerun request and clear
+- `m` / `M` for manual close apply and clear
+- `u` / `x` for operator-action approval or rejection
+- slash commands for scope/mode/launch/rerun/MAS control/search/compare/help
 
-- `Tab` / `Shift+Tab` to cycle tabs
-- `j` / `k` to move the selected wave
-- `r` to request a rerun for the selected wave
-- `c` to clear a rerun intent
-- `q` to quit
-
-If a broader dashboard interaction is proposed later, it should be documented as planned until the implementation lands.
+If broader shell behavior is proposed later, it should build on this operator-shell contract rather than describe the TUI as a passive dashboard again.
 
 ## Self-Host Evidence
 
@@ -413,7 +410,7 @@ The intended self-host loop for this repository is the same one the code already
 4. `wave launch --wave <id> --dry-run --json` writes the preflight report before mutation.
 5. `wave launch --wave <id> --json` runs the local operator slice when the dry run is clean.
 6. `wave control show --wave <id> --json`, `wave control proof show --wave <id> --json`, `wave control task list --wave <id> --json`, `wave trace latest --json`, and `wave trace replay --json` expose queue, proof, and trace evidence for the latest relevant run. Proof state is recomputed from the current stored result envelopes first, with compatibility run records used only through the explicit `wave-results` legacy adapter while `wave-trace` stays limited to persisted envelope loading and replay over compatibility-backed artifacts with normalized envelope references.
-7. `wave` on an interactive terminal shows the same state in the built-in TUI.
+7. `wave` on an interactive terminal shows the same state in the built-in operator shell, and `wave tui --help` exposes the explicit shell startup controls.
 
 This is dogfood evidence, not a claim that live-host deployment, remote fleet control, or a separate dashboard product has landed. Wave 13 is now the landed scheduler-authority and serial lease-enforcement checkpoint. True parallel-wave execution and per-wave worktree isolation remain future work in Wave 14-class follow-through.
 

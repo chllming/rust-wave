@@ -2,6 +2,7 @@ use anyhow::Context;
 use anyhow::Result;
 use clap::Parser;
 use clap::Subcommand;
+use clap::ValueEnum;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env;
@@ -9,17 +10,15 @@ use std::io;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::path::PathBuf;
-use wave_app_server::latest_relevant_run_detail;
-use wave_app_server::load_operator_snapshot;
-use wave_app_server::load_relevant_run_records;
 use wave_app_server::ActiveRunDetail;
 use wave_app_server::AgentPanelItem;
 use wave_app_server::OperatorSnapshot;
 use wave_app_server::ProofSnapshot;
-use wave_config::ProjectConfig;
+use wave_app_server::latest_relevant_run_detail;
+use wave_app_server::load_operator_snapshot;
+use wave_app_server::load_relevant_run_records;
 use wave_config::DEFAULT_CONFIG_PATH;
-use wave_control_plane::build_control_status_read_model_from_spine;
-use wave_control_plane::build_projection_spine_from_authority;
+use wave_config::ProjectConfig;
 use wave_control_plane::ControlStatusReadModel;
 use wave_control_plane::DeliveryReadModel;
 use wave_control_plane::OperatorSnapshotInputs;
@@ -27,49 +26,65 @@ use wave_control_plane::PlanningProjectionReadModel;
 use wave_control_plane::PlanningStatusReadModel;
 use wave_control_plane::ProjectionSpine;
 use wave_control_plane::WaveStatusReadModel;
+use wave_control_plane::build_control_status_read_model_from_spine;
+use wave_control_plane::build_projection_spine_from_authority;
+use wave_dark_factory::LintFinding;
 use wave_dark_factory::has_errors;
 use wave_dark_factory::lint_project;
 use wave_dark_factory::validate_context7_bundle_catalog;
 use wave_dark_factory::validate_skill_catalog;
-use wave_dark_factory::LintFinding;
+use wave_domain::DirectiveOrigin;
+use wave_domain::OrchestratorMode;
 use wave_domain::RerunScope;
 use wave_domain::WaveClosureOverrideRecord;
 use wave_runtime::AdhocPlanReport;
 use wave_runtime::AdhocPromotionReport;
 use wave_runtime::AdhocRunRecord;
 use wave_runtime::AdhocRunReport;
-use wave_runtime::active_closure_override_wave_ids;
-use wave_runtime::apply_closure_override;
-use wave_runtime::autonomous_launch;
-use wave_runtime::clear_closure_override;
-use wave_runtime::clear_rerun;
-use wave_runtime::dogfood_evidence_report;
-use wave_runtime::draft_wave;
-use wave_runtime::launch_wave;
-use wave_runtime::list_closure_overrides;
-use wave_runtime::load_latest_runs;
-use wave_runtime::list_adhoc_runs;
-use wave_runtime::plan_adhoc;
-use wave_runtime::pending_rerun_wave_ids;
-use wave_runtime::promote_adhoc;
-use wave_runtime::repair_orphaned_runs;
-use wave_runtime::request_rerun;
-use wave_runtime::run_adhoc;
-use wave_runtime::runtime_boundary_status;
-use wave_runtime::show_adhoc_run;
-use wave_runtime::seed_design_authority_live_proof;
-use wave_runtime::trace_inspection_report;
 use wave_runtime::AutonomousOptions;
 use wave_runtime::DogfoodEvidenceReport;
 use wave_runtime::LaunchOptions;
 use wave_runtime::LaunchPreflightError;
 use wave_runtime::LaunchPreflightReport;
 use wave_runtime::RerunIntentRecord;
-use wave_spec::load_wave_documents;
+use wave_runtime::active_closure_override_wave_ids;
+use wave_runtime::apply_closure_override;
+use wave_runtime::approve_agent_merge;
+use wave_runtime::autonomous_launch;
+use wave_runtime::clear_closure_override;
+use wave_runtime::clear_rerun;
+use wave_runtime::dogfood_evidence_report;
+use wave_runtime::draft_wave;
+use wave_runtime::latest_orchestrator_session;
+use wave_runtime::launch_wave;
+use wave_runtime::list_adhoc_runs;
+use wave_runtime::list_closure_overrides;
+use wave_runtime::list_control_directives;
+use wave_runtime::load_latest_runs;
+use wave_runtime::pause_agent;
+use wave_runtime::pending_rerun_wave_ids;
+use wave_runtime::plan_adhoc;
+use wave_runtime::promote_adhoc;
+use wave_runtime::rebase_agent_sandbox;
+use wave_runtime::reject_agent_merge;
+use wave_runtime::repair_orphaned_runs;
+use wave_runtime::request_agent_reconciliation;
+use wave_runtime::request_rerun;
+use wave_runtime::rerun_agent;
+use wave_runtime::resume_agent;
+use wave_runtime::run_adhoc;
+use wave_runtime::runtime_boundary_status;
+use wave_runtime::seed_design_authority_live_proof;
+use wave_runtime::set_orchestrator_mode;
+use wave_runtime::show_adhoc_run;
+use wave_runtime::steer_agent;
+use wave_runtime::steer_wave;
+use wave_runtime::trace_inspection_report;
 use wave_spec::WaveDocument;
-use wave_trace::load_trace_bundle;
+use wave_spec::load_wave_documents;
 use wave_trace::ReplayReport;
 use wave_trace::WaveRunRecord;
+use wave_trace::load_trace_bundle;
 
 #[derive(Debug, Parser)]
 #[command(name = "wave", about = "Rust/Codex Wave operator CLI")]
@@ -133,6 +148,19 @@ enum Command {
         #[command(subcommand)]
         command: AdhocCommand,
     },
+    Tui {
+        #[arg(long, value_enum, default_value_t = TuiAltScreenMode::Auto)]
+        alt_screen: TuiAltScreenMode,
+        #[arg(long)]
+        fresh_session: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum TuiAltScreenMode {
+    Auto,
+    Always,
+    Never,
 }
 
 #[derive(Debug, Subcommand)]
@@ -159,6 +187,10 @@ enum ControlCommand {
         #[command(subcommand)]
         command: TaskCommand,
     },
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
     Rerun {
         #[command(subcommand)]
         command: RerunCommand,
@@ -174,6 +206,10 @@ enum ControlCommand {
     Proof {
         #[command(subcommand)]
         command: ProofCommand,
+    },
+    Orchestrator {
+        #[command(subcommand)]
+        command: OrchestratorCommand,
     },
 }
 
@@ -212,6 +248,76 @@ enum TaskCommand {
     List {
         #[arg(long)]
         wave: Option<u32>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentCommand {
+    Pause {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Resume {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Rerun {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Rebase {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Reconcile {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    ApproveMerge {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    RejectMerge {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Steer {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        message: String,
         #[arg(long)]
         json: bool,
     },
@@ -276,6 +382,32 @@ enum ProofCommand {
     SeedDesignAuthority {
         #[arg(long)]
         wave: u32,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum OrchestratorCommand {
+    Show {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    Steer {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        message: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Mode {
+        #[arg(long)]
+        wave: u32,
+        #[arg(long)]
+        mode: String,
         #[arg(long)]
         json: bool,
     },
@@ -385,6 +517,35 @@ struct ControlShowReport {
     operator_objects: Vec<wave_app_server::OperatorActionableItem>,
     rerun_intent: Option<RerunIntentRecord>,
     closure_override: Option<WaveClosureOverrideRecord>,
+    orchestrator_mode: Option<String>,
+    directives: Vec<wave_domain::ControlDirectiveRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentSteerReport {
+    directive: wave_domain::ControlDirectiveRecord,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentControlReport {
+    directive: wave_domain::ControlDirectiveRecord,
+}
+
+#[derive(Debug, Serialize)]
+struct OrchestratorModeReport {
+    session: Option<wave_domain::OrchestratorSessionRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct OrchestratorShowReport {
+    session: Option<wave_domain::OrchestratorSessionRecord>,
+    wave: Option<wave_app_server::WaveOrchestratorSnapshot>,
+    directives: Vec<wave_app_server::DirectiveSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+struct OrchestratorSteerReport {
+    directive: wave_domain::ControlDirectiveRecord,
 }
 
 #[derive(Debug, Serialize)]
@@ -648,6 +809,179 @@ fn main() -> Result<()> {
         }) => render_task_list(&root, &config, wave, json),
         Some(Command::Control {
             command:
+                ControlCommand::Agent {
+                    command: AgentCommand::Pause { wave, agent, json },
+                },
+        }) => render_agent_control(
+            &root,
+            &config,
+            wave,
+            &agent,
+            json,
+            "paused",
+            |root, config, wave, agent| {
+                pause_agent(
+                    root,
+                    config,
+                    wave,
+                    agent,
+                    DirectiveOrigin::Operator,
+                    "wave-cli",
+                )
+            },
+        ),
+        Some(Command::Control {
+            command:
+                ControlCommand::Agent {
+                    command: AgentCommand::Resume { wave, agent, json },
+                },
+        }) => render_agent_control(
+            &root,
+            &config,
+            wave,
+            &agent,
+            json,
+            "resumed",
+            |root, config, wave, agent| {
+                resume_agent(
+                    root,
+                    config,
+                    wave,
+                    agent,
+                    DirectiveOrigin::Operator,
+                    "wave-cli",
+                )
+            },
+        ),
+        Some(Command::Control {
+            command:
+                ControlCommand::Agent {
+                    command: AgentCommand::Rerun { wave, agent, json },
+                },
+        }) => render_agent_control(
+            &root,
+            &config,
+            wave,
+            &agent,
+            json,
+            "scheduled for rerun",
+            |root, config, wave, agent| {
+                rerun_agent(
+                    root,
+                    config,
+                    wave,
+                    agent,
+                    DirectiveOrigin::Operator,
+                    "wave-cli",
+                )
+            },
+        ),
+        Some(Command::Control {
+            command:
+                ControlCommand::Agent {
+                    command: AgentCommand::Rebase { wave, agent, json },
+                },
+        }) => render_agent_control(
+            &root,
+            &config,
+            wave,
+            &agent,
+            json,
+            "scheduled for rebase",
+            |root, config, wave, agent| {
+                rebase_agent_sandbox(
+                    root,
+                    config,
+                    wave,
+                    agent,
+                    DirectiveOrigin::Operator,
+                    "wave-cli",
+                )
+            },
+        ),
+        Some(Command::Control {
+            command:
+                ControlCommand::Agent {
+                    command: AgentCommand::Reconcile { wave, agent, json },
+                },
+        }) => render_agent_control(
+            &root,
+            &config,
+            wave,
+            &agent,
+            json,
+            "queued for reconciliation",
+            |root, config, wave, agent| {
+                request_agent_reconciliation(
+                    root,
+                    config,
+                    wave,
+                    agent,
+                    DirectiveOrigin::Operator,
+                    "wave-cli",
+                )
+            },
+        ),
+        Some(Command::Control {
+            command:
+                ControlCommand::Agent {
+                    command: AgentCommand::ApproveMerge { wave, agent, json },
+                },
+        }) => render_agent_control(
+            &root,
+            &config,
+            wave,
+            &agent,
+            json,
+            "merge approved",
+            |root, config, wave, agent| {
+                approve_agent_merge(
+                    root,
+                    config,
+                    wave,
+                    agent,
+                    DirectiveOrigin::Operator,
+                    "wave-cli",
+                )
+            },
+        ),
+        Some(Command::Control {
+            command:
+                ControlCommand::Agent {
+                    command: AgentCommand::RejectMerge { wave, agent, json },
+                },
+        }) => render_agent_control(
+            &root,
+            &config,
+            wave,
+            &agent,
+            json,
+            "merge rejected",
+            |root, config, wave, agent| {
+                reject_agent_merge(
+                    root,
+                    config,
+                    wave,
+                    agent,
+                    DirectiveOrigin::Operator,
+                    "wave-cli",
+                )
+            },
+        ),
+        Some(Command::Control {
+            command:
+                ControlCommand::Agent {
+                    command:
+                        AgentCommand::Steer {
+                            wave,
+                            agent,
+                            message,
+                            json,
+                        },
+                },
+        }) => render_agent_steer(&root, &config, wave, &agent, &message, json),
+        Some(Command::Control {
+            command:
                 ControlCommand::Rerun {
                     command: RerunCommand::List { json },
                 },
@@ -714,6 +1048,29 @@ fn main() -> Result<()> {
                     command: ProofCommand::SeedDesignAuthority { wave, json },
                 },
         }) => render_proof_seed_design_authority(&root, &config, wave, json),
+        Some(Command::Control {
+            command:
+                ControlCommand::Orchestrator {
+                    command: OrchestratorCommand::Show { wave, json },
+                },
+        }) => render_orchestrator_show(&root, &config, wave, json),
+        Some(Command::Control {
+            command:
+                ControlCommand::Orchestrator {
+                    command:
+                        OrchestratorCommand::Steer {
+                            wave,
+                            message,
+                            json,
+                        },
+                },
+        }) => render_orchestrator_steer(&root, &config, wave, &message, json),
+        Some(Command::Control {
+            command:
+                ControlCommand::Orchestrator {
+                    command: OrchestratorCommand::Mode { wave, mode, json },
+                },
+        }) => render_orchestrator_mode(&root, &config, wave, &mode, json),
         Some(Command::Launch {
             wave,
             dry_run,
@@ -772,6 +1129,25 @@ fn main() -> Result<()> {
         Some(Command::Adhoc {
             command: AdhocCommand::Promote { id, wave_id, json },
         }) => render_adhoc_promote(&root, &config, &id, wave_id, json),
+        Some(Command::Tui {
+            alt_screen,
+            fresh_session,
+        }) => wave_tui::run_with_options(
+            &root,
+            &config,
+            wave_tui::RunOptions {
+                alt_screen: tui_alt_screen_mode(alt_screen),
+                fresh_session,
+            },
+        ),
+    }
+}
+
+fn tui_alt_screen_mode(mode: TuiAltScreenMode) -> wave_tui::AltScreenMode {
+    match mode {
+        TuiAltScreenMode::Auto => wave_tui::AltScreenMode::Auto,
+        TuiAltScreenMode::Always => wave_tui::AltScreenMode::Always,
+        TuiAltScreenMode::Never => wave_tui::AltScreenMode::Never,
     }
 }
 
@@ -1938,6 +2314,12 @@ fn render_control_show(
         .iter()
         .find(|record| record.wave_id == wave_id)
         .cloned();
+    let directives = list_control_directives(root, config, Some(wave_id))?;
+    let orchestrator_mode =
+        latest_orchestrator_session(root, config, wave_id)?.map(|session| match session.mode {
+            OrchestratorMode::Operator => "operator".to_string(),
+            OrchestratorMode::Autonomous => "autonomous".to_string(),
+        });
     let report = ControlShowReport {
         wave,
         portfolio_focus,
@@ -1947,6 +2329,8 @@ fn render_control_show(
         operator_objects,
         rerun_intent,
         closure_override,
+        orchestrator_mode,
+        directives,
     };
     if json {
         print_json(&report)
@@ -2075,6 +2459,204 @@ fn render_control_show(
                 println!("closure override detail: {}", detail);
             }
         }
+        if let Some(mode) = report.orchestrator_mode {
+            println!("orchestrator mode: {mode}");
+        }
+        if !report.directives.is_empty() {
+            for directive in &report.directives {
+                println!(
+                    "directive {} {} {}",
+                    directive.directive_id,
+                    format!("{:?}", directive.kind).to_ascii_lowercase(),
+                    directive
+                        .agent_id
+                        .clone()
+                        .unwrap_or_else(|| format!("wave-{}", directive.wave_id))
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+fn render_agent_steer(
+    root: &Path,
+    config: &ProjectConfig,
+    wave: u32,
+    agent: &str,
+    message: &str,
+    json: bool,
+) -> Result<()> {
+    let report = AgentSteerReport {
+        directive: steer_agent(
+            root,
+            config,
+            wave,
+            agent,
+            message,
+            DirectiveOrigin::Operator,
+            "wave-cli",
+        )?,
+    };
+    if json {
+        print_json(&report)
+    } else {
+        println!("steered wave {wave} agent {agent}");
+        println!("message: {}", message.trim());
+        Ok(())
+    }
+}
+
+fn render_agent_control<F>(
+    root: &Path,
+    config: &ProjectConfig,
+    wave: u32,
+    agent: &str,
+    json: bool,
+    action_label: &str,
+    action: F,
+) -> Result<()>
+where
+    F: FnOnce(&Path, &ProjectConfig, u32, &str) -> Result<wave_domain::ControlDirectiveRecord>,
+{
+    let report = AgentControlReport {
+        directive: action(root, config, wave, agent)?,
+    };
+    if json {
+        print_json(&report)
+    } else {
+        println!("wave {wave} agent {agent} {action_label}");
+        Ok(())
+    }
+}
+
+fn render_orchestrator_show(
+    root: &Path,
+    config: &ProjectConfig,
+    wave: u32,
+    json: bool,
+) -> Result<()> {
+    let snapshot = load_operator_snapshot(root, config)?;
+    let report = OrchestratorShowReport {
+        session: latest_orchestrator_session(root, config, wave)?,
+        wave: snapshot
+            .panels
+            .orchestrator
+            .waves
+            .into_iter()
+            .find(|candidate| candidate.wave_id == wave),
+        directives: snapshot
+            .panels
+            .orchestrator
+            .directives
+            .into_iter()
+            .filter(|directive| directive.wave_id == wave)
+            .collect(),
+    };
+    if json {
+        print_json(&report)
+    } else {
+        let mode = report
+            .session
+            .as_ref()
+            .map(|session| match session.mode {
+                OrchestratorMode::Operator => "operator",
+                OrchestratorMode::Autonomous => "autonomous",
+            })
+            .unwrap_or("operator");
+        println!("wave {wave} orchestrator mode: {mode}");
+        if let Some(wave) = report.wave.as_ref() {
+            println!(
+                "execution model: {} | active run: {}",
+                wave.execution_model,
+                wave.active_run_id.as_deref().unwrap_or("none")
+            );
+            for agent in &wave.agents {
+                println!(
+                    "agent {} {} status={} merge={} sandbox={} barrier={} deps={}",
+                    agent.id,
+                    agent.title,
+                    agent.status,
+                    agent.merge_state.as_deref().unwrap_or("none"),
+                    agent.sandbox_id.as_deref().unwrap_or("none"),
+                    agent.barrier_class,
+                    if agent.depends_on_agents.is_empty() {
+                        "none".to_string()
+                    } else {
+                        agent.depends_on_agents.join(",")
+                    }
+                );
+                if !agent.barrier_reasons.is_empty() {
+                    println!("  barrier reasons: {}", agent.barrier_reasons.join(" | "));
+                }
+            }
+        }
+        if !report.directives.is_empty() {
+            for directive in &report.directives {
+                println!(
+                    "directive {} {} {} state={} detail={}",
+                    directive.directive_id,
+                    directive.kind,
+                    directive
+                        .agent_id
+                        .clone()
+                        .unwrap_or_else(|| format!("wave-{}", directive.wave_id)),
+                    directive.delivery_state.as_deref().unwrap_or("unknown"),
+                    directive.delivery_detail.as_deref().unwrap_or("none"),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+fn render_orchestrator_steer(
+    root: &Path,
+    config: &ProjectConfig,
+    wave: u32,
+    message: &str,
+    json: bool,
+) -> Result<()> {
+    let report = OrchestratorSteerReport {
+        directive: steer_wave(
+            root,
+            config,
+            wave,
+            message,
+            DirectiveOrigin::Operator,
+            "wave-cli",
+        )?,
+    };
+    if json {
+        print_json(&report)
+    } else {
+        println!("steered wave {wave} orchestrator");
+        println!("message: {}", message.trim());
+        Ok(())
+    }
+}
+
+fn render_orchestrator_mode(
+    root: &Path,
+    config: &ProjectConfig,
+    wave: u32,
+    mode: &str,
+    json: bool,
+) -> Result<()> {
+    let parsed = match mode.trim() {
+        "operator" => OrchestratorMode::Operator,
+        "autonomous" => OrchestratorMode::Autonomous,
+        other => anyhow::bail!("unsupported orchestrator mode `{other}`"),
+    };
+    let report = OrchestratorModeReport {
+        session: Some(set_orchestrator_mode(
+            root, config, wave, parsed, "wave-cli",
+        )?),
+    };
+    if json {
+        print_json(&report)
+    } else {
+        println!("wave {wave} orchestrator mode updated");
         Ok(())
     }
 }
@@ -2591,6 +3173,7 @@ fn acceptance_state_label(value: impl std::fmt::Debug) -> String {
 fn operator_object_label(kind: wave_app_server::OperatorActionableKind) -> &'static str {
     match kind {
         wave_app_server::OperatorActionableKind::Approval => "approval-request",
+        wave_app_server::OperatorActionableKind::Proposal => "head-proposal",
         wave_app_server::OperatorActionableKind::Override => "manual-close-override",
         wave_app_server::OperatorActionableKind::Escalation => "escalation",
     }
@@ -3003,6 +3586,7 @@ fn render_proof_show(
     let relevant_runs = load_relevant_run_records(root, config)?;
     let report = proof_report_for_wave(
         root,
+        config,
         &waves,
         &snapshot.planning,
         &snapshot.acceptance_packages,
@@ -3117,6 +3701,7 @@ fn render_proof_seed_design_authority(
 
 fn proof_report_for_wave(
     root: &Path,
+    config: &ProjectConfig,
     waves: &[WaveDocument],
     planning: &PlanningStatusReadModel,
     acceptance_packages: &[wave_app_server::AcceptancePackageSnapshot],
@@ -3128,7 +3713,7 @@ fn proof_report_for_wave(
         .iter()
         .find(|run| run.wave_id == wave_id)
         .cloned()
-        .or_else(|| latest_relevant_run_detail(root, waves, latest_runs, wave_id));
+        .or_else(|| latest_relevant_run_detail(root, config, waves, latest_runs, wave_id));
     let acceptance_package = acceptance_packages
         .iter()
         .find(|package| package.wave_id == wave_id)
@@ -3497,8 +4082,6 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::collections::HashMap;
-    use wave_control_plane::build_operator_snapshot_inputs;
-    use wave_control_plane::build_planning_status_projection;
     use wave_control_plane::PlanningProjectionBundle;
     use wave_control_plane::PlanningStatusReadModel;
     use wave_control_plane::PlanningStatusSummary;
@@ -3507,6 +4090,8 @@ mod tests {
     use wave_control_plane::SkillCatalogHealth;
     use wave_control_plane::WaveReadinessReadModel;
     use wave_control_plane::WaveStatusReadModel;
+    use wave_control_plane::build_operator_snapshot_inputs;
+    use wave_control_plane::build_planning_status_projection;
     use wave_spec::CompletionLevel;
     use wave_spec::Context7Defaults;
     use wave_spec::DocImpact;
@@ -3549,6 +4134,10 @@ mod tests {
         }
     }
 
+    fn empty_recovery() -> wave_control_plane::WaveRecoveryState {
+        wave_control_plane::WaveRecoveryState::default()
+    }
+
     fn default_delivery() -> wave_control_plane::DeliveryReadModel {
         wave_control_plane::DeliveryReadModel::default()
     }
@@ -3559,6 +4148,8 @@ mod tests {
             slug: String::new(),
             title: String::new(),
             mode: wave_config::ExecutionMode::DarkFactory,
+            execution_model: wave_spec::WaveExecutionModel::Serial,
+            concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
             owners: Vec::new(),
             depends_on: Vec::new(),
             validation: Vec::new(),
@@ -3744,9 +4335,11 @@ mod tests {
         assert!(lines.iter().any(|line| {
             line == "acceptance closure gates: A6=failed/no-proof | A8=planned/no-proof | A9=succeeded/proof | A0=succeeded/proof"
         }));
-        assert!(lines
-            .iter()
-            .any(|line| { line == "acceptance closure error: A6 design review blocked" }));
+        assert!(
+            lines
+                .iter()
+                .any(|line| { line == "acceptance closure error: A6 design review blocked" })
+        );
     }
     #[test]
     fn config_root_uses_parent() {
@@ -3878,6 +4471,7 @@ mod tests {
                 ready: true,
                 ownership: empty_ownership(),
                 execution: empty_execution(),
+                recovery: empty_recovery(),
                 agent_count: 3,
                 implementation_agent_count: 1,
                 closure_agent_count: 2,
@@ -3984,21 +4578,31 @@ mod tests {
 
         let lines = control_show_design_lines(&design);
 
-        assert!(lines
-            .iter()
-            .any(|line| line == "open questions: question-api-shape"));
-        assert!(lines
-            .iter()
-            .any(|line| line == "open assumptions: assumption-cache-valid"));
-        assert!(lines
-            .iter()
-            .any(|line| line == "invalidated facts: fact-api"));
-        assert!(lines
-            .iter()
-            .any(|line| line == "superseded decisions: decision-api-v1"));
-        assert!(lines
-            .iter()
-            .any(|line| line == "ambiguous dependency waves: 15"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "open questions: question-api-shape")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "open assumptions: assumption-cache-valid")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "invalidated facts: fact-api")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "superseded decisions: decision-api-v1")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "ambiguous dependency waves: 15")
+        );
     }
 
     #[test]
@@ -4008,6 +4612,7 @@ mod tests {
             std::process::id(),
             wave_trace::now_epoch_ms().expect("timestamp")
         ));
+        let config = ProjectConfig::default();
         std::fs::create_dir_all(&root).expect("create temp root");
         let bundle_dir = root.join(".wave/state/build/specs/wave-12-1");
         let agent_dir = bundle_dir.join("agents/A1");
@@ -4107,6 +4712,7 @@ mod tests {
 
         let report = proof_report_for_wave(
             &root,
+            &config,
             &[wave],
             &empty_planning_status(),
             &[],
@@ -4207,6 +4813,7 @@ mod tests {
                 ready: true,
                 ownership: empty_ownership(),
                 execution: empty_execution(),
+                recovery: empty_recovery(),
                 agent_count: 3,
                 implementation_agent_count: 1,
                 closure_agent_count: 2,
@@ -4355,18 +4962,23 @@ mod tests {
                     )),
                 },
             ],
+            mas: None,
         };
 
         let lines = control_runtime_lines(&run);
 
-        assert!(lines
-            .iter()
-            .any(|line| line == "run runtimes: claude, codex"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "run runtimes: claude, codex")
+        );
         assert!(lines.iter().any(|line| line
             == "current agent runtime: requested codex -> selected claude via executor.id"));
-        assert!(lines
-            .iter()
-            .all(|line| !line.starts_with("runtime decision:")));
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.starts_with("runtime decision:"))
+        );
     }
 
     fn test_runtime_detail(
@@ -4445,6 +5057,13 @@ mod tests {
                 }),
                 deliverables: vec!["README.md".to_string()],
                 file_ownership: vec!["README.md".to_string()],
+                depends_on_agents: Vec::new(),
+                reads_artifacts_from: Vec::new(),
+                writes_artifacts: Vec::new(),
+                barrier_class: wave_spec::BarrierClass::Independent,
+                parallel_safety: wave_spec::ParallelSafetyClass::Serialized,
+                exclusive_resources: Vec::new(),
+                parallel_with: Vec::new(),
                 final_markers: vec!["[wave-proof]".to_string()],
                 prompt: "Primary goal:\n- noop\n\nRequired context before coding:\n- Read README.md.\n\nFile ownership (only touch these paths):\n- README.md".to_string(),
             }],

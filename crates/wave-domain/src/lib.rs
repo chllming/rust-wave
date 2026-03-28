@@ -58,6 +58,17 @@ string_id!(DeliveryDebtId);
 string_id!(MilestoneId);
 string_id!(ReleaseTrainId);
 string_id!(OutcomeContractId);
+string_id!(AgentSandboxId);
+string_id!(MergeIntentId);
+string_id!(MergeResultId);
+string_id!(InvalidationId);
+string_id!(RecoveryPlanId);
+string_id!(RecoveryActionId);
+string_id!(ControlDirectiveId);
+string_id!(OrchestratorSessionId);
+string_id!(OperatorShellSessionId);
+string_id!(OperatorShellTurnId);
+string_id!(HeadProposalId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -777,6 +788,397 @@ pub enum TaskDependencyKind {
     SecurityReviewVerdict,
     IntegrationClosure,
     DocumentationClosure,
+    AgentGraph,
+    ArtifactFlow,
+    Barrier,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum WaveExecutionModel {
+    #[default]
+    Serial,
+    MultiAgent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum BarrierClass {
+    #[default]
+    Independent,
+    MergeAfter,
+    IntegrationBarrier,
+    ClosureBarrier,
+    ReportOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ParallelSafetyClass {
+    #[default]
+    Derived,
+    ParallelSafe,
+    Serialized,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WaveConcurrencyBudgetPlan {
+    pub max_concurrent_implementation_agents: Option<u32>,
+    pub max_concurrent_report_only_agents: Option<u32>,
+    pub max_merge_operations: Option<u32>,
+    pub max_conflict_resolution_agents: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactDependency {
+    pub artifact: String,
+    pub source_agent_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSandboxRecord {
+    pub sandbox_id: AgentSandboxId,
+    pub wave_id: u32,
+    pub task_id: TaskId,
+    pub agent_id: String,
+    pub path: String,
+    pub base_integration_ref: Option<String>,
+    pub allocated_at_ms: u128,
+    pub released_at_ms: Option<u128>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeIntentRecord {
+    pub merge_intent_id: MergeIntentId,
+    pub wave_id: u32,
+    pub task_id: TaskId,
+    pub sandbox_id: AgentSandboxId,
+    pub ownership_paths: Vec<String>,
+    pub produced_artifacts: Vec<String>,
+    pub invalidation_hints: Vec<String>,
+    pub created_at_ms: u128,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeDisposition {
+    Pending,
+    Accepted,
+    Rejected,
+    Conflicted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeResultRecord {
+    pub merge_result_id: MergeResultId,
+    pub merge_intent_id: MergeIntentId,
+    pub wave_id: u32,
+    pub task_id: TaskId,
+    pub disposition: MergeDisposition,
+    pub conflict_paths: Vec<String>,
+    pub applied_at_ms: u128,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvalidationRecord {
+    pub invalidation_id: InvalidationId,
+    pub wave_id: u32,
+    pub source_task_id: TaskId,
+    #[serde(default)]
+    pub invalidated_task_ids: Vec<TaskId>,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    pub created_at_ms: u128,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryCause {
+    MergeConflict,
+    MergeRejected,
+    Invalidated,
+    LeaseExpired,
+    AgentFailed,
+    Mixed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryActionKind {
+    RerunAgent,
+    RebaseSandbox,
+    RequestReconciliation,
+    ApproveMerge,
+    RejectMerge,
+    ResumeAgent,
+    PauseAgent,
+    ClearResolvedStep,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryPlanStatus {
+    #[default]
+    Open,
+    InProgress,
+    Resolved,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryAgentPlan {
+    pub agent_id: String,
+    pub cause: RecoveryCause,
+    #[serde(default)]
+    pub required_actions: Vec<RecoveryActionKind>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryPlanRecord {
+    pub recovery_plan_id: RecoveryPlanId,
+    pub wave_id: u32,
+    pub run_id: String,
+    #[serde(default)]
+    pub causes: Vec<RecoveryCause>,
+    #[serde(default)]
+    pub affected_agent_ids: Vec<String>,
+    #[serde(default)]
+    pub preserved_accepted_agent_ids: Vec<String>,
+    #[serde(default)]
+    pub agent_plans: Vec<RecoveryAgentPlan>,
+    pub status: RecoveryPlanStatus,
+    pub detail: Option<String>,
+    pub created_at_ms: u128,
+    pub updated_at_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryActionRecord {
+    pub recovery_action_id: RecoveryActionId,
+    pub recovery_plan_id: RecoveryPlanId,
+    pub wave_id: u32,
+    pub run_id: String,
+    pub agent_id: Option<String>,
+    pub action_kind: RecoveryActionKind,
+    pub requested_by: String,
+    pub detail: Option<String>,
+    pub created_at_ms: u128,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectiveOrigin {
+    Operator,
+    AutonomousHead,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlDirectiveKind {
+    PauseAgent,
+    ResumeAgent,
+    RerunAgent,
+    RebaseSandbox,
+    SteerPrompt,
+    ApproveMerge,
+    RejectMerge,
+    RequestReconciliation,
+    SetOrchestratorMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectiveDeliveryState {
+    #[default]
+    Pending,
+    Delivered,
+    Acked,
+    Deferred,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectiveDeliveryMethod {
+    LiveInjection,
+    CheckpointOverlay,
+    Deferred,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OrchestratorMode {
+    #[default]
+    Operator,
+    Autonomous,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorShellScope {
+    #[default]
+    Head,
+    Wave,
+    Agent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorShellTurnOrigin {
+    #[default]
+    Operator,
+    Head,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorShellTurnStatus {
+    Pending,
+    #[default]
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HeadProposalState {
+    #[default]
+    Pending,
+    Applied,
+    Dismissed,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeadProposalResolutionKind {
+    OperatorApplied,
+    AutonomousApplied,
+    Dismissed,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeadProposalResolution {
+    pub kind: HeadProposalResolutionKind,
+    pub resolved_by: String,
+    pub resolved_at_ms: u128,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeadProposalActionKind {
+    SteerWave,
+    SteerAgent,
+    PauseAgent,
+    ResumeAgent,
+    RerunAgent,
+    RebaseSandbox,
+    RequestReconciliation,
+    ApproveMerge,
+    RejectMerge,
+    RequestWaveRerun,
+    SetOrchestratorMode,
+    LaunchWave,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlDirectiveRecord {
+    pub directive_id: ControlDirectiveId,
+    pub wave_id: u32,
+    pub task_id: Option<TaskId>,
+    pub agent_id: Option<String>,
+    pub sandbox_id: Option<AgentSandboxId>,
+    pub kind: ControlDirectiveKind,
+    pub origin: DirectiveOrigin,
+    pub message: Option<String>,
+    pub requested_by: String,
+    pub requested_at_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectiveDeliveryRecord {
+    pub directive_id: ControlDirectiveId,
+    pub wave_id: u32,
+    pub agent_id: Option<String>,
+    pub state: DirectiveDeliveryState,
+    #[serde(default)]
+    pub method: Option<DirectiveDeliveryMethod>,
+    #[serde(default)]
+    pub runtime: Option<RuntimeId>,
+    #[serde(default)]
+    pub ack_supported: bool,
+    pub detail: Option<String>,
+    pub updated_at_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrchestratorSessionRecord {
+    pub session_id: OrchestratorSessionId,
+    pub wave_id: u32,
+    pub mode: OrchestratorMode,
+    pub active: bool,
+    pub runtime: Option<RuntimeId>,
+    pub detail: Option<String>,
+    pub started_at_ms: u128,
+    pub updated_at_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorShellSessionRecord {
+    pub session_id: OperatorShellSessionId,
+    pub scope: OperatorShellScope,
+    pub wave_id: Option<u32>,
+    pub agent_id: Option<String>,
+    pub tab: String,
+    pub follow_mode: String,
+    pub mode: OrchestratorMode,
+    pub active: bool,
+    pub started_at_ms: u128,
+    pub updated_at_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorShellTurnRecord {
+    pub turn_id: OperatorShellTurnId,
+    pub session_id: OperatorShellSessionId,
+    pub origin: OperatorShellTurnOrigin,
+    pub scope: OperatorShellScope,
+    #[serde(default)]
+    pub cycle_id: Option<String>,
+    pub wave_id: Option<u32>,
+    pub agent_id: Option<String>,
+    pub input: String,
+    pub output: Option<String>,
+    pub status: OperatorShellTurnStatus,
+    pub created_at_ms: u128,
+    pub failed_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeadProposalRecord {
+    pub proposal_id: HeadProposalId,
+    pub session_id: OperatorShellSessionId,
+    pub turn_id: OperatorShellTurnId,
+    #[serde(default)]
+    pub cycle_id: Option<String>,
+    pub wave_id: u32,
+    pub agent_id: Option<String>,
+    pub action_kind: HeadProposalActionKind,
+    #[serde(default)]
+    pub action_payload: BTreeMap<String, String>,
+    pub state: HeadProposalState,
+    #[serde(default)]
+    pub resolution: Option<HeadProposalResolution>,
+    pub summary: String,
+    pub detail: Option<String>,
+    pub created_at_ms: u128,
+    pub updated_at_ms: u128,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1232,6 +1634,8 @@ pub struct TaskSeed {
     pub wave_title: String,
     pub agent_id: String,
     pub agent_title: String,
+    #[serde(default)]
+    pub execution_model: WaveExecutionModel,
     pub role: TaskRole,
     pub closure_role: Option<ClosureRole>,
     pub state: TaskState,
@@ -1243,6 +1647,20 @@ pub struct TaskSeed {
     pub exit_contract: Option<TaskExitContract>,
     pub wave_dependencies: Vec<u32>,
     pub dependencies: Vec<TaskDependency>,
+    #[serde(default)]
+    pub depends_on_agent_ids: Vec<String>,
+    #[serde(default)]
+    pub reads_artifacts_from: Vec<ArtifactDependency>,
+    #[serde(default)]
+    pub writes_artifacts: Vec<String>,
+    #[serde(default)]
+    pub barrier_class: BarrierClass,
+    #[serde(default)]
+    pub parallel_safety: ParallelSafetyClass,
+    #[serde(default)]
+    pub exclusive_resources: Vec<String>,
+    #[serde(default)]
+    pub parallel_with: Vec<String>,
     pub required_role_prompts: Vec<String>,
     pub owned_paths: Vec<String>,
     pub deliverables: Vec<String>,
@@ -1291,6 +1709,10 @@ pub struct DeclaredWavePlan {
     pub intent: Option<String>,
     pub delivery: Option<DeclaredWaveDeliveryLink>,
     pub design_gate: Option<DesignGatePlan>,
+    #[serde(default)]
+    pub execution_model: WaveExecutionModel,
+    #[serde(default)]
+    pub concurrency_budget: WaveConcurrencyBudgetPlan,
     pub task_seeds: Vec<TaskSeed>,
 }
 
@@ -1765,6 +2187,42 @@ pub enum ControlEventPayload {
     HumanInputUpdated {
         request: HumanInputRequest,
     },
+    ControlDirectiveRecorded {
+        directive: ControlDirectiveRecord,
+    },
+    DirectiveDeliveryUpdated {
+        delivery: DirectiveDeliveryRecord,
+    },
+    OrchestratorSessionUpdated {
+        session: OrchestratorSessionRecord,
+    },
+    OperatorShellSessionUpdated {
+        session: OperatorShellSessionRecord,
+    },
+    OperatorShellTurnRecorded {
+        turn: OperatorShellTurnRecord,
+    },
+    HeadProposalUpdated {
+        proposal: HeadProposalRecord,
+    },
+    RecoveryPlanUpdated {
+        recovery_plan: RecoveryPlanRecord,
+    },
+    RecoveryActionRecorded {
+        recovery_action: RecoveryActionRecord,
+    },
+    AgentSandboxUpdated {
+        sandbox: AgentSandboxRecord,
+    },
+    MergeIntentRecorded {
+        merge_intent: MergeIntentRecord,
+    },
+    MergeResultRecorded {
+        merge_result: MergeResultRecord,
+    },
+    InvalidationRecorded {
+        invalidation: InvalidationRecord,
+    },
     ResultEnvelopeRecorded {
         result: ResultEnvelope,
     },
@@ -1786,15 +2244,42 @@ pub fn declared_wave_plan(wave: &WaveDocument) -> DeclaredWavePlan {
             .metadata
             .intent
             .map(|intent| format!("{intent:?}").to_ascii_lowercase()),
-        delivery: wave.metadata.delivery.as_ref().map(|delivery| DeclaredWaveDeliveryLink {
-            initiative_id: delivery.initiative_id.clone(),
-            release_id: delivery.release_id.clone(),
-            acceptance_package_id: delivery.acceptance_package_id.clone(),
-        }),
-        design_gate: wave.metadata.design_gate.as_ref().map(|gate| DesignGatePlan {
-            agent_ids: gate.agent_ids.clone(),
-            ready_marker: Some(gate.ready_marker.clone()),
-        }),
+        delivery: wave
+            .metadata
+            .delivery
+            .as_ref()
+            .map(|delivery| DeclaredWaveDeliveryLink {
+                initiative_id: delivery.initiative_id.clone(),
+                release_id: delivery.release_id.clone(),
+                acceptance_package_id: delivery.acceptance_package_id.clone(),
+            }),
+        execution_model: match wave.metadata.execution_model {
+            wave_spec::WaveExecutionModel::Serial => WaveExecutionModel::Serial,
+            wave_spec::WaveExecutionModel::MultiAgent => WaveExecutionModel::MultiAgent,
+        },
+        concurrency_budget: WaveConcurrencyBudgetPlan {
+            max_concurrent_implementation_agents: wave
+                .metadata
+                .concurrency_budget
+                .max_concurrent_implementation_agents,
+            max_concurrent_report_only_agents: wave
+                .metadata
+                .concurrency_budget
+                .max_concurrent_report_only_agents,
+            max_merge_operations: wave.metadata.concurrency_budget.max_merge_operations,
+            max_conflict_resolution_agents: wave
+                .metadata
+                .concurrency_budget
+                .max_conflict_resolution_agents,
+        },
+        design_gate: wave
+            .metadata
+            .design_gate
+            .as_ref()
+            .map(|gate| DesignGatePlan {
+                agent_ids: gate.agent_ids.clone(),
+                ready_marker: Some(gate.ready_marker.clone()),
+            }),
         task_seeds,
     }
 }
@@ -1855,6 +2340,10 @@ pub fn declaration_task_seeds(wave: &WaveDocument) -> Vec<TaskSeed> {
             wave_title: wave.metadata.title.clone(),
             agent_id: agent.id.clone(),
             agent_title: agent.title.clone(),
+            execution_model: match wave.metadata.execution_model {
+                wave_spec::WaveExecutionModel::Serial => WaveExecutionModel::Serial,
+                wave_spec::WaveExecutionModel::MultiAgent => WaveExecutionModel::MultiAgent,
+            },
             role: task_role(agent),
             closure_role: closure_role(agent),
             state: TaskState::Declared,
@@ -1876,6 +2365,32 @@ pub fn declaration_task_seeds(wave: &WaveDocument) -> Vec<TaskSeed> {
                 documentation_task_id.as_ref(),
                 &design_gate_task_ids,
             ),
+            depends_on_agent_ids: agent.depends_on_agents.clone(),
+            reads_artifacts_from: agent
+                .reads_artifacts_from
+                .iter()
+                .map(|artifact| ArtifactDependency {
+                    artifact: artifact.clone(),
+                    source_agent_id: artifact
+                        .split_once(':')
+                        .map(|(agent_id, _)| agent_id.to_string()),
+                })
+                .collect(),
+            writes_artifacts: agent.writes_artifacts.clone(),
+            barrier_class: match agent.barrier_class {
+                wave_spec::BarrierClass::Independent => BarrierClass::Independent,
+                wave_spec::BarrierClass::MergeAfter => BarrierClass::MergeAfter,
+                wave_spec::BarrierClass::IntegrationBarrier => BarrierClass::IntegrationBarrier,
+                wave_spec::BarrierClass::ClosureBarrier => BarrierClass::ClosureBarrier,
+                wave_spec::BarrierClass::ReportOnly => BarrierClass::ReportOnly,
+            },
+            parallel_safety: match agent.parallel_safety {
+                wave_spec::ParallelSafetyClass::Derived => ParallelSafetyClass::Derived,
+                wave_spec::ParallelSafetyClass::ParallelSafe => ParallelSafetyClass::ParallelSafe,
+                wave_spec::ParallelSafetyClass::Serialized => ParallelSafetyClass::Serialized,
+            },
+            exclusive_resources: agent.exclusive_resources.clone(),
+            parallel_with: agent.parallel_with.clone(),
             required_role_prompts: agent
                 .expected_role_prompts()
                 .iter()
@@ -2061,7 +2576,10 @@ fn task_dependencies(
     dependencies.extend(specific_dependencies);
     if !agent.is_closure_agent() && !agent.is_design_worker() {
         for task_id in design_gate_task_ids {
-            if dependencies.iter().any(|dependency| dependency.task_id == *task_id) {
+            if dependencies
+                .iter()
+                .any(|dependency| dependency.task_id == *task_id)
+            {
                 continue;
             }
             dependencies.push(TaskDependency {
@@ -2237,6 +2755,8 @@ mod tests {
             slug: String::new(),
             title: String::new(),
             mode: ExecutionMode::DarkFactory,
+            execution_model: wave_spec::WaveExecutionModel::Serial,
+            concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
             owners: Vec::new(),
             depends_on: Vec::new(),
             validation: Vec::new(),
@@ -2485,6 +3005,13 @@ mod tests {
                 }),
                 deliverables: vec!["crates/wave-domain/src/lib.rs".to_string()],
                 file_ownership: vec!["crates/wave-domain/src/lib.rs".to_string()],
+                depends_on_agents: Vec::new(),
+                reads_artifacts_from: Vec::new(),
+                writes_artifacts: Vec::new(),
+                barrier_class: wave_spec::BarrierClass::Independent,
+                parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+                exclusive_resources: Vec::new(),
+                parallel_with: Vec::new(),
                 final_markers: vec![
                     "[wave-proof]".to_string(),
                     "[wave-doc-delta]".to_string(),
@@ -3053,6 +3580,13 @@ mod tests {
                     "[wave-component]".to_string(),
                 ],
             },
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::Independent,
+            parallel_safety: wave_spec::ParallelSafetyClass::Derived,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
             prompt: String::new(),
         }
     }
