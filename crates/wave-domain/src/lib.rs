@@ -2295,7 +2295,7 @@ pub fn declaration_task_seeds(wave: &WaveDocument) -> Vec<TaskSeed> {
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let artifact_producers = artifact_producers(wave);
+    let compiled_mas_dependencies = wave_spec::compiled_multi_agent_dependencies(wave);
     let wave_dependency_task_ids = wave
         .metadata
         .depends_on
@@ -2377,15 +2377,17 @@ pub fn declaration_task_seeds(wave: &WaveDocument) -> Vec<TaskSeed> {
                 documentation_task_id.as_ref(),
                 &design_gate_task_ids,
                 &agent_task_ids,
-                &artifact_producers,
+                &compiled_mas_dependencies,
             ),
             depends_on_agent_ids: agent.depends_on_agents.clone(),
-            reads_artifacts_from: agent
-                .reads_artifacts_from
+            reads_artifacts_from: compiled_mas_dependencies
+                .get(&agent.id)
+                .map(|compiled| compiled.artifact_reads.as_slice())
+                .unwrap_or(&[])
                 .iter()
                 .map(|artifact| ArtifactDependency {
-                    artifact: artifact.clone(),
-                    source_agent_id: unique_artifact_source_agent_id(&artifact_producers, artifact),
+                    artifact: artifact.artifact.clone(),
+                    source_agent_id: artifact.source_agent_id().map(ToString::to_string),
                 })
                 .collect(),
             writes_artifacts: agent.writes_artifacts.clone(),
@@ -2486,7 +2488,7 @@ fn task_dependencies(
     documentation_task_id: Option<&TaskId>,
     design_gate_task_ids: &[TaskId],
     agent_task_ids: &BTreeMap<String, TaskId>,
-    artifact_producers: &BTreeMap<String, Vec<String>>,
+    compiled_mas_dependencies: &BTreeMap<String, wave_spec::CompiledMasAgentDependencies>,
 ) -> Vec<TaskDependency> {
     let mut dependencies = wave_dependency_task_ids
         .iter()
@@ -2590,11 +2592,10 @@ fn task_dependencies(
 
     dependencies.extend(specific_dependencies);
     if wave.is_multi_agent() {
-        extend_multi_agent_dependencies(
-            wave,
+        extend_compiled_multi_agent_dependencies(
             agent,
             agent_task_ids,
-            artifact_producers,
+            compiled_mas_dependencies,
             &mut dependencies,
         );
     }
@@ -2610,92 +2611,32 @@ fn task_dependencies(
     dependencies
 }
 
-fn extend_multi_agent_dependencies(
-    wave: &WaveDocument,
+fn extend_compiled_multi_agent_dependencies(
     agent: &WaveAgent,
     agent_task_ids: &BTreeMap<String, TaskId>,
-    artifact_producers: &BTreeMap<String, Vec<String>>,
+    compiled_mas_dependencies: &BTreeMap<String, wave_spec::CompiledMasAgentDependencies>,
     dependencies: &mut Vec<TaskDependency>,
 ) {
-    for dependency_agent_id in &agent.depends_on_agents {
-        if let Some(task_id) = agent_task_ids.get(dependency_agent_id) {
+    let Some(compiled) = compiled_mas_dependencies.get(&agent.id) else {
+        return;
+    };
+    for dependency in &compiled.dependencies {
+        if let Some(task_id) = agent_task_ids.get(&dependency.upstream_agent_id) {
             push_dependency(
                 dependencies,
                 task_id.clone(),
-                TaskDependencyKind::AgentGraph,
+                match dependency.kind {
+                    wave_spec::CompiledMasDependencyKind::AgentGraph => {
+                        TaskDependencyKind::AgentGraph
+                    }
+                    wave_spec::CompiledMasDependencyKind::ArtifactFlow => {
+                        TaskDependencyKind::ArtifactFlow
+                    }
+                    wave_spec::CompiledMasDependencyKind::Barrier => TaskDependencyKind::Barrier,
+                },
             );
         }
     }
-
-    for artifact in &agent.reads_artifacts_from {
-        if let Some(task_id) =
-            unique_artifact_source_task_id(agent_task_ids, artifact_producers, artifact)
-        {
-            push_dependency(dependencies, task_id, TaskDependencyKind::ArtifactFlow);
-        }
-    }
-
-    match agent.barrier_class {
-        wave_spec::BarrierClass::IntegrationBarrier => {
-            for barrier_agent in wave
-                .agents
-                .iter()
-                .filter(|candidate| candidate.id != agent.id)
-                .filter(|candidate| candidate.blocks_integration_barrier())
-            {
-                if let Some(task_id) = agent_task_ids.get(&barrier_agent.id) {
-                    push_dependency(dependencies, task_id.clone(), TaskDependencyKind::Barrier);
-                }
-            }
-        }
-        wave_spec::BarrierClass::ClosureBarrier => {
-            for barrier_agent in wave
-                .agents
-                .iter()
-                .filter(|candidate| candidate.id != agent.id)
-                .filter(|candidate| {
-                    !matches!(candidate.barrier_class, wave_spec::BarrierClass::ReportOnly)
-                })
-            {
-                if let Some(task_id) = agent_task_ids.get(&barrier_agent.id) {
-                    push_dependency(dependencies, task_id.clone(), TaskDependencyKind::Barrier);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn artifact_producers(wave: &WaveDocument) -> BTreeMap<String, Vec<String>> {
-    let mut producers = BTreeMap::<String, Vec<String>>::new();
-    for agent in &wave.agents {
-        for artifact in &agent.writes_artifacts {
-            producers
-                .entry(artifact.clone())
-                .or_default()
-                .push(agent.id.clone());
-        }
-    }
-    producers
-}
-
-fn unique_artifact_source_agent_id(
-    artifact_producers: &BTreeMap<String, Vec<String>>,
-    artifact: &str,
-) -> Option<String> {
-    match artifact_producers.get(artifact) {
-        Some(agent_ids) if agent_ids.len() == 1 => agent_ids.first().cloned(),
-        _ => None,
-    }
-}
-
-fn unique_artifact_source_task_id(
-    agent_task_ids: &BTreeMap<String, TaskId>,
-    artifact_producers: &BTreeMap<String, Vec<String>>,
-    artifact: &str,
-) -> Option<TaskId> {
-    let agent_id = unique_artifact_source_agent_id(artifact_producers, artifact)?;
-    agent_task_ids.get(&agent_id).cloned()
 }
 
 fn push_dependency(
@@ -3178,6 +3119,83 @@ mod tests {
         assert!(a8.dependencies.iter().any(|dependency| {
             dependency.task_id == task_id_for_agent(18, "E0")
                 && dependency.kind == TaskDependencyKind::Barrier
+        }));
+    }
+
+    #[test]
+    fn declaration_mapping_does_not_add_closure_barrier_peer_edges() {
+        let a1 = agent(
+            "A1",
+            "Runtime substrate",
+            vec!["role-implementation"],
+            vec!["src/runtime_a.rs"],
+        );
+
+        let mut a8 = agent(
+            "A8",
+            "Integration",
+            vec!["role-integration"],
+            vec![".wave/integration/wave-18.md"],
+        );
+        a8.barrier_class = wave_spec::BarrierClass::IntegrationBarrier;
+
+        let mut a9 = agent(
+            "A9",
+            "Docs",
+            vec!["role-documentation"],
+            vec!["docs/plans/current-state.md"],
+        );
+        a9.depends_on_agents = vec!["A8".to_string()];
+        a9.barrier_class = wave_spec::BarrierClass::ClosureBarrier;
+
+        let mut a0 = agent(
+            "A0",
+            "QA",
+            vec!["role-cont-qa"],
+            vec![".wave/reviews/wave-18.md"],
+        );
+        a0.depends_on_agents = vec!["A8".to_string(), "A9".to_string()];
+        a0.barrier_class = wave_spec::BarrierClass::ClosureBarrier;
+
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/18.md"),
+            metadata: WaveMetadata {
+                id: 18,
+                slug: "wave-18".to_string(),
+                title: "Wave 18".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["runtime".to_string()],
+                depends_on: Vec::new(),
+                validation: Vec::new(),
+                rollback: Vec::new(),
+                proof: Vec::new(),
+                wave_class: wave_spec::WaveClass::Implementation,
+                intent: None,
+                delivery: None,
+                design_gate: None,
+                execution_model: wave_spec::WaveExecutionModel::MultiAgent,
+                concurrency_budget: wave_spec::WaveConcurrencyBudget::default(),
+            },
+            heading_title: Some("Wave 18 - MAS".to_string()),
+            commit_message: Some("Feat: MAS".to_string()),
+            component_promotions: Vec::new(),
+            deploy_environments: Vec::new(),
+            context7_defaults: None,
+            agents: vec![a1, a8, a9, a0],
+        };
+
+        let plan = declaration_task_seeds(&wave);
+        let a9 = plan
+            .iter()
+            .find(|task| task.agent_id == "A9")
+            .expect("A9 task seed");
+        assert!(!a9.dependencies.iter().any(|dependency| {
+            dependency.task_id == task_id_for_agent(18, "A0")
+                && dependency.kind == TaskDependencyKind::Barrier
+        }));
+        assert!(a9.dependencies.iter().any(|dependency| {
+            dependency.task_id == task_id_for_agent(18, "A8")
+                && dependency.kind == TaskDependencyKind::AgentGraph
         }));
     }
 

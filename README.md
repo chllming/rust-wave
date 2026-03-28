@@ -48,8 +48,10 @@ Still pending:
   The implementation backlog for this refactor, expressed as rich multi-agent authored waves.
 - `wave.toml`
   The new project-scoped config for the Rust implementation.
+- `docs/plans/current-state.md`
+  The live baseline for the current repo-local runtime, operator shell, and MAS cutover state.
 - `docs/implementation/rust-codex-refactor.md`
-  The current architecture baseline for this repo.
+  The bootstrap and cutover record for how the Rust baseline replaced the older package-era stack.
 - `third_party/codex-rs/`
   Reviewed and vendored Codex OSS baseline plus `UPSTREAM.toml`.
 - `third_party/agent-wave-orchestrator/`
@@ -373,9 +375,11 @@ The shell supports:
 - reducer-backed queue, proof, control, autonomy, and recovery visibility
 - transcript search and compare mode
 - explicit `--alt-screen` and `--fresh-session` startup controls via `wave tui`
+- dashboard focus by default on startup so shell hotkeys work immediately
 - plain text guidance bound to the current shell target
 - wave hotkeys and implicit wave commands bound to the visibly selected wave
 - `follow run|agent|off` tracking for active runs, pinned agents, or manual selection
+- a visible cross-wave review queue in repo-level `head` scope, with `u` / `x` bound to the selected review row
 - a one-column shell layout in narrow terminals, with visible transcript, composer, and dashboard instead of hidden input
 
 Current keybindings:
@@ -383,7 +387,7 @@ Current keybindings:
 - `q`
   Quit the shell.
 - `Tab` / `Shift+Tab`
-  Cycle transcript, composer, and dashboard focus.
+  Cycle transcript, composer, and dashboard focus. Composer capture is explicit; startup focus is `Dashboard`.
 - `[` / `]`
   Cycle the right-side dashboard tabs.
 - `j` / `k`

@@ -265,7 +265,7 @@ impl Default for AppState {
             pending_control_action: None,
             composer_input: String::new(),
             transcript_scroll: 0,
-            focus: FocusLane::Composer,
+            focus: FocusLane::Dashboard,
             follow_mode: FollowMode::Run,
             shell_target: None,
             help_visible: false,
@@ -1793,28 +1793,19 @@ fn handle_prepare_clear_manual_close(app: &mut App) -> Result<()> {
 fn handle_prepare_operator_action(app: &mut App, approve: bool) -> Result<()> {
     let (wave_id, wave_title, item) = {
         let snapshot = current_snapshot(app)?;
-        let Some(wave_id) = selected_action_wave_id(&app.state, snapshot) else {
-            set_error_message(&mut app.state, "no wave selected");
+        let Some(item) = selected_visible_actionable_operator_item(&app.state, snapshot) else {
+            set_error_message(
+                &mut app.state,
+                "no actionable approval, proposal, or escalation item is selected",
+            );
             return Ok(());
         };
+        let wave_id = item.wave_id;
         let Some(wave) = selected_wave_by_id(snapshot, wave_id) else {
             set_error_message(&mut app.state, format!("wave {wave_id} not found"));
             return Ok(());
         };
-        let actionable_wave_id = wave.id;
-        let Some(item) =
-            selected_actionable_operator_item(&app.state, snapshot, actionable_wave_id)
-        else {
-            set_error_message(
-                &mut app.state,
-                format!(
-                    "wave {} has no actionable approval, proposal, or escalation item",
-                    actionable_wave_id
-                ),
-            );
-            return Ok(());
-        };
-        (actionable_wave_id, wave.title.clone(), item.clone())
+        (wave_id, wave.title.clone(), item.clone())
     };
 
     let confirmation = OperatorActionConfirmation {
@@ -2002,11 +1993,9 @@ fn clamp_selected_wave(state: &mut AppState, snapshot: &OperatorSnapshot) {
 }
 
 fn clamp_selected_operator_action(state: &mut AppState, snapshot: &OperatorSnapshot) {
-    let Some(wave_id) = selected_wave_id(state, snapshot) else {
-        state.selected_operator_action_index = 0;
-        return;
-    };
-    let actionable_count = actionable_operator_items(snapshot, wave_id).len();
+    let actionable_count =
+        visible_actionable_operator_items(snapshot, control_review_wave_filter(state, snapshot))
+            .len();
     if actionable_count == 0 {
         state.selected_operator_action_index = 0;
         return;
@@ -2069,11 +2058,9 @@ fn select_previous_orchestrator_agent(state: &mut AppState, snapshot: &OperatorS
 }
 
 fn select_next_operator_action(state: &mut AppState, snapshot: &OperatorSnapshot) {
-    let Some(wave_id) = selected_wave_id(state, snapshot) else {
-        state.selected_operator_action_index = 0;
-        return;
-    };
-    let actionable_count = actionable_operator_items(snapshot, wave_id).len();
+    let actionable_count =
+        visible_actionable_operator_items(snapshot, control_review_wave_filter(state, snapshot))
+            .len();
     if actionable_count == 0 {
         state.selected_operator_action_index = 0;
         return;
@@ -2083,7 +2070,9 @@ fn select_next_operator_action(state: &mut AppState, snapshot: &OperatorSnapshot
 }
 
 fn select_previous_operator_action(state: &mut AppState, snapshot: &OperatorSnapshot) {
-    if selected_wave_id(state, snapshot).is_none() {
+    if visible_actionable_operator_items(snapshot, control_review_wave_filter(state, snapshot))
+        .is_empty()
+    {
         state.selected_operator_action_index = 0;
         return;
     }
@@ -2152,6 +2141,36 @@ fn actionable_operator_items<'a>(
         .collect()
 }
 
+fn control_review_wave_filter(state: &AppState, snapshot: &OperatorSnapshot) -> Option<u32> {
+    let shell_target = current_shell_target(state, snapshot);
+    if matches!(shell_target.scope, ShellScope::Head) && shell_target.wave_id.is_none() {
+        None
+    } else {
+        selected_wave_id(state, snapshot)
+    }
+}
+
+fn visible_actionable_operator_items<'a>(
+    snapshot: &'a OperatorSnapshot,
+    review_wave_filter: Option<u32>,
+) -> Vec<&'a wave_app_server::OperatorActionableItem> {
+    snapshot
+        .operator_objects
+        .iter()
+        .filter(|item| {
+            review_wave_filter
+                .map(|wave_id| item.wave_id == wave_id)
+                .unwrap_or(true)
+                && matches!(
+                    item.kind,
+                    wave_app_server::OperatorActionableKind::Approval
+                        | wave_app_server::OperatorActionableKind::Proposal
+                        | wave_app_server::OperatorActionableKind::Escalation
+                )
+        })
+        .collect()
+}
+
 fn selected_actionable_operator_item<'a>(
     state: &AppState,
     snapshot: &'a OperatorSnapshot,
@@ -2162,12 +2181,33 @@ fn selected_actionable_operator_item<'a>(
         .copied()
 }
 
+fn selected_visible_actionable_operator_item<'a>(
+    state: &AppState,
+    snapshot: &'a OperatorSnapshot,
+) -> Option<&'a wave_app_server::OperatorActionableItem> {
+    visible_actionable_operator_items(snapshot, control_review_wave_filter(state, snapshot))
+        .get(state.selected_operator_action_index)
+        .copied()
+}
+
 fn selected_actionable_operator_context<'a>(
     state: &AppState,
     snapshot: &'a OperatorSnapshot,
     wave_id: u32,
 ) -> Option<(usize, usize, &'a wave_app_server::OperatorActionableItem)> {
     let items = actionable_operator_items(snapshot, wave_id);
+    let total = items.len();
+    items
+        .get(state.selected_operator_action_index)
+        .map(|item| (state.selected_operator_action_index, total, *item))
+}
+
+fn selected_visible_actionable_operator_context<'a>(
+    state: &AppState,
+    snapshot: &'a OperatorSnapshot,
+) -> Option<(usize, usize, &'a wave_app_server::OperatorActionableItem)> {
+    let items =
+        visible_actionable_operator_items(snapshot, control_review_wave_filter(state, snapshot));
     let total = items.len();
     items
         .get(state.selected_operator_action_index)
@@ -2607,6 +2647,7 @@ fn draw_help_overlay(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         ),
         Line::raw(""),
         Line::raw("Focus lanes: Tab / Shift+Tab"),
+        Line::raw("Startup focus: Dashboard. Move to Composer explicitly to type guidance."),
         Line::raw("Transcript scroll: j k or arrows when Transcript is focused"),
         Line::raw("Dashboard navigation: j k or arrows when Dashboard is focused"),
         Line::raw("Composer: Enter submits, Esc returns to Dashboard"),
@@ -4610,12 +4651,8 @@ fn draw_control_tab(
 ) {
     let selected_wave_id = selected_wave_id(&app.state, snapshot);
     let shell_target = current_shell_target(&app.state, snapshot);
-    let review_wave_filter =
-        if matches!(shell_target.scope, ShellScope::Head) && shell_target.wave_id.is_none() {
-            None
-        } else {
-            selected_wave_id
-        };
+    let review_wave_filter = control_review_wave_filter(&app.state, snapshot);
+    let selected_review_item = selected_visible_actionable_operator_item(&app.state, snapshot);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -4666,6 +4703,17 @@ fn draw_control_tab(
         snapshot,
         selected_wave_id,
     ));
+    if let Some((selected_index, actionable_count, item)) =
+        selected_visible_actionable_operator_context(&app.state, snapshot)
+    {
+        review_items.push(format!(
+            "Selected review item: {}/{} wave {} {}",
+            selected_index + 1,
+            actionable_count,
+            item.wave_id,
+            item.record_id
+        ));
+    }
     if let Some(pending_action) = app.state.pending_control_action.as_ref() {
         review_items.push(String::new());
         review_items.extend(pending_control_action_lines(pending_action));
@@ -4684,14 +4732,9 @@ fn draw_control_tab(
     } else {
         review_items.push(format!("Request queue: {} items", request_queue.len()));
         for item in request_queue {
-            let is_selected = selected_wave_id
-                .filter(|wave_id| Some(*wave_id) == review_wave_filter)
-                .and_then(|wave_id| {
-                    selected_actionable_operator_item(&app.state, snapshot, wave_id)
-                })
-                .is_some_and(|selected| {
-                    selected.record_id == item.record_id && selected.kind == item.kind
-                });
+            let is_selected = selected_review_item.is_some_and(|selected| {
+                selected.record_id == item.record_id && selected.kind == item.kind
+            });
             review_items.extend(operator_object_lines(
                 item,
                 review_wave_filter.is_none(),
@@ -7105,6 +7148,69 @@ mod tests {
         let selected = selected_actionable_operator_item(&state, &snapshot, 5)
             .expect("selected actionable item after moving back");
         assert_eq!(selected.record_id, "human-5");
+    }
+
+    #[test]
+    fn app_state_defaults_to_dashboard_focus() {
+        assert_eq!(AppState::default().focus, FocusLane::Dashboard);
+    }
+
+    #[test]
+    fn repo_head_review_queue_actions_follow_visible_selected_row() {
+        let mut snapshot = test_snapshot();
+        let mut wave_15 = snapshot.planning.waves[0].clone();
+        wave_15.id = 15;
+        wave_15.slug = "manual-close".to_string();
+        wave_15.title = "Close earlier waves honestly with manual close override".to_string();
+        wave_15.last_run_status = Some(WaveRunStatus::Failed);
+        wave_15.completed = true;
+        snapshot.planning.waves.push(wave_15);
+        snapshot
+            .operator_objects
+            .push(wave_app_server::OperatorActionableItem {
+                kind: wave_app_server::OperatorActionableKind::Proposal,
+                wave_id: 15,
+                record_id: "proposal-15".to_string(),
+                state: "pending".to_string(),
+                summary: "Propose recovery".to_string(),
+                detail: Some("repair the failed promotion".to_string()),
+                waiting_on: Some("operator proposal review".to_string()),
+                next_action: Some("press u to apply or x to dismiss".to_string()),
+                route: None,
+                task_id: None,
+                source_run_id: Some("wave-15-failed".to_string()),
+                evidence_count: 1,
+                created_at_ms: Some(4),
+            });
+
+        let mut app = test_app(AppState {
+            shell_target: Some(ShellTargetState {
+                scope: ShellScope::Head,
+                wave_id: None,
+                agent_id: None,
+            }),
+            selected_operator_action_index: 2,
+            ..AppState::default()
+        });
+        app.snapshot = Some(snapshot);
+
+        handle_prepare_operator_action(&mut app, true).expect("prepare operator action");
+
+        assert_eq!(
+            app.state.pending_control_action,
+            Some(PendingControlAction::ApproveOperatorAction(
+                OperatorActionConfirmation {
+                    wave_id: 15,
+                    wave_title: "Close earlier waves honestly with manual close override"
+                        .to_string(),
+                    record_id: "proposal-15".to_string(),
+                    kind: wave_app_server::OperatorActionableKind::Proposal,
+                    summary: "Propose recovery".to_string(),
+                    waiting_on: Some("operator proposal review".to_string()),
+                    next_action: Some("press u to apply or x to dismiss".to_string()),
+                }
+            ))
+        );
     }
 
     #[test]

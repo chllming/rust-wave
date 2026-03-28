@@ -5134,35 +5134,30 @@ fn reconcile_agent_control_state(
 
 fn barrier_satisfied_for_agent(
     candidate: &WaveAgent,
-    ordered_agents: &[&WaveAgent],
     completed_agents: &HashSet<String>,
     running: &[RunningMasAgent],
+    compiled_mas_dependencies: &BTreeMap<String, wave_spec::CompiledMasAgentDependencies>,
 ) -> bool {
-    let dependencies_ready = candidate
-        .depends_on_agents
+    let dependencies_ready = compiled_mas_dependencies
+        .get(&candidate.id)
         .iter()
-        .all(|agent_id| completed_agents.contains(agent_id));
+        .flat_map(|compiled| compiled.dependencies.iter())
+        .all(|dependency| completed_agents.contains(&dependency.upstream_agent_id));
     if !dependencies_ready {
+        return false;
+    }
+    if compiled_mas_dependencies
+        .get(&candidate.id)
+        .is_some_and(|compiled| compiled.has_unresolved_artifact_reads())
+    {
         return false;
     }
     match candidate.barrier_class {
         wave_spec::BarrierClass::Independent
         | wave_spec::BarrierClass::MergeAfter
-        | wave_spec::BarrierClass::ReportOnly => true,
-        wave_spec::BarrierClass::IntegrationBarrier => ordered_agents
-            .iter()
-            .filter(|agent| agent.blocks_integration_barrier())
-            .all(|agent| completed_agents.contains(&agent.id)),
-        wave_spec::BarrierClass::ClosureBarrier => {
-            running.is_empty()
-                && ordered_agents
-                    .iter()
-                    .filter(|agent| agent.id != candidate.id)
-                    .filter(|agent| {
-                        !matches!(agent.barrier_class, wave_spec::BarrierClass::ReportOnly)
-                    })
-                    .all(|agent| completed_agents.contains(&agent.id))
-        }
+        | wave_spec::BarrierClass::ReportOnly
+        | wave_spec::BarrierClass::IntegrationBarrier => true,
+        wave_spec::BarrierClass::ClosureBarrier => running.is_empty(),
     }
 }
 
@@ -5175,6 +5170,7 @@ fn ready_multi_agent_indices(
     paused_agents: &HashSet<String>,
     running: &[RunningMasAgent],
 ) -> Vec<usize> {
+    let compiled_mas_dependencies = wave_spec::compiled_multi_agent_dependencies(wave);
     let implementation_limit = wave
         .metadata
         .concurrency_budget
@@ -5214,7 +5210,12 @@ fn ready_multi_agent_indices(
             !completed_agents.contains(&candidate.id)
                 && !invalidated_agents.contains(&candidate.id)
                 && !paused_agents.contains(&candidate.id)
-                && barrier_satisfied_for_agent(candidate, ordered_agents, completed_agents, running)
+                && barrier_satisfied_for_agent(
+                    candidate,
+                    completed_agents,
+                    running,
+                    &compiled_mas_dependencies,
+                )
                 && !agent_parallelism_blocked(candidate, running)
                 && if matches!(candidate.barrier_class, wave_spec::BarrierClass::ReportOnly) {
                     running_report_only < report_only_limit
@@ -16814,21 +16815,96 @@ esac
         ];
         wave.agents[2].barrier_class = wave_spec::BarrierClass::IntegrationBarrier;
 
-        let ordered = ordered_agents(&wave);
+        let compiled = wave_spec::compiled_multi_agent_dependencies(&wave);
         let completed_without_eval = HashSet::from(["A1".to_string()]);
         assert!(!barrier_satisfied_for_agent(
             &wave.agents[2],
-            &ordered,
             &completed_without_eval,
             &[],
+            &compiled,
         ));
 
         let completed_with_eval = HashSet::from(["A1".to_string(), "E0".to_string()]);
         assert!(barrier_satisfied_for_agent(
             &wave.agents[2],
-            &ordered,
             &completed_with_eval,
             &[],
+            &compiled,
+        ));
+    }
+
+    #[test]
+    fn artifact_reads_block_runtime_readiness_until_writer_completes() {
+        let mut wave = parallel_launchable_test_wave(18, "src/runtime_a.rs");
+        wave.metadata.execution_model = wave_spec::WaveExecutionModel::MultiAgent;
+        wave.metadata
+            .concurrency_budget
+            .max_concurrent_implementation_agents = Some(2);
+        wave.agents[0].writes_artifacts = vec!["runtime-a-state".to_string()];
+
+        let mut downstream = wave.agents[0].clone();
+        downstream.id = "A2".to_string();
+        downstream.title = "Implementation B".to_string();
+        downstream.file_ownership = vec!["src/runtime_b.rs".to_string()];
+        downstream.deliverables = vec!["src/runtime_b.rs".to_string()];
+        downstream.reads_artifacts_from = vec!["runtime-a-state".to_string()];
+        downstream.writes_artifacts = vec!["runtime-b-state".to_string()];
+        wave.agents.insert(1, downstream);
+
+        let ordered = ordered_agents(&wave);
+        let execution = BTreeSet::from([0usize, 1usize]);
+        let ready = ready_multi_agent_indices(
+            &wave,
+            &ordered,
+            &execution,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &[],
+        );
+        assert_eq!(ready, vec![0]);
+
+        let completed = HashSet::from(["A1".to_string()]);
+        let ready_after_writer = ready_multi_agent_indices(
+            &wave,
+            &ordered,
+            &execution,
+            &completed,
+            &HashSet::new(),
+            &HashSet::new(),
+            &[],
+        );
+        assert_eq!(ready_after_writer, vec![1]);
+    }
+
+    #[test]
+    fn closure_barrier_waits_on_frontier_not_closure_peers() {
+        let mut wave = launchable_test_wave(18);
+        wave.metadata.execution_model = wave_spec::WaveExecutionModel::MultiAgent;
+        let a1 = test_agent("A1");
+        let mut a8 = closure_test_agent("A8");
+        a8.barrier_class = wave_spec::BarrierClass::IntegrationBarrier;
+        let mut a9 = closure_test_agent("A9");
+        a9.depends_on_agents = vec!["A8".to_string()];
+        a9.barrier_class = wave_spec::BarrierClass::ClosureBarrier;
+        let mut a0 = closure_test_agent("A0");
+        a0.depends_on_agents = vec!["A8".to_string(), "A9".to_string()];
+        a0.barrier_class = wave_spec::BarrierClass::ClosureBarrier;
+        wave.agents = vec![a1, a8, a9, a0];
+
+        let compiled = wave_spec::compiled_multi_agent_dependencies(&wave);
+        let completed_frontier = HashSet::from(["A1".to_string(), "A8".to_string()]);
+        assert!(barrier_satisfied_for_agent(
+            &wave.agents[2],
+            &completed_frontier,
+            &[],
+            &compiled,
+        ));
+        assert!(!barrier_satisfied_for_agent(
+            &wave.agents[3],
+            &completed_frontier,
+            &[],
+            &compiled,
         ));
     }
 

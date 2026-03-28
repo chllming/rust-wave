@@ -41,6 +41,8 @@ The shell is split into two intentional surfaces:
 - left side: `header + transcript + composer`
 - right side: stable dashboard with `Overview`, `Agents`, `Queue`, `Proof`, and `Control`
 
+Startup focus is `Dashboard`, not `Composer`, so shell hotkeys work immediately and free-text guidance remains an explicit focus change.
+
 In narrow terminals, the shell collapses into a one-column shell with the same transcript, composer, and dashboard surfaces instead of drawing a broken split layout.
 
 ### Shell scopes
@@ -86,6 +88,7 @@ The shell has three explicit scopes:
 - wave hotkeys and implicit wave commands use the visibly selected dashboard wave
 - `/wave` and `/agent` retarget the shell and also move the visible selection to the same wave or agent context
 - dashboard wave or agent navigation keeps wave-scoped actions aligned with the visible selection instead of silently acting on stale shell target state
+- repo-level `head` scope keeps `Control` as one visible cross-wave review queue, and `u` / `x` act on the selected visible review row
 
 ### Follow modes
 

@@ -1244,11 +1244,7 @@ fn lint_multi_agent_contract(wave: &WaveDocument, findings: &mut Vec<LintFinding
         .map(|agent| agent.id.as_str())
         .collect::<HashSet<_>>();
     let mut artifact_writers = BTreeMap::<String, Vec<String>>::new();
-    let mut dependency_graph = BTreeMap::<String, BTreeSet<String>>::new();
-
     for agent in &wave.agents {
-        dependency_graph.entry(agent.id.clone()).or_default();
-
         let mut seen_writes = BTreeSet::new();
         for artifact in &agent.writes_artifacts {
             let normalized = artifact.trim();
@@ -1318,12 +1314,7 @@ fn lint_multi_agent_contract(wave: &WaveDocument, findings: &mut Vec<LintFinding
                     rule: "agent-depends-on-known",
                     message: format!("agent {} depends on unknown agent {}", agent.id, normalized),
                 });
-                continue;
             }
-            dependency_graph
-                .entry(agent.id.clone())
-                .or_default()
-                .insert(normalized.to_string());
         }
 
         let mut seen_reads = BTreeSet::new();
@@ -1445,14 +1436,7 @@ fn lint_multi_agent_contract(wave: &WaveDocument, findings: &mut Vec<LintFinding
                 continue;
             }
             match artifact_writers.get(normalized) {
-                Some(writers) if writers.len() == 1 => {
-                    if let Some(writer) = writers.first() {
-                        dependency_graph
-                            .entry(agent.id.clone())
-                            .or_default()
-                            .insert(writer.clone());
-                    }
-                }
+                Some(writers) if writers.len() == 1 => {}
                 Some(_) => {}
                 None => findings.push(LintFinding {
                     wave_id: wave.metadata.id,
@@ -1467,7 +1451,7 @@ fn lint_multi_agent_contract(wave: &WaveDocument, findings: &mut Vec<LintFinding
         }
     }
 
-    let cycle = dependency_cycle(&dependency_graph);
+    let cycle = wave_spec::compiled_multi_agent_dependency_cycle(wave);
     if !cycle.is_empty() {
         findings.push(LintFinding {
             wave_id: wave.metadata.id,
@@ -1479,58 +1463,6 @@ fn lint_multi_agent_contract(wave: &WaveDocument, findings: &mut Vec<LintFinding
             ),
         });
     }
-}
-
-fn dependency_cycle(graph: &BTreeMap<String, BTreeSet<String>>) -> Vec<String> {
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum VisitState {
-        Visiting,
-        Done,
-    }
-
-    fn dfs(
-        node: &str,
-        graph: &BTreeMap<String, BTreeSet<String>>,
-        states: &mut BTreeMap<String, VisitState>,
-        stack: &mut Vec<String>,
-    ) -> Option<Vec<String>> {
-        states.insert(node.to_string(), VisitState::Visiting);
-        stack.push(node.to_string());
-        if let Some(neighbors) = graph.get(node) {
-            for neighbor in neighbors {
-                match states.get(neighbor.as_str()).copied() {
-                    Some(VisitState::Visiting) => {
-                        if let Some(start) = stack.iter().position(|entry| entry == neighbor) {
-                            let mut cycle = stack[start..].to_vec();
-                            cycle.push(neighbor.clone());
-                            return Some(cycle);
-                        }
-                    }
-                    Some(VisitState::Done) => {}
-                    None => {
-                        if let Some(cycle) = dfs(neighbor, graph, states, stack) {
-                            return Some(cycle);
-                        }
-                    }
-                }
-            }
-        }
-        stack.pop();
-        states.insert(node.to_string(), VisitState::Done);
-        None
-    }
-
-    let mut states = BTreeMap::new();
-    let mut stack = Vec::new();
-    for node in graph.keys() {
-        if states.contains_key(node) {
-            continue;
-        }
-        if let Some(cycle) = dfs(node, graph, &mut states, &mut stack) {
-            return cycle;
-        }
-    }
-    Vec::new()
 }
 
 fn load_skill_catalog(root: &Path) -> (Vec<SkillCatalogIssue>, HashSet<String>) {
@@ -3523,45 +3455,6 @@ mod tests {
 
     #[test]
     fn flags_invalid_multi_agent_contract_fields() {
-        let implementation_agent = |id: &str, owned_path: &str| {
-            WaveAgent {
-            id: id.to_string(),
-            title: format!("Implementation {id}"),
-            role_prompts: Vec::new(),
-            executor: BTreeMap::from([("profile".to_string(), "implement-codex".to_string())]),
-            context7: Some(Context7Defaults {
-                bundle: "rust-config-spec".to_string(),
-                query: Some(
-                    "Typed config loading, authored-wave parsing, and dark-factory lint enforcement for this implementation slice".to_string(),
-                ),
-            }),
-            skills: vec!["wave-core".to_string()],
-            components: vec!["example".to_string()],
-            capabilities: vec!["capability".to_string()],
-            exit_contract: Some(ExitContract {
-                completion: CompletionLevel::Integrated,
-                durability: DurabilityLevel::Durable,
-                proof: ProofLevel::Integration,
-                doc_impact: DocImpact::Owned,
-            }),
-            deliverables: vec![owned_path.to_string()],
-            file_ownership: vec![owned_path.to_string()],
-            final_markers: vec![
-                "[wave-proof]".to_string(),
-                "[wave-doc-delta]".to_string(),
-                "[wave-component]".to_string(),
-            ],
-            depends_on_agents: Vec::new(),
-            reads_artifacts_from: Vec::new(),
-            writes_artifacts: Vec::new(),
-            barrier_class: wave_spec::BarrierClass::Independent,
-            parallel_safety: wave_spec::ParallelSafetyClass::ParallelSafe,
-            exclusive_resources: Vec::new(),
-            parallel_with: Vec::new(),
-            prompt: implementation_prompt(owned_path),
-        }
-        };
-
         let mut a1 = implementation_agent("A1", "src/runtime_a.rs");
         a1.depends_on_agents = vec!["A2".to_string()];
         a1.writes_artifacts = vec!["shared-state".to_string()];
@@ -3651,6 +3544,76 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn flags_barrier_expanded_cycles_in_multi_agent_graph() {
+        let mut a1 = implementation_agent("A1", "src/runtime_a.rs");
+        a1.depends_on_agents = vec!["A8".to_string()];
+
+        let mut a8 = closure_agent(
+            "A8",
+            "docs/agents/wave-integration-role.md",
+            "[wave-integration]",
+            ".wave/integration/wave-18.md",
+        );
+        a8.barrier_class = wave_spec::BarrierClass::IntegrationBarrier;
+
+        let wave = WaveDocument {
+            path: PathBuf::from("waves/18.md"),
+            metadata: WaveMetadata {
+                id: 18,
+                slug: "wave-18".to_string(),
+                title: "Wave 18".to_string(),
+                mode: ExecutionMode::DarkFactory,
+                owners: vec!["runtime".to_string()],
+                depends_on: Vec::new(),
+                validation: vec!["cargo test".to_string()],
+                rollback: vec!["git revert".to_string()],
+                proof: vec!["proof.json".to_string()],
+                execution_model: wave_spec::WaveExecutionModel::MultiAgent,
+                ..default_wave_metadata()
+            },
+            heading_title: Some("Wave 18 - MAS".to_string()),
+            commit_message: Some("Feat: MAS".to_string()),
+            component_promotions: vec![wave_spec::ComponentPromotion {
+                component: "example".to_string(),
+                target: "repo-landed".to_string(),
+            }],
+            deploy_environments: vec![DeployEnvironment {
+                name: "repo-local".to_string(),
+                detail: "custom default".to_string(),
+            }],
+            context7_defaults: Some(Context7Defaults {
+                bundle: "rust-config-spec".to_string(),
+                query: Some(
+                    "Barrier-expanded MAS dependency graphs must still remain acyclic".to_string(),
+                ),
+            }),
+            agents: vec![
+                closure_agent(
+                    "A0",
+                    "docs/agents/wave-cont-qa-role.md",
+                    "[wave-gate]",
+                    ".wave/reviews/wave-18.md",
+                ),
+                a8,
+                closure_agent(
+                    "A9",
+                    "docs/agents/wave-documentation-role.md",
+                    "[wave-doc-closure]",
+                    "docs/plans/master-plan.md",
+                ),
+                a1,
+            ],
+        };
+
+        let findings = lint_project(&workspace_root(), &[wave]);
+        assert!(findings.iter().any(|finding| {
+            finding.rule == "agent-dependency-cycle"
+                && finding.message.contains("A8")
+                && finding.message.contains("A1")
+        }));
+    }
+
     fn closure_agent(id: &str, prompt_path: &str, marker: &str, owned_path: &str) -> WaveAgent {
         WaveAgent {
             id: id.to_string(),
@@ -3689,6 +3652,45 @@ mod tests {
                 &format!("- {owned_path}"),
             ]
             .join("\n"),
+        }
+    }
+
+    fn implementation_agent(id: &str, owned_path: &str) -> WaveAgent {
+        WaveAgent {
+            id: id.to_string(),
+            title: format!("Implementation {id}"),
+            role_prompts: Vec::new(),
+            executor: BTreeMap::from([("profile".to_string(), "implement-codex".to_string())]),
+            context7: Some(Context7Defaults {
+                bundle: "rust-config-spec".to_string(),
+                query: Some(
+                    "Typed config loading, authored-wave parsing, and dark-factory lint enforcement for this implementation slice".to_string(),
+                ),
+            }),
+            skills: vec!["wave-core".to_string()],
+            components: vec!["example".to_string()],
+            capabilities: vec!["capability".to_string()],
+            exit_contract: Some(ExitContract {
+                completion: CompletionLevel::Integrated,
+                durability: DurabilityLevel::Durable,
+                proof: ProofLevel::Integration,
+                doc_impact: DocImpact::Owned,
+            }),
+            deliverables: vec![owned_path.to_string()],
+            file_ownership: vec![owned_path.to_string()],
+            final_markers: vec![
+                "[wave-proof]".to_string(),
+                "[wave-doc-delta]".to_string(),
+                "[wave-component]".to_string(),
+            ],
+            depends_on_agents: Vec::new(),
+            reads_artifacts_from: Vec::new(),
+            writes_artifacts: Vec::new(),
+            barrier_class: wave_spec::BarrierClass::Independent,
+            parallel_safety: wave_spec::ParallelSafetyClass::ParallelSafe,
+            exclusive_resources: Vec::new(),
+            parallel_with: Vec::new(),
+            prompt: implementation_prompt(owned_path),
         }
     }
 

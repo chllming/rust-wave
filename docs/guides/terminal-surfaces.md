@@ -92,6 +92,7 @@ The live keyboard model is now focus-driven rather than tab-only.
 
 - `Tab` / `Shift+Tab`
   Cycle `Transcript`, `Composer`, and `Dashboard`.
+- Startup focus is `Dashboard`, so shell hotkeys work immediately and free-text guidance stays explicit.
 - `Esc`
   Leave transient state, help, or the composer focus.
 - `Ctrl+C`
@@ -123,6 +124,8 @@ The live keyboard model is now focus-driven rather than tab-only.
   Prepare approval or acknowledgment for the selected operator action.
 - `x`
   Prepare rejection or dismissal for the selected operator action.
+
+In repo-level `head` scope, `Control` shows one visible cross-wave review queue. `u` and `x` apply to the selected visible queue row, not to a hidden per-wave action slot.
 
 ### Follow behavior
 

@@ -63,7 +63,7 @@ The canonical Wave 0.2 authority roots under `.wave/state/` are:
 - projections: `.wave/state/projections/`
 - canonical traces: `.wave/state/traces/`
 
-This is now an authority-core plus projection-spine landing. Scheduler ownership is canonical in the reducer through explicit claim, lease, and budget events, so readiness is no longer treated as ownership. Wave 0.2 still keeps compatibility run and trace artifacts under `.wave/state/runs/` and `.wave/traces/runs/` as adapter inputs, and the live runtime still executes serially. True parallel waves, per-wave worktrees, and multi-runtime execution remain later work.
+This is now an authority-core plus projection-spine landing. Scheduler ownership is canonical in the reducer through explicit claim, lease, and budget events, so readiness is no longer treated as ownership. Wave 0.2 still keeps compatibility run and trace artifacts under `.wave/state/runs/` and `.wave/traces/runs/` as adapter inputs, but the live repo now spans both serial waves and opt-in MAS waves: parallel wave execution, wave-scoped worktrees, multi-runtime selection, and the partial Wave 18 intra-wave MAS cut are all code-landed in this checkout, while the remaining gap is the final live Wave 18 proof run.
 
 ## Authored-Wave Contract
 
@@ -393,6 +393,7 @@ The TUI remains a consumer of control-plane truth, not an independent planner. Q
 The live interaction model now includes:
 
 - `Tab` / `Shift+Tab` to cycle transcript, composer, and dashboard focus
+- dashboard focus by default on startup so shell hotkeys work immediately
 - `[` / `]` to cycle dashboard tabs
 - `j` / `k` or arrows to scroll transcript or move dashboard selection
 - `r` / `c` for rerun request and clear
@@ -400,6 +401,7 @@ The live interaction model now includes:
 - `u` / `x` for operator-action approval or rejection
 - slash commands for scope/mode/launch/rerun/MAS control/search/compare/help
 - plain-text guidance bound to the shell target while wave hotkeys and implicit wave commands use the visible dashboard selection
+- repo-level `head` scope keeps `Control` as a visible cross-wave review queue, and `u` / `x` act on the selected review row
 - real `/follow run|agent|off` behavior for active-run following, pinned-agent following, or manual selection
 
 If broader shell behavior is proposed later, it should build on this operator-shell contract rather than describe the TUI as a passive dashboard again.
@@ -416,7 +418,7 @@ The intended self-host loop for this repository is the same one the code already
 6. `wave control show --wave <id> --json`, `wave control proof show --wave <id> --json`, `wave control task list --wave <id> --json`, `wave trace latest --json`, and `wave trace replay --json` expose queue, proof, and trace evidence for the latest relevant run. Proof state is recomputed from the current stored result envelopes first, with compatibility run records used only through the explicit `wave-results` legacy adapter while `wave-trace` stays limited to persisted envelope loading and replay over compatibility-backed artifacts with normalized envelope references.
 7. `wave` on an interactive terminal shows the same state in the built-in operator shell, and `wave tui --help` exposes the explicit shell startup controls.
 
-This is dogfood evidence, not a claim that live-host deployment, remote fleet control, or a separate dashboard product has landed. Wave 13 is now the landed scheduler-authority and serial lease-enforcement checkpoint. True parallel-wave execution and per-wave worktree isolation remain future work in Wave 14-class follow-through.
+This is dogfood evidence, not a claim that live-host deployment, remote fleet control, or a separate dashboard product has landed. Wave 13 remains the scheduler-authority checkpoint, Wave 14-class parallel-wave execution and worktree isolation are live in the repo-local runtime, and Wave 18 now partially lands intra-wave MAS; the remaining open boundary is the final live Wave 18 proof run rather than the existence of those runtime surfaces.
 
 ## Narrow-Terminal Fallback
 

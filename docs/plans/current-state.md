@@ -18,6 +18,7 @@
 - The live TUI operator surface includes the right-side panel as the direct queue/control dashboard, not just a passive status view.
 - Operators can directly inspect run, agent, queue, control, autonomy, and recovery truth from the shell without switching to a separate CLI status path first, and they can act on queue selection, rerun intents, manual-close recovery, and MAS agent controls in-place.
 - The shell now supports transcript search, compare mode, explicit alt-screen policy, and explicit fresh-session startup through `wave tui`.
+- The shared MAS dependency contract is now compiled once and reused across lint, domain, and runtime: authored agent dependencies, artifact reads, and barrier-expanded upstreams now mean the same thing in task graphs, fail-closed lint, and runtime readiness.
 - `wave dep` remains planned-only. `wave adhoc` and `wave delivery` are now live repo-local command surfaces in this worktree, even while replay ratification remains compatibility-backed.
 
 ## Shipped CLI Surface
@@ -52,6 +53,8 @@
 - Dependency-handshake classification in operator transport is now typed workflow state on `HumanInputRequest`, with a legacy route-name fallback kept only for older records that predate the explicit field.
 - The TUI no longer targets only the first actionable approval or escalation on a wave: `[` and `]` now move the selected operator action in the `Control` view before `u` or `x` applies to that selected item.
 - Operator-shell targeting is now explicit and honest: plain-text guidance follows the shell target, while wave hotkeys and implicit wave commands act on the visibly selected wave in the dashboard.
+- The shell now starts in `Dashboard` focus so documented hotkeys work immediately; free-text guidance requires explicitly moving into `Composer` focus.
+- Repo-level `head` scope keeps `Control` as a visible cross-wave review queue, and `u` / `x` act on that selected visible row rather than a hidden per-wave action slot.
 - `/follow run|agent|off` now has real behavior: `run` follows the active run wave and current agent, `agent` pins the selected MAS agent, and `off` preserves manual selection and transcript position.
 - Narrow terminals no longer degrade to a blind summary surface; the shell now renders as a one-column layout with visible transcript, composer, and dashboard stack.
 - The live shell command surface now includes `/rerun [full|from-first-incomplete|closure-only|promotion-only]`, `/pause`, `/resume`, `/rerun-agent`, `/rebase`, `/reconcile`, `/approve-merge`, and `/reject-merge`.
@@ -62,6 +65,7 @@
 
 - True parallel-wave execution is now live in repo-local use for the Codex-backed runtime: by default the scheduler admits up to two non-conflicting waves concurrently, each active wave runs in its own wave-scoped worktree, FIFO fairness now orders claimable implementation admission by persisted waiting time, reserved closure capacity can defer new implementation admission ahead of that lane, and closure work can revoke a saturated implementation lease when the scheduler needs to protect closure progress.
 - Wave `18` has now partially landed the intra-wave MAS slice for opt-in `execution_model = "multi-agent"` waves: the repo can now parse MAS-authored waves, persist MAS orchestration records, allocate per-agent sandboxes, compute a MAS ready set, launch parallel-safe agents concurrently, and surface sandbox, merge, invalidation, directive, and orchestrator detail in CLI, app-server, and TUI views.
+- In those MAS waves, `reads_artifacts_from` is now a hard upstream dependency for both graph emission and runtime readiness, and `ClosureBarrier` expansion waits on the non-report-only, non-closure frontier instead of creating peer-to-peer closure cycles.
 - Wave `18` is still not closed: MAS waves now have a live autonomous-head steering loop, broader durable control actions for pause or resume or rerun or rebase or reconcile or merge approval, reducer-backed recovery-required handling that preserves accepted sibling work, richer directive-delivery semantics, and a finished operator shell product. The remaining gap is one live pilot proof run showing concurrent launch, steering, targeted recovery, and honest closure end to end, plus later head-behavior expansion beyond the current safe action family.
 - Durable claims and leases are live authority in the reducer and canonical scheduler event stream, and the current runtime now uses that authority for concurrent claim admission, task-lease renewal and expiry, and wave-scoped execution state.
 - Claude is now a live Rust runtime adapter when the local `claude` CLI is available and authenticated; proof classification for a checked-in bundle may still be live, dry-run-backed, or fixture-backed and is recorded in the Wave 15 proof bundle.
