@@ -1431,12 +1431,12 @@ pub fn build_control_action_read_models(
             implemented: true,
         },
         ControlActionReadModel {
-            key: "[ / ]".to_string(),
+            key: "j / k or arrows".to_string(),
             label: "Select action".to_string(),
             description: if control.approve_operator_action_supported
                 || control.reject_operator_action_supported
             {
-                "Move between the selected wave's actionable approvals and escalations.".to_string()
+                "Move between actionable review items in the visible Control queue.".to_string()
             } else {
                 "Operator action selection is not supported by the control plane yet.".to_string()
             },
@@ -1489,7 +1489,7 @@ pub fn build_control_action_read_models(
             key: "u".to_string(),
             label: "Approve action".to_string(),
             description: if control.approve_operator_action_supported {
-                "Confirm the selected wave's next approval or escalation action.".to_string()
+                "Confirm the selected review item in the Control queue.".to_string()
             } else {
                 "Operator approvals are not supported by the control plane yet.".to_string()
             },
@@ -1499,8 +1499,7 @@ pub fn build_control_action_read_models(
             key: "x".to_string(),
             label: "Reject or dismiss".to_string(),
             description: if control.reject_operator_action_supported {
-                "Reject a pending approval or dismiss the selected wave's next escalation."
-                    .to_string()
+                "Reject or dismiss the selected review item in the Control queue.".to_string()
             } else {
                 "Operator rejection flows are not supported by the control plane yet.".to_string()
             },
@@ -2399,7 +2398,7 @@ mod tests {
         assert!(spine.operator.control.reject_operator_action_supported);
         assert_eq!(spine.operator.control.actions.len(), 12);
         assert!(spine.operator.control.actions.iter().any(|action| {
-            action.key == "[ / ]" && action.label == "Select action" && action.implemented
+            action.key == "j / k or arrows" && action.label == "Select action" && action.implemented
         }));
         assert!(spine.operator.control.actions.iter().any(|action| {
             action.key == "m" && action.label == "Apply manual close" && action.implemented

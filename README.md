@@ -61,7 +61,27 @@ Still pending:
 
 ## Getting Started
 
-Wave is currently installed from source. There is no published package surface yet.
+The current tagged release is `v0.1.0`.
+
+Wave is not published to crates.io yet, but you can install the released CLI directly from the Git tag:
+
+```bash
+cargo install --git https://github.com/chllming/rust-wave.git --tag v0.1.0 wave-cli --locked
+wave project show --json
+wave doctor --json
+wave control status --json
+```
+
+If you prefer to work from a checked-out release tag:
+
+```bash
+git clone --branch v0.1.0 https://github.com/chllming/rust-wave.git
+cd rust-wave
+cargo install --path crates/wave-cli --locked
+wave project show --json
+```
+
+For active development on the repo itself, build or install from source:
 
 Prerequisites:
 
@@ -78,7 +98,7 @@ cargo build --release -p wave-cli
 ./target/release/wave control status --json
 ```
 
-If you prefer a local per-user install without managing the `target/release/` path directly:
+If you prefer a local per-user install from your clone without managing the `target/release/` path directly:
 
 ```bash
 cargo install --path crates/wave-cli --locked
@@ -103,10 +123,16 @@ git pull
 cargo build --release -p wave-cli
 ```
 
-If you installed with `cargo install --path`, rerun:
+If you installed from your clone with `cargo install --path`, rerun:
 
 ```bash
 cargo install --path crates/wave-cli --locked --force
+```
+
+If you installed from the tagged Git release, rerun the same command with `--force`:
+
+```bash
+cargo install --git https://github.com/chllming/rust-wave.git --tag v0.1.0 wave-cli --locked --force
 ```
 
 If you want the interactive operator shell:

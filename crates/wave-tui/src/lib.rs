@@ -821,6 +821,18 @@ fn selected_action_wave_id(state: &AppState, snapshot: &OperatorSnapshot) -> Opt
     selected_wave_id(state, snapshot)
 }
 
+fn selected_control_action_wave_id(
+    state: &AppState,
+    snapshot: &OperatorSnapshot,
+    tab: PanelTab,
+) -> Option<u32> {
+    if matches!(tab, PanelTab::Control) {
+        control_context_wave_id(state, snapshot)
+    } else {
+        selected_action_wave_id(state, snapshot)
+    }
+}
+
 fn current_shell_target(state: &AppState, snapshot: &OperatorSnapshot) -> ShellTargetState {
     state
         .shell_target
@@ -1637,7 +1649,7 @@ fn handle_request_rerun(app: &mut App) -> Result<()> {
 fn handle_request_rerun_with_scope(app: &mut App, scope: RerunScope) -> Result<()> {
     let wave_id = {
         let snapshot = current_snapshot(app)?;
-        let Some(wave_id) = selected_action_wave_id(&app.state, snapshot) else {
+        let Some(wave_id) = selected_control_action_wave_id(&app.state, snapshot, app.tab) else {
             set_error_message(&mut app.state, "no wave selected");
             return Ok(());
         };
@@ -1664,7 +1676,7 @@ fn handle_request_rerun_with_scope(app: &mut App, scope: RerunScope) -> Result<(
 fn handle_clear_rerun(app: &mut App) -> Result<()> {
     let wave_id = {
         let snapshot = current_snapshot(app)?;
-        let Some(wave_id) = selected_action_wave_id(&app.state, snapshot) else {
+        let Some(wave_id) = selected_control_action_wave_id(&app.state, snapshot, app.tab) else {
             set_error_message(&mut app.state, "no wave selected");
             return Ok(());
         };
@@ -1684,7 +1696,7 @@ fn handle_clear_rerun(app: &mut App) -> Result<()> {
 fn handle_prepare_manual_close(app: &mut App) -> Result<()> {
     let (wave_id, wave_title, already_active) = {
         let snapshot = current_snapshot(app)?;
-        let Some(wave_id) = selected_action_wave_id(&app.state, snapshot) else {
+        let Some(wave_id) = selected_control_action_wave_id(&app.state, snapshot, app.tab) else {
             set_error_message(&mut app.state, "no wave selected");
             return Ok(());
         };
@@ -1743,7 +1755,7 @@ fn handle_prepare_manual_close(app: &mut App) -> Result<()> {
 fn handle_prepare_clear_manual_close(app: &mut App) -> Result<()> {
     let (wave_id, wave_title, source_run_id) = {
         let snapshot = current_snapshot(app)?;
-        let Some(wave_id) = selected_action_wave_id(&app.state, snapshot) else {
+        let Some(wave_id) = selected_control_action_wave_id(&app.state, snapshot, app.tab) else {
             set_error_message(&mut app.state, "no wave selected");
             return Ok(());
         };
@@ -7062,12 +7074,9 @@ mod tests {
                 .any(|action| action.key == "M" && action.label == "Clear manual close")
         );
         assert!(
-            snapshot
-                .panels
-                .control
-                .actions
-                .iter()
-                .any(|action| action.key == "[ / ]" && action.label == "Select action")
+            snapshot.panels.control.actions.iter().any(|action| {
+                action.key == "j / k or arrows" && action.label == "Select action"
+            })
         );
         assert!(
             snapshot
@@ -7269,6 +7278,54 @@ mod tests {
         };
 
         assert_eq!(control_context_wave_id(&state, &snapshot), Some(15));
+    }
+
+    #[test]
+    fn repo_head_control_wave_mutations_follow_visible_selected_review_row_wave() {
+        let mut snapshot = test_snapshot();
+        let mut wave_15 = snapshot.planning.waves[0].clone();
+        wave_15.id = 15;
+        wave_15.slug = "manual-close".to_string();
+        wave_15.title = "Close earlier waves honestly with manual close override".to_string();
+        wave_15.last_run_status = Some(WaveRunStatus::Failed);
+        wave_15.completed = true;
+        snapshot.planning.waves.push(wave_15);
+        snapshot
+            .operator_objects
+            .push(wave_app_server::OperatorActionableItem {
+                kind: wave_app_server::OperatorActionableKind::Proposal,
+                wave_id: 15,
+                record_id: "proposal-15".to_string(),
+                state: "pending".to_string(),
+                summary: "Propose recovery".to_string(),
+                detail: Some("repair the failed promotion".to_string()),
+                waiting_on: Some("operator proposal review".to_string()),
+                next_action: Some("press u to apply or x to dismiss".to_string()),
+                route: None,
+                task_id: None,
+                source_run_id: Some("wave-15-failed".to_string()),
+                evidence_count: 1,
+                created_at_ms: Some(4),
+            });
+
+        let state = AppState {
+            shell_target: Some(ShellTargetState {
+                scope: ShellScope::Head,
+                wave_id: None,
+                agent_id: None,
+            }),
+            selected_operator_action_index: 2,
+            ..AppState::default()
+        };
+
+        assert_eq!(
+            selected_control_action_wave_id(&state, &snapshot, PanelTab::Control),
+            Some(15)
+        );
+        assert_eq!(
+            selected_control_action_wave_id(&state, &snapshot, PanelTab::Queue),
+            Some(5)
+        );
     }
 
     #[test]
@@ -7796,9 +7853,9 @@ mod tests {
                     launcher_ready: false,
                     actions: vec![
                         ControlAction {
-                            key: "[ / ]".to_string(),
+                            key: "j / k or arrows".to_string(),
                             label: "Select action".to_string(),
-                            description: "Select action".to_string(),
+                            description: "Move between actionable review items".to_string(),
                             implemented: true,
                         },
                         ControlAction {
@@ -7842,9 +7899,9 @@ mod tests {
                     ],
                     implemented_actions: vec![
                         ControlAction {
-                            key: "[ / ]".to_string(),
+                            key: "j / k or arrows".to_string(),
                             label: "Select action".to_string(),
-                            description: "Select action".to_string(),
+                            description: "Move between actionable review items".to_string(),
                             implemented: true,
                         },
                         ControlAction {
@@ -7941,9 +7998,9 @@ mod tests {
             closure_overrides: Vec::new(),
             control_actions: vec![
                 ControlAction {
-                    key: "[ / ]".to_string(),
+                    key: "j / k or arrows".to_string(),
                     label: "Select action".to_string(),
-                    description: "Select action".to_string(),
+                    description: "Move between actionable review items".to_string(),
                     implemented: true,
                 },
                 ControlAction {
