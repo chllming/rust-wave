@@ -9,15 +9,15 @@ importers:
   .:
     devDependencies:
       '@chllming/wave-orchestration':
-        specifier: 0.6.3
-        version: 0.6.3
+        specifier: 0.9.15
+        version: 0.9.15
 
 packages:
 
-  '@chllming/wave-orchestration@0.6.3':
-    resolution: {integrity: sha512-uy8nsbiZfAT88nxBJK5ze5YxzBulqZnxttSjOvoADp2J0gZsuXr9VBeE3OgsSOB9EkDQlhKh+i9APq2BFw1dTw==}
+  '@chllming/wave-orchestration@0.9.15':
+    resolution: {integrity: sha512-9SbbVvOrgT5O+c3vuvqDaXInkUp/ldZrSk+dOH2SR4t7XkWpjcUcG7Fi2AKXgeW6IxxakGhlCLjWYYjKVSdn5g==}
     hasBin: true
 
 snapshots:
 
-  '@chllming/wave-orchestration@0.6.3': {}
+  '@chllming/wave-orchestration@0.9.15': {}
